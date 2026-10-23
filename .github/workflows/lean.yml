@@ -1,0 +1,23 @@
+name: Lean
+
+on:
+  push:
+    paths: ['formal/**', '.github/workflows/lean.yml']
+  pull_request:
+    paths: ['formal/**', '.github/workflows/lean.yml']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: No sorries
+        run: '! grep -rn "\bsorry\b" formal/McmcRobustFormal.lean'
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: formal
+          use-mathlib-cache: true
+      - name: Axiom footprint
+        working-directory: formal
+        run: lake env lean McmcRobustFormal.lean

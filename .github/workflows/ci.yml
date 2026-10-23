@@ -1,0 +1,81 @@
+name: CI
+
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install uv and set the python version
+      id: setup-uv
+      continue-on-error: true
+      uses: astral-sh/setup-uv@v9.0.0
+      with:
+        python-version: "3.13"
+        version: "latest"
+        enable-cache: true
+    - name: Wait before retrying the uv install
+      if: steps.setup-uv.outcome == 'failure'
+      run: sleep 20
+    - name: Install uv and set the python version (retry)
+      if: steps.setup-uv.outcome == 'failure'
+      uses: astral-sh/setup-uv@v9.0.0
+      with:
+        python-version: "3.13"
+        version: "latest"
+        enable-cache: true
+
+    - name: Install the project
+      run: uv sync --all-extras --dev
+    - name: Cache pre-commit hook environments
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pre-commit
+        key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+    - name: Run pre-commit hooks
+      run: uv run pre-commit run --all-files --show-diff-on-failure
+      env:
+        SKIP: pytest
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13", "3.14", "3.15"]
+
+    name: test (Python ${{ matrix.python-version }})
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install uv and set the python version
+      id: setup-uv
+      continue-on-error: true
+      uses: astral-sh/setup-uv@v9.0.0
+      with:
+        python-version: ${{ matrix.python-version }}
+        version: "latest"
+        enable-cache: true
+    - name: Wait before retrying the uv install
+      if: steps.setup-uv.outcome == 'failure'
+      run: sleep 20
+    - name: Install uv and set the python version (retry)
+      if: steps.setup-uv.outcome == 'failure'
+      uses: astral-sh/setup-uv@v9.0.0
+      with:
+        python-version: ${{ matrix.python-version }}
+        version: "latest"
+        enable-cache: true
+    - name: Install the project
+      run: uv sync --all-extras --dev
+    - name: Run tests
+      run: uv run pytest -v -W error

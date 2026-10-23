@@ -1,0 +1,60 @@
+fail_fast: true
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v6.0.0
+  hooks:
+    - id: check-added-large-files
+      args: [ --maxkb=2000 ]
+    - id: fix-byte-order-marker
+    - id: check-case-conflict
+
+    - id: check-json
+    - id: check-toml
+    - id: check-yaml
+      args: [ --unsafe ]
+    - id: check-merge-conflict
+    - id: check-shebang-scripts-are-executable
+    - id: mixed-line-ending
+      args: [ --fix=lf ]
+    - id: detect-aws-credentials
+      args: [ --allow-missing-credentials ]
+    - id: detect-private-key
+    - id: end-of-file-fixer
+    - id: trailing-whitespace
+
+- repo: https://github.com/astral-sh/uv-pre-commit
+  rev: 0.11.32
+  hooks:
+    - id: uv-lock
+
+- repo: local
+  hooks:
+  - id: lean-no-sorry
+    name: check Lean 4 proofs contain no sorry or admit
+    entry: '\b(sorry|admit)\b'
+    language: pygrep
+    files: ^formal/.*\.lean$
+  - id: ruff-check
+    name: ruff check
+    entry: uv run ruff check --force-exclude --fix
+    language: system
+    types_or: [python, pyi]
+    require_serial: true
+  - id: ruff-format
+    name: ruff format
+    entry: uv run ruff format --force-exclude
+    language: system
+    types_or: [python, pyi, markdown]
+    require_serial: true
+  - id: mypy
+    name: mypy
+    entry: bash -ec "uv run mypy src/mcmc_robust"
+    language: system
+    types: [python]
+    pass_filenames: false
+  - id: pytest
+    name: pytest [full test suite]
+    entry: bash -ec "uv run pytest -v -W error"
+    language: system
+    types: [python]
+    pass_filenames: false

@@ -1,0 +1,26 @@
+# Python & packaging
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Lean 4 build cache
+.lake
+.lake/
+formal/.lake
+formal/.lake/
+
+# Temporary / scratch / agent runtime logs
+scratch/
+.agents/
+.DS_Store
+ORIGINAL_REQUEST.md
+PROJECT.md
+TEST_INFRA.md
+TEST_READY.md

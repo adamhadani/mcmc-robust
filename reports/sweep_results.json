@@ -1,0 +1,379 @@
+{
+  "metadata": {
+    "timestamp": "2026-10-23T16:24:23Z",
+    "h_min": 0.0001,
+    "h_max": 10.0,
+    "n_grid": 10,
+    "targets": [
+      "quartic"
+    ],
+    "samplers": [
+      "mala",
+      "tamed_mala",
+      "gentle_mala"
+    ],
+    "quick": true
+  },
+  "summary": {
+    "quartic": {
+      "d_2": {
+        "sampler_windows": {
+          "mala": {
+            "h_min": 0.0001,
+            "h_max": 0.004641588833612782,
+            "window_ratio": 46.41588833612782,
+            "median_burnin_steps": 40.5
+          },
+          "tamed_mala": {
+            "h_min": 0.0001,
+            "h_max": 2.782559402207126,
+            "window_ratio": 27825.59402207126,
+            "median_burnin_steps": 27.5
+          },
+          "gentle_mala": {
+            "h_min": 0.0001,
+            "h_max": 0.21544346900318845,
+            "window_ratio": 2154.434690031884,
+            "median_burnin_steps": 12.0
+          }
+        },
+        "AC3_stability_factor": 46.415888336127765,
+        "AC3_stability_pass": true,
+        "AC3_burnin_reduction": 2.2916666666666665,
+        "AC3_burnin_pass": true
+      }
+    }
+  },
+  "results": [
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "mala",
+      "step_size": 0.0001,
+      "acceptance_rate": 1.0,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 6.225669659230794,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "mala",
+      "step_size": 0.00035938136638046257,
+      "acceptance_rate": 1.0,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 3.452366239848808,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "mala",
+      "step_size": 0.001291549665014884,
+      "acceptance_rate": 1.0,
+      "diverged": false,
+      "burn_in_steps": 80,
+      "terminal_norm": 1.7595395145176358,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "mala",
+      "step_size": 0.004641588833612782,
+      "acceptance_rate": 1.0,
+      "diverged": false,
+      "burn_in_steps": 1,
+      "terminal_norm": 1.2860410638815363,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "mala",
+      "step_size": 0.016681005372000592,
+      "acceptance_rate": 0.0,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 14.142135623730951,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "mala",
+      "step_size": 0.05994842503189409,
+      "acceptance_rate": 0.0,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 14.142135623730951,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "mala",
+      "step_size": 0.21544346900318845,
+      "acceptance_rate": 0.0,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 14.142135623730951,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "mala",
+      "step_size": 0.7742636826811278,
+      "acceptance_rate": 0.0,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 14.142135623730951,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "mala",
+      "step_size": 2.782559402207126,
+      "acceptance_rate": 0.0,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 14.142135623730951,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "mala",
+      "step_size": 10.0,
+      "acceptance_rate": 0.0,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 14.142135623730951,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "tamed_mala",
+      "step_size": 0.0001,
+      "acceptance_rate": 0.57,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 13.467330971818443,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "tamed_mala",
+      "step_size": 0.00035938136638046257,
+      "acceptance_rate": 0.58,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 12.813926202032553,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "tamed_mala",
+      "step_size": 0.001291549665014884,
+      "acceptance_rate": 0.63,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 11.45284163105746,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "tamed_mala",
+      "step_size": 0.004641588833612782,
+      "acceptance_rate": 0.66,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 8.385254283124954,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "tamed_mala",
+      "step_size": 0.016681005372000592,
+      "acceptance_rate": 0.76,
+      "diverged": false,
+      "burn_in_steps": 91,
+      "terminal_norm": 1.4015385882714833,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "tamed_mala",
+      "step_size": 0.05994842503189409,
+      "acceptance_rate": 0.9,
+      "diverged": false,
+      "burn_in_steps": 39,
+      "terminal_norm": 0.823662682432875,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "tamed_mala",
+      "step_size": 0.21544346900318845,
+      "acceptance_rate": 0.87,
+      "diverged": false,
+      "burn_in_steps": 16,
+      "terminal_norm": 1.4900005491170438,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "tamed_mala",
+      "step_size": 0.7742636826811278,
+      "acceptance_rate": 0.57,
+      "diverged": false,
+      "burn_in_steps": 7,
+      "terminal_norm": 1.1571421017314305,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "tamed_mala",
+      "step_size": 2.782559402207126,
+      "acceptance_rate": 0.02,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 7.693206877602889,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "tamed_mala",
+      "step_size": 10.0,
+      "acceptance_rate": 0.0,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 14.142135623730951,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "gentle_mala",
+      "step_size": 0.0001,
+      "acceptance_rate": 1.0,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 6.324563654371678,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "gentle_mala",
+      "step_size": 0.00035938136638046257,
+      "acceptance_rate": 1.0,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 3.5436394393452555,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "gentle_mala",
+      "step_size": 0.001291549665014884,
+      "acceptance_rate": 1.0,
+      "diverged": false,
+      "burn_in_steps": 91,
+      "terminal_norm": 1.8229494568687206,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "gentle_mala",
+      "step_size": 0.004641588833612782,
+      "acceptance_rate": 1.0,
+      "diverged": false,
+      "burn_in_steps": 24,
+      "terminal_norm": 1.1979799035182483,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "gentle_mala",
+      "step_size": 0.016681005372000592,
+      "acceptance_rate": 0.99,
+      "diverged": false,
+      "burn_in_steps": 12,
+      "terminal_norm": 1.0088566975582158,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "gentle_mala",
+      "step_size": 0.05994842503189409,
+      "acceptance_rate": 0.96,
+      "diverged": false,
+      "burn_in_steps": 2,
+      "terminal_norm": 0.7937249788708078,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "gentle_mala",
+      "step_size": 0.21544346900318845,
+      "acceptance_rate": 0.9,
+      "diverged": false,
+      "burn_in_steps": 6,
+      "terminal_norm": 1.4171356350458655,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "gentle_mala",
+      "step_size": 0.7742636826811278,
+      "acceptance_rate": 0.0,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 14.142135623730951,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "gentle_mala",
+      "step_size": 2.782559402207126,
+      "acceptance_rate": 0.0,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 14.142135623730951,
+      "divergence_reason": null
+    },
+    {
+      "target_name": "quartic",
+      "dimension": 2,
+      "sampler_name": "gentle_mala",
+      "step_size": 10.0,
+      "acceptance_rate": 0.0,
+      "diverged": false,
+      "burn_in_steps": null,
+      "terminal_norm": 14.142135623730951,
+      "divergence_reason": null
+    }
+  ]
+}

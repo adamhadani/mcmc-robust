@@ -1,0 +1,129 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcmc-robust"
+version = "0.1.0"
+description = "Novel gradient-based MCMC samplers resolving target roughness and flatness pathologies"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [
+    { name = "MCMC Robustness Research Team" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Programming Language :: Python :: 3 :: Only",
+]
+
+dependencies = [
+    "numpy>=2.0.0",
+    "scipy>=1.14.0",
+    "matplotlib>=3.9.0",
+    "pytest>=8.0.0",
+    "arviz>=1.3.0",
+    "blackjax>=1.7.1",
+    "jax>=0.12.0.1",
+    "jaxlib>=0.12.0.1",
+    "pymc>=6.3.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "coverage>=7.8.0",
+    "mypy>=1.15.0",
+    "pre-commit>=4.6.1",
+    "pytest-cov>=6.1.1",
+    "ruff>=0.11.9",
+]
+
+[dependency-groups]
+dev = [
+    "coverage>=7.8.0",
+    "mypy>=1.15.0",
+    "pre-commit>=4.6.1",
+    "pytest-cov>=6.1.1",
+    "ruff>=0.11.9",
+]
+
+[tool.mypy]
+namespace_packages = true
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.ruff.lint]
+ignore = [
+    "T201",    # allow print statement
+    "E501",    # line length handled by formatter / math equations
+    "E402",    # module import not at top of file (JAX 64-bit precision configuration)
+    "PLC0415", # lazy imports for optional heavy dependencies (PyMC, matplotlib)
+    "RUF059",  # unused unpacked variable
+    "B023",    # loop variable binding in inner functions
+    "BLE001",  # blind except
+    "SIM108",  # ternary operator recommendation
+    "SIM102",  # nested if statements
+    "SIM103",  # needless bool
+    "SIM105",  # suppressible exception
+    "SIM118",  # in dict keys
+    "B905",    # zip without explicit strict
+    "B007",    # unused loop control variable
+    "C408",    # unnecessary collection call
+    "C414",    # unnecessary double cast
+    "F841",    # unused variable
+    "RUF022",  # dunder all sorting
+    "S110",    # try except pass
+    "PLR0133", # comparison of constant
+    "E712",    # true-false comparison
+]
+extend-select = [
+    "A",  # flake8-builtins
+    "B",  # flake8-bugbear
+    "E",  # pycodestyle
+    "F",  # Pyflakes
+    "G",  # flake8-logging-format
+    "I",  # isort
+    "PERF",  # perflint
+    "PLC",  # Pylint (Convention)
+    "SIM",  # flake8-simplify
+    "T",  # flake8-debugger
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 20
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+known-first-party = ["mcmc_robust"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcmc_robust"]
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+python_classes = ["Test*"]
+addopts = "-v --strict-markers"
+markers = [
+    "unit: Unit tests for core architecture, diagnostic trackers, and targets",
+    "fast: Fast tests executing under 1 second",
+    "statistical: KS test and moment validation tests",
+    "guardrails: Verification gates for formal acceptance criteria",
+    "bench: Full benchmark execution runs across the 5 target regimes",
+]
