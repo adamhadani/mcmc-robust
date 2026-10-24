@@ -345,7 +345,7 @@ cd formal && lake build
 To ensure scientific integrity, every baseline algorithm is cross-validated against canonical third-party libraries:
 - **HMC Velocity Verlet Identity:** Leapfrog integrator in `mcmc-robust` matches `blackjax.mcmc.integrators.velocity_verlet` to exact machine precision (`diff_x = 0.0, diff_p = 0.0`).
 - **MALA Proposal Identity:** Proposal distribution matching `blackjax.mcmc.mala.init` and `step` to machine precision ($< 10^{-14}$).
-- **Barker Softplus Proposal Identity:** Log-proposal ratio identity verified against exact softplus formulation ($\log \alpha_B = \sum \text{softplus}(-\Delta) - \text{softplus}(\Delta)$).
+- **Barker Softplus Proposal Identity:** Log-proposal ratio identity verified against exact softplus formulation ($`\log \alpha_B = \sum \text{softplus}(-\Delta) - \text{softplus}(\Delta)`$).
 - **Roberts & Rosenthal (2001) Optimal Scaling:** Empirical acceptance rates verify optimal theoretical scaling on $d=20$ Gaussians:
   - RWM at $h = (2.38)^2 / (2d)$: empirical acceptance $= 0.2376$ (theory: $0.234$).
   - MALA at $h = 0.5 \cdot (1.65)^2 d^{-1/3}$: empirical acceptance $= 0.5704$ (theory: $0.574$).
