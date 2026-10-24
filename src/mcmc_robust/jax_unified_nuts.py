@@ -65,6 +65,7 @@ not a line-by-line port:
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -80,6 +81,7 @@ from scipy import optimize, stats
 from xarray import DataTree
 
 from mcmc_robust.core.target import TargetDistribution
+from mcmc_robust.diagnostics.tail_alignment import TailAlignmentReport, TailAlignmentWarning, tail_alignment_diagnostic
 from mcmc_robust.integrations import (
     JaxAffineTransform,
     JaxArcsinhTransform,
@@ -142,6 +144,8 @@ class JaxUnifiedNUTSResult:
         phase2_grad_evals: Exact gradient evaluations during Phase 2/3 metric & step-size warmup.
         sampling_grad_evals: Exact gradient evaluations during post-warmup production sampling.
         idata: ArviZ `DataTree` object constructed via `arviz_from_samples(samples)`.
+        tail_alignment: `TailAlignmentReport` of `diagnostics/tail_alignment.py` on `samples`, or
+            `None` when the check was switched off (`check_tail_alignment=False`).
     """
 
     samples: np.ndarray
@@ -156,6 +160,7 @@ class JaxUnifiedNUTSResult:
     phase2_grad_evals: int
     sampling_grad_evals: int
     idata: DataTree
+    tail_alignment: TailAlignmentReport | None = None
 
 
 def _phase1_location_and_radii(
@@ -511,6 +516,7 @@ def sample_blackjax_unified_nuts(
     step_size: float = 0.1,
     transform_kind: TransformKind = "arcsinh",
     tukey_h_level: float = TUKEY_H_TEST_LEVEL,
+    check_tail_alignment: bool = True,
 ) -> JaxUnifiedNUTSResult:
     r"""Runs 3-phase adaptive NUTS on the arcsinh-warped target with `JaxArcsinhTransform` and BlackJAX.
 
@@ -560,11 +566,16 @@ def sample_blackjax_unified_nuts(
             (Tukey h-map with a tested per-coordinate $h \ge 0$); see the module docstring, item 5.
         tukey_h_level: Level of the per-coordinate test of $h = 0$ for `transform_kind="tukey_h"`
             (default: `TUKEY_H_TEST_LEVEL`); see `calibrate_jax_tukey_h_transform`.
+        check_tail_alignment: Whether to run `tail_alignment_diagnostic` on the primal post-warm-up
+            draws (default: `True`). The report is stored as `result.tail_alignment`, and a
+            `TailAlignmentWarning` is emitted when heavy tails appear to be shared across coordinates:
+            a risk that tails are never visited without R-hat noticing (REPORT.md §5.1), not a
+            proven miss. Pass `False` to skip the check.
 
     Returns:
         `JaxUnifiedNUTSResult` containing primal `samples`, `z_samples`, calibrated `transform`,
         per-chain `step_size` and `inverse_mass_matrix`, exact per-phase and total `grad_evals`,
-        `divergences`, `acceptance_rate`, and ArviZ `idata`.
+        `divergences`, `acceptance_rate`, ArviZ `idata` and the `tail_alignment` report.
     """
     if draws < 1:
         raise ValueError(f"draws must be >= 1, got {draws}")
@@ -773,6 +784,10 @@ def sample_blackjax_unified_nuts(
     }
     idata = arviz_from_samples(samples_np, sample_stats=sample_stats_dict)
 
+    tail_alignment = tail_alignment_diagnostic(samples_np) if check_tail_alignment else None
+    if tail_alignment is not None and tail_alignment.warn:
+        warnings.warn(tail_alignment.message, TailAlignmentWarning, stacklevel=2)
+
     return JaxUnifiedNUTSResult(
         samples=samples_np,
         z_samples=z_samples_np,
@@ -786,4 +801,5 @@ def sample_blackjax_unified_nuts(
         phase2_grad_evals=phase2_grad_evals,
         sampling_grad_evals=sampling_grad_evals,
         idata=idata,
+        tail_alignment=tail_alignment,
     )

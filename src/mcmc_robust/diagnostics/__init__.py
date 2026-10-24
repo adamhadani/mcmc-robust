@@ -13,6 +13,11 @@ from mcmc_robust.diagnostics.metrics import (
     compute_quantile_relative_error,
     compute_wasserstein1,
 )
+from mcmc_robust.diagnostics.tail_alignment import (
+    TailAlignmentReport,
+    TailAlignmentWarning,
+    tail_alignment_diagnostic,
+)
 from mcmc_robust.diagnostics.tracker import (
     BudgetExceededError,
     BudgetExhaustedError,
@@ -34,4 +39,8 @@ __all__ = [
     "compute_ks_test",
     "compute_wasserstein1",
     "compute_quantile_relative_error",
+    # Heavy tails shared across coordinates
+    "tail_alignment_diagnostic",
+    "TailAlignmentReport",
+    "TailAlignmentWarning",
 ]

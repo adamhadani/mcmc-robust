@@ -15,6 +15,7 @@ from xarray import DataTree
 from mcmc_robust.core.state import ChainState, StepResult
 from mcmc_robust.diagnostics.convergence import compute_split_rhat
 from mcmc_robust.diagnostics.ess import compute_bulk_ess
+from mcmc_robust.diagnostics.tail_alignment import TailAlignmentWarning
 from mcmc_robust.integrations import JaxArcsinhTransform
 from mcmc_robust.jax_unified_nuts import (
     JaxUnifiedNUTSResult,
@@ -176,14 +177,17 @@ def test_sample_blackjax_unified_nuts_multivariate_cauchy() -> None:
     def multivariate_cauchy_logdensity(x: jnp.ndarray) -> jnp.ndarray:
         return -0.5 * (nu + d) * jnp.log1p(jnp.sum(x**2) / nu)
 
-    res = sample_blackjax_unified_nuts(
-        logdensity_fn=multivariate_cauchy_logdensity,
-        d=d,
-        draws=500,
-        tune=300,
-        chains=4,
-        seed=101,
-    )
+    # An isotropic multivariate Cauchy shares its heavy tail across all coordinates: the tail-alignment
+    # check must flag it (max co-exceedance 0.53 to 0.71 on seeds 0-4 and 101; threshold 0.3).
+    with pytest.warns(TailAlignmentWarning):
+        res = sample_blackjax_unified_nuts(
+            logdensity_fn=multivariate_cauchy_logdensity,
+            d=d,
+            draws=500,
+            tune=300,
+            chains=4,
+            seed=101,
+        )
 
     assert res.samples.shape == (4, 500, d)
     assert np.all(np.isfinite(res.samples))
@@ -224,14 +228,17 @@ def test_sample_blackjax_unified_nuts_centered_neals_funnel() -> None:
         lp_quad = -0.5 * jnp.exp(-jnp.clip(v, -50.0, 50.0)) * jnp.sum(rest**2)
         return lp_v + lp_det + lp_quad
 
-    res = sample_blackjax_unified_nuts(
-        logdensity_fn=neals_funnel_logdensity,
-        d=d,
-        draws=500,
-        tune=300,
-        chains=4,
-        seed=202,
-    )
+    # The scale exp(v / 2) is shared by x[1:], so their heavy tails co-occur: the tail-alignment check
+    # must flag it (max co-exceedance 0.52 to 0.68 on seeds 0-4 and 202; threshold 0.3).
+    with pytest.warns(TailAlignmentWarning):
+        res = sample_blackjax_unified_nuts(
+            logdensity_fn=neals_funnel_logdensity,
+            d=d,
+            draws=500,
+            tune=300,
+            chains=4,
+            seed=202,
+        )
 
     assert res.samples.shape == (4, 500, d)
     assert np.all(np.isfinite(res.samples))
@@ -584,7 +591,10 @@ def test_sample_blackjax_unified_nuts_student_t_radial_quantiles_d20() -> None:
     def mvt_logdensity(x: jnp.ndarray) -> jnp.ndarray:
         return -0.5 * (nu + d) * jnp.log1p(jnp.sum(x**2) / nu)
 
-    res = sample_blackjax_unified_nuts(mvt_logdensity, d=d, draws=500, tune=400, chains=4, seed=1)
+    # Elliptical heavy tails are shared across coordinates, so the tail-alignment check flags them
+    # (max co-exceedance 0.35 to 0.41 on seeds 0-4; 0.33 or more for exact draws of this size; threshold 0.3).
+    with pytest.warns(TailAlignmentWarning):
+        res = sample_blackjax_unified_nuts(mvt_logdensity, d=d, draws=500, tune=400, chains=4, seed=1)
     radius = np.linalg.norm(res.samples.reshape(-1, d), axis=1)
 
     # For an identity-scale multivariate t, ||x||^2 / d ~ F(d, nu). Across seeds the sampled
