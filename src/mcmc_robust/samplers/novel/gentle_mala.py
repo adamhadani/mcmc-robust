@@ -13,8 +13,10 @@ from mcmc_robust.core.target import TargetDistribution
 class GentleMALA(Sampler):
     r"""Gentle Metropolis-Adjusted Langevin Algorithm (Feature F15).
 
-    Resolves target roughness (§3.3 of Power & Vasdekis 2025 arXiv:2511.21563v1)
-    via local stiffness adaptation:
+    Experimental. Damps the Langevin drift on stiff (super-linear) targets, motivated by §3.3 of
+    Power & Vasdekis 2025 (arXiv:2511.21563); REPORT.md §3.1 states what is and is not established
+    (the drift stays bounded, and the coordinate mode has no non-overshoot guarantee). Local
+    stiffness adaptation:
         \kappa_h(x) = \gamma h \|s \odot \nabla \log \pi(x)\|_2   (global mode)
         \kappa_{h, i}(x) = \gamma h s_i |\nabla_i \log \pi(x)|     (coordinate mode)
 

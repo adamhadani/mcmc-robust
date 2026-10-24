@@ -1,474 +1,544 @@
-# Resolving the Dual Pathologies of Roughness and Flatness in Gradient-Based MCMC: Algorithmic Foundations, Formal Verification, and Empirical Evaluation
+# Calibrated Coordinate-Wise Arcsinh Transforms for NUTS on Heavy-Tailed Targets
 
-**Authors:** MCMC Robustness Research Team
-**Institution:** Advanced Markov Chain Monte Carlo Research & Formal Verification Laboratory
-**Date:** October 2026
-**Artifact Repository:** `https://github.com/adamhadani/mcmc-robust`
-**Target Architecture:** Python >= 3.13 (Python 3.13, 3.14, 3.15), Lean 4 (`formal/McmcRobustFormal.lean`)
-**Status:** Publication-Grade Comprehensive Report (Milestone P2_M3 Complete)
-
----
+This is the technical record for the code in this repository. Every result number in it is rendered from `reports/*.json` by `python -m mcmc_robust.bench.render_docs`. The prose outside the rendered blocks states no results; `tests/unit/test_docs_consistency.py` enforces both rules.
 
 ## Abstract
 
-Gradient-based Markov Chain Monte Carlo (MCMC) algorithms—predominantly the Metropolis-Adjusted Langevin Algorithm (MALA), Hamiltonian Monte Carlo (HMC), and the No-U-Turn Sampler (NUTS)—underpin modern Bayesian computation and computational physics. However, these methods exhibit catastrophic failures when confronted with two complementary geometric pathologies highlighted in recent open problems by Power & Vasdekis (2025): **target roughness** (locally stiff, super-linear potential gradients inducing numerical explosions and proposal freezing) and **target flatness** (heavy, sub-exponential polynomial tails causing gradient vanishing and random-walk stagnation). Existing countermeasures suffer from an acute *roughness–flatness trade-off*: global drift taming cures roughness but destroys super-exponential tail return (turning burn-in into an agonizing $\Omega(R_0)$ crawl), while coupled spatial transformations (such as Stereographic or Radial compression) cure heavy tails at the cost of inducing extreme artificial gradient roughness in orthogonal directions.
+**The problem.** Gradient-based samplers mix slowly on targets with polynomial tails. The gradient vanishes far from the mode, so NUTS trajectories in the tails become long and expensive, and tail quantiles are estimated poorly.
 
-In this work, we resolve both open problems simultaneously through three synergistic algorithmic contributions:
-1. **Soft-Capped Gentle MALA (`GentleMALA`):** A localized roughness adaptation framework based on a dimensionless local stiffness metric $\kappa_h(x) = \gamma h \Vert s \odot \nabla \log \pi(x)\Vert$ and soft-capped algebraic attenuation $\rho(\kappa) = (1 + \kappa + (\kappa/\kappa_{\max})^2)^{-1/2}$, preserving super-linear $r^{p/2}$ Lyapunov return drift inside the local basin while guaranteeing unconditional non-overshoot contraction across arbitrary step sizes and tail initializations;
-2. **Shift-Equivariant Coordinate-Wise Diffeomorphic Tail Negation (`CoordinateWiseArcsinhTransform` & `AnisotropicTailMALA`):** An anisotropic, coordinate-decoupled $C^\infty$ diffeomorphism $z_i = \mathop{\mathrm{arsinh}}((x_i - \mu_i)/R_i)$ with online streaming median, normal-consistent signed IQR scale calibration, and Hill index tail detection that converts polynomial heavy tails into constant restoring drift with exact $O(d)$ diagonal Jacobian computation;
-3. **The Unified Dual-Pathology Samplers (`UnifiedRobustSampler`, `UnifiedRobustHMC`, & `UnifiedRobustNUTS`):** Production-grade Langevin and symplectic No-U-Turn samplers integrating shift-equivariant coordinate-wise tail transformations, localized gentle damping, and a three-phase adaptive warmup schedule.
+**The remedy studied here.**
+- A coordinate-wise map $z_i = \mathop{\mathrm{arsinh}}((x_i - \mu_i)/R_i)$.
+- Its location and scale are calibrated from early warm-up draws.
+- Standard NUTS adaptation and sampling follow, on the exact pullback density.
 
-We pair our library with **37 formal mathematical theorems** verified sorry-free in the **Lean 4** theorem prover (`formal/McmcRobustFormal.lean`), establishing shift-equivariant diffeomorphism invertibility, translation invariance, metric scale positivity, 3-phase scale calibration bounds, the exact discrete non-overshoot basin bound for pure square-root damping, global non-overshoot contraction for soft-capped gentle damping, Metropolis–Hastings detailed balance, and elementary Student-*t* score bounds. Across our automated multi-chain benchmark suites (`reports/benchmark_results.json`, `reports/sweep_results.json`, and `reports/sota_comparison_results.json`), our framework demonstrates:
-- **AC1 (Coverage & Correctness):** 100% test pass rate across 846 automated unit, boundary, interaction, and adversarial stress tests with zero warnings (`pytest -W error`) and machine-precision transform invertibility ($< 10^{-14}$);
-- **AC2 (Benign Parity):** On 50-dimensional Gaussian targets, `UnifiedRobustSampler` achieves **103.5% overall ESS/gradient parity** ($`113.1\%`$ in isotropic bulk, $`87.1\%`$ in isotropic extreme tails, $`91.4\%`$ in anisotropic bulk, and $`130.1\%`$ in anisotropic tails) relative to tuned MALA, establishing zero penalty on well-behaved distributions;
-- **AC3 (Roughness Stability & Burn-in):** On quartic potentials ($U(x) = \frac{1}{4}\Vert x\Vert^4$), `GentleMALA` and `UnifiedRobustSampler` achieve a **$121.2\times$ to $825.4\times$ wider stable step-size window** than standard MALA and **$2.85\times$ to $6.50\times$ faster median burn-in** than globally tamed MALA across step-size grids (reaching the bulk in **5 steps vs. 17** at $h=0.15$);
-- **AC4 (Heavy-Tail & SOTA NUTS Efficiency):** On $d=10$ heavy-tailed Cauchy regression, `UnifiedRobustNUTS` achieves **$23.5\times$ higher Tail-ESS/grad** than BlackJAX NUTS and **$4.27\times$ higher** than PyMC NUTS while cutting 99th-percentile tail error from $`41.6\%`$ to **$`8.1\%`$**; on $d=20$ heterogeneous mixed tails, `UnifiedRobustNUTS` delivers **$2.34\times$ higher Tail-ESS/grad** using $`46\%`$ fewer gradient evaluations than BlackJAX NUTS, while `AnisotropicTailMALA` achieves **$4.62\times$ higher Tail-ESS/grad**.
+**Results.**
+- On two synthetic targets whose heavy tails are aligned with the coordinate axes, the transform raises tail-ESS per gradient over stock BlackJAX and PyMC NUTS and lowers the error of the estimated 0.99 quantile (§5, Tables 1 and 3).
+- It does not resolve funnel geometry (Table 2).
+- The repository's other components remain experimental (§3): a damped Langevin drift for stiff targets, and first-order samplers that use the transform.
 
----
+All results are single-seed; §6 lists what they do and do not establish.
 
-## 1. Executive Summary
+## 1. Problem and positioning
 
-Markov Chain Monte Carlo algorithms based on continuous Langevin and Hamiltonian diffusions have revolutionized scientific inference. Given a target probability density $\pi(x) \propto \exp(-U(x))$ on $\mathbb{R}^d$ with potential $U(x) = -\log \pi(x)$, the overdamped Langevin diffusion is governed by the Stochastic Differential Equation (SDE):
+### 1.1 Heavy tails and gradient-based MCMC
 
-```math
-dX_t = -\nabla U(X_t) \, dt + \sqrt{2} \, dW_t,
-```
+**Why the gradient vanishes.** If a coordinate has a polynomial tail, $`\pi(x_i) \propto \lvert x_i\rvert^{-\alpha_i}`$, its score $`\partial_{x_i} \log \pi \approx -\alpha_i / x_i`$ vanishes far out.
 
-where $W_t$ is a standard $d$-dimensional Brownian motion. Discretizing this SDE via the Euler–Maruyama scheme with step size $h > 0$ yields the MALA proposal:
+**What this does to each sampler.**
+- MALA and the Barker proposal degenerate into random walks there.
+- HMC and NUTS trajectories travel far before turning.
+- NUTS trees then hit their depth cap.
+- The tails are explored slowly: tail-ESS is low and extreme quantiles are noisy.
 
-```math
-Y = X_n - h \nabla U(X_n) + \sqrt{2h} \, \xi, \quad \xi \sim \mathcal{N}(0, I_d),
-```
+### 1.2 Related work
 
-corrected by a Metropolis–Hastings accept-reject step to ensure exact stationarity with respect to $\pi$.
+**Variable transformations for heavy tails.**
+- **Johnson & Geyer (2012), Thm 3:** a radial map of exponential type turns multivariate-*t* tails into light tails for random-walk Metropolis. They note that a map of exponential type is necessary for such tails.
+- **Radial maps:**
+  - stereographic MCMC (Yang, Łatuszyński & Roberts, 2024) and its adaptive version (Bell, Łatuszyński & Roberts, 2024);
+  - the transformed unadjusted Langevin algorithm (He, Balasubramanian & Erdogdu, 2024);
+  - diffeomorphic MCMC (Brešar & Mijatović, 2026), which reports beating NUTS on heavy-tailed posteriordb posteriors.
 
-Despite its asymptotic optimality in high dimensions ($O(d^{1/3})$ scaling for optimal acceptance rates around $0.574$), classical MALA and its Hamiltonian extensions break down catastrophically in non-asymptotic, pathological geometries:
+  All of these couple the coordinates through $`\Vert x\Vert`$.
+- **Power & Vasdekis (2025):**
+  - In §4.2.1 they apply the signed log $`\mathop{\mathrm{sign}}(x)\log(1 + \lvert x\rvert)`$ to a one-dimensional Cauchy target.
+  - In §4.3 they list as open problems:
+    - (iii) "reliable", possibly coordinate-wise and learnable, transformations;
+    - (iv) choosing the transformation's scale without inducing roughness.
 
-```
-                          Target Geometry Pathologies
-                                     │
-           ┌─────────────────────────┴─────────────────────────┐
-           ▼                                                   ▼
-   Target Roughness (§3.3)                             Target Flatness (§4.3)
-   - Superlinear potentials U(x) ~ ||x||^p, p > 2      - Heavy tails: pi(x) ~ ||x||^-alpha
-   - Stiff gradients ||grad U(x)|| -> inf              - Vanishing gradients ||grad U(x)|| -> 0
-   - Classical MALA: explosive overshoot               - Classical MALA: slow random walk
-   - Proposal freezing: alpha(x, y) -> 0               - Barker: bounded velocity, slow crawl
-   - Prior fix: Global taming ||b|| <= 1/gamma         - Prior fix: Stereographic / Radial diffeo
-     ==> Cripples burn-in: Omega(R_0) steps               ==> Artificial roughness in other coords
-```
+**Learned transformations.**
+- NeuTra (Hoffman et al., 2019) runs HMC through a normalizing flow.
+- Lipschitz triangular flows cannot change the tail class of their base distribution (Jaini et al., 2020). This motivates tail-adaptive flows:
+  - Laszkiewicz, Lederer & Fischer (2022);
+  - Liang, Mahoney & Hodgkinson (2022);
+  - Hickling & Prangle (2025), whose tail-transform layer acts coordinate by coordinate.
+- nutpie's experimental normalizing-flow adaptation includes per-coordinate sinh-arcsinh layers, trained during warm-up, and then runs NUTS in the transformed space.
 
-### The Central Dilemma: The Roughness–Flatness Trade-Off
-When practitioners attempt to deploy existing remedies concurrently, they collide with a fundamental dilemma:
-- **Global Taming Over-Conservatism:** Globally tamed MALA (Roberts & Tweedie, 1996; Brosse et al., 2018) clamps drift to $\Vert b(x)\Vert \le \gamma^{-1}$. While preventing numerical overflow, it converts super-exponential restoring drift into a sluggish constant crawl. From an initialization $\Vert x_0\Vert = R_0$ on $U(x) = \frac{1}{4}\Vert x\Vert^4$, reaching the bulk requires $\Omega(R_0)$ gradient evaluations.
-- **Coupled Space Confinement Roughness:** Variable transformation methods for heavy-tailed targets (Johnson & Geyer, 2012; Bell et al., 2024; Stereographic MCMC of Yang et al., 2024; Radial Diffeomorphisms of Power & Vasdekis, 2025, §4.2.1; DCS of Brešar & Mijatović, 2026) compactify or compress state space radially. Because isotropic transformations depend on the global Euclidean radius $r = \Vert x\Vert$, when a single heavy-tailed coordinate explores its tail, **all $d-1$ orthogonal coordinates are compressed simultaneously**, inducing severe artificial stiffness in well-behaved Gaussian coordinates.
+**Reparameterisation by hand.** When the tail family is known, a Cauchy coordinate can be rewritten as a scale mixture of normals or through a tangent transform (Betancourt, 2018).
 
----
+**Theory.**
+- Livingstone, Betancourt, Byrne & Girolami (2019, Cor. 2.3): HMC with a fixed integration time is geometrically ergodic for targets with tails like $`\exp(-\lvert x\rvert^\beta)`$ when $`1 \le \beta \le 2`$, and not when $`\beta < 1`$ or $`\beta > 2`$.
+- This is the main reference point for §2.2.
 
-## 2. Mathematical Background & Problem Formulation
+### 1.3 What is and is not new here
 
-### 2.1 Target Roughness (§3.3 of Power & Vasdekis 2025)
+**Not new:**
+- using an exponential-type map to lighten polynomial tails (Johnson & Geyer);
+- a signed-log-like map for a single coordinate (Power & Vasdekis);
+- coordinate-wise tail layers inside flows (Hickling & Prangle; nutpie).
 
-Consider potentials growing faster than quadratic at infinity:
+**New, as far as a literature check found:** a closed-form arcsinh map per coordinate, calibrated by median and IQR during warm-up, followed by standard NUTS adaptation on the exact pullback. This is a concrete default answer to Power & Vasdekis's §4.3(iii)–(iv).
 
-```math
-U(x) = \frac{1}{p} \|x\|^p, \quad p > 2.
-```
+**Not yet done:**
+- comparison with nutpie's flow adaptation;
+- comparison with diffeomorphic MCMC;
+- comparison with reparameterisation by hand.
 
-For the canonical quartic potential ($p=4$), $U(x) = \frac{1}{4} \Vert x\Vert^4$ and $\nabla U(x) = \Vert x\Vert^2 x$. The forward MALA proposal from state $x$ is:
+§6 lists these.
 
-```math
-y = x - h \|x\|^2 x + \sqrt{2h} \, \xi = x \left(1 - h \|x\|^2\right) + \sqrt{2h} \, \xi.
-```
+## 2. Method
 
-Whenever $\Vert x\Vert > \sqrt{2/h}$, $|1 - h \Vert x\Vert^2| > 1$, so the deterministic drift overshoots the origin into the opposite tail with $\Vert y\Vert \propto h \Vert x\Vert^3$ and $U(y) \propto h^4 \Vert x\Vert^{12} \gg U(x)$. The Metropolis–Hastings acceptance probability $\alpha(x, y) \approx \exp(-U(y)) \to 0$, freezing the chain at $x_0$.
+### 2.1 Transform and pullback
 
-Under the continuous Langevin ODE $\dot{r} = -r^3$, the trajectory contracts from $r_0$ to $r_1$ in uniformly bounded time:
-
-```math
-t = \int_{r_1}^{r_0} \frac{dr}{r^3} = \frac{1}{2} \left(\frac{1}{r_1^2} - \frac{1}{r_0^2}\right) < \frac{1}{2 r_1^2} = O(1).
-```
-
-Under globally tamed drift $b_{\text{tamed}}(x) = \nabla \log \pi(x) / (1 + \gamma \Vert\nabla \log \pi(x)\Vert)$, however, $\Vert b_{\text{tamed}}(x)\Vert \to \gamma^{-1}$, resulting in a linear return time $\Omega(r_0)$.
-
-### 2.2 Target Flatness (§4.3 of Power & Vasdekis 2025)
-
-For a multivariate Student-*t* or Pareto-type density $\pi(x) \propto (1 + \Vert x\Vert^2/\nu)^{-(\nu+d)/2}$, the score function vanishes in the tails:
+For each coordinate $i$ with location $\mu_i$, scale $R_i > 0$ and mask $`m_i \in \{0, 1\}`$ (coordinates with $m_i = 0$ are left unchanged):
 
 ```math
-\|\nabla \log \pi(x)\| \sim \frac{\nu + d}{\|x\|} \to 0 \quad \text{as } \|x\| \to \infty.
+z_i = \mathop{\mathrm{arsinh}}\left(\frac{x_i - \mu_i}{R_i}\right), \qquad x_i = \mu_i + R_i \sinh(z_i).
 ```
 
-Consequently, both classical MALA and the Barker proposal (Livingstone & Zanella, 2022) degenerate into unguided random walks in the far tails, losing geometric ergodicity.
-
-### 2.3 The Orthogonal Compression Pathology of Isotropic Transformations
-
-Consider a heterogeneous target distribution in $d=20$ dimensions where coordinate $x_1$ has heavy Student-*t*/Cauchy tails while coordinates $x_2, \dots, x_{20}$ are standard Gaussian. Under an isotropic radial map $y = \psi(x) = \frac{\phi(r)}{r} x$ with $\phi(r) \sim k^{-1}\log r$, an excursion $x_1 = 50$ ($r \approx 50$) compresses the orthogonal Gaussian coordinates $x_j$ ($j \ge 2$) by a factor of $r / \phi(r) \approx 50 k$, multiplying their pullback gradients by $50 k$ and causing immediate step-size instability.
-
----
-
-## 3. Novel Algorithmic Framework
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                   UnifiedRobustSampler & UnifiedRobustNUTS                  │
-│                                                                             │
-│   Phase 1: Online Streaming Location (mu_i) & Signed IQR Scale (R_i)        │
-│   Phase 2: Diagonal Preconditioning in Transformed Space (Streaming Welford)│
-│   Phase 3: Dual-Averaging Step-Size Convergence + finalize_adaptation()     │
-│                                                                             │
-│         ┌─────────────────────────────────────────────────────────┐         │
-│         │        CoordinateWiseArcsinhTransform (Resolves §4.3)    │         │
-│         │   z_i = asinh((x_i - mu_i) / R_i) <=> x_i = mu_i + R_i sinh(z_i)│
-│         │   Decoupled coordinates, O(d) diagonal Jacobian log-det │         │
-│         │   Polynomial tail -> Constant restoring drift -(a_i - 1)│         │
-│         └────────────────────────────┬────────────────────────────┘         │
-│                                      ▼                                      │
-│         ┌─────────────────────────────────────────────────────────┐         │
-│         │        Soft-Capped GentleMALA Mechanism (Resolves §3.3) │         │
-│         │   kappa_h(z) = gamma * h * ||s * grad_z log pi_Z(z)||   │         │
-│         │   rho(kappa) = (1 + kappa + (kappa / kappa_max)^2)^-1/2 │         │
-│         │   b_h(z) = rho(kappa_h(z)) * grad_z log pi_Z(z)         │         │
-│         │   Superlinear pull in basin + global non-overshoot cap  │         │
-│         └─────────────────────────────────────────────────────────┘         │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.1 Soft-Capped Gentle MALA (`GentleMALA`)
-
-1. **Local Dimensionless Stiffness Metric:**
-   Given step size $h > 0$, diagonal preconditioning scale vector $s \in \mathbb{R}^d_{>0}$, and stiffness sensitivity $\gamma > 0$:
-
-   $`\displaystyle \kappa_h(x) = \gamma h \Vert s \odot \nabla \log \pi(x)\Vert_2 \quad \text{(global mode)}, \qquad \kappa_{h, i}(x) = \gamma h s_i |\nabla_i \log \pi(x)| \quad \text{(coordinate mode)}.`$
-
-2. **Soft-Capped Gentle Attenuation Factor:**
-   Given asymptotic drift cap $\kappa_{\max} > 0$ (default $\kappa_{\max} = 25.0$ in primal space; $\kappa_{\max} = \infty$ recovers pure square-root damping):
-
-   $`\displaystyle \rho(\kappa) = \frac{1}{\sqrt{1 + \kappa + (\kappa / \kappa_{\max})^2}}.`$
-
-   - **Smooth bulk ($\kappa \ll 1$):** $\rho(\kappa) = 1 - \frac{1}{2}\kappa + O(\kappa^2) \approx 1$, recovering classical MALA with zero bulk tax.
-   - **Intermediate stiff basin ($1 \ll \kappa \ll \kappa_{\max}$):** $\rho(\kappa) \approx \kappa^{-1/2}$, preserving super-linear drift $\Vert b_h(x)\Vert \propto \Vert\nabla U(x)\Vert^{1/2}$ ($r^{3/2}$ on quartic targets).
-   - **Extreme asymptotic tail ($\kappa \gg \kappa_{\max}$):** $\rho(\kappa) \sim \kappa_{\max} / \kappa$, bounding the Euclidean deterministic step length by $|\Delta x_i| < s_i \kappa_{\max} / \gamma$ and eliminating discrete origin overshoot for all $R_0$ and $h$.
-
-3. **Proposal & Exact $O(d)$ Metropolis–Hastings Correction:**
-
-   $`\displaystyle y = x + h (s^2 \odot b_h(x)) + \sqrt{2h} (s \odot \xi), \quad \xi \sim \mathcal{N}(0, I_d), \quad b_h(x) = \rho(\kappa_h(x)) \nabla \log \pi(x).`$
-
-   The forward-reverse log-proposal density ratio is computed exactly in $O(d)$ operations, consuming strictly **1 gradient evaluation per step**.
-
----
-
-### 3.2 Shift-Equivariant Coordinate-Wise Arcsinh Diffeomorphism (`CoordinateWiseArcsinhTransform`)
-
-1. **Forward and Inverse Coordinate Maps:**
-   For each coordinate $`i \in \{1, \dots, d\}`$, given location center $\mu_i \in \mathbb{R}$, characteristic scale $R_i > 0$, and active mask $`m_i \in \{0, 1\}`$:
-
-   $`\displaystyle z_i = \phi_{\mu, R, i}(x_i) = \begin{cases} \mathop{\mathrm{arsinh}}\left(\frac{x_i - \mu_i}{R_i}\right) & \text{if } m_i = 1, \\ x_i & \text{if } m_i = 0, \end{cases} \qquad x_i = \psi_{\mu, R, i}(z_i) = \begin{cases} \mu_i + R_i \sinh(z_i) & \text{if } m_i = 1, \\ z_i & \text{if } m_i = 0. \end{cases}`$
-
-2. **Diagonal Jacobian & Numerically Stabilized Pullback:**
-
-   $`\displaystyle \log |\det J_\psi(z)| = \sum_{i: m_i = 1} \left[ \log R_i + \log \cosh(z_i) \right], \qquad \log \cosh(z_i) = |z_i| - \log 2 + \mathop{\mathrm{log1p}}(e^{-2|z_i|}).`$
-
-   Using `scale = np.hypot(R_i, x_i - mu_i)` to prevent intermediate squaring overflow for $|x_i| > 1.34 \times 10^{154}$:
-
-   $`\displaystyle \nabla_{z_i} \log \pi_Z(z) = \sqrt{R_i^2 + (x_i - \mu_i)^2} \, [\nabla_x \log \pi_X(x)]_i + \frac{x_i - \mu_i}{\sqrt{R_i^2 + (x_i - \mu_i)^2}}.`$
-
-   For a polynomial tail $\pi(x_i) \propto |x_i - \mu_i|^{-\alpha_i}$, $\nabla_{z_i} \log \pi_Z(z) \to -(\alpha_i - 1)\mathop{\mathrm{sgn}}(z_i)$, converting sub-exponential polynomial tails into Laplace-like exponential tails with constant inward restoring drift.
-
-3. **Translation-Equivariant & Normal-Consistent Calibration:**
-   Given exploratory Phase 1 draws, location and scale are calibrated via:
-
-   $`\displaystyle \hat{\mu}_i = \mathop{\mathrm{median}}(x_i), \qquad \hat{R}_i = \frac{q_{75}(x_i - \hat{\mu}_i) - q_{25}(x_i - \hat{\mu}_i)}{2 \Phi^{-1}(0.75)} = \frac{\mathop{\mathrm{IQR}}(x_i)}{1.3489795},`$
-
-   with MAD fallback $`\mathop{\mathrm{median}}(|x_i - \hat{\mu}_i|) / 0.67448975`$. For $X_i \sim \mathcal{N}(\mu_i, \sigma_i^2)$, $`\hat{\mu}_i \to \mu_i`$ and $`\hat{R}_i \to \sigma_i`$ consistently regardless of location shift $\mu_i$.
-
----
-
-### 3.3 Three-Phase Warmup & Step-Size Freezing (`finalize_adaptation`)
-
-All samplers inherit `Sampler.sample()`, which invokes `sampler.adapt(t, result)` during $0 \le t < W$ and explicitly calls `sampler.finalize_adaptation()` at $t = W - 1$ to freeze the Polyak–Ruppert smoothed step size $`\bar{h}_W`$ before post-warmup sampling begins. In `UnifiedRobustSampler`, `UnifiedRobustHMC`, and `UnifiedRobustNUTS`:
-1. **Phase 1 ($0 \le t < 0.15 W$):** Collects primal states `result.state.x`, calibrates $`(\hat{\mu}_i, \hat{R}_i)`$ at $t = W_1 - 1$, freezes the transform, and resets the dual-averaging counter (`self.adaptation.reset()`) while preserving the initial shrinkage anchor $\mu = \log(10 h_0)$.
-2. **Phase 2 ($0.15 W \le t < 0.80 W$):** Updates the diagonal Welford metric $S_Z$ in transformed space, freezes $S_Z$ at $t = W_2 - 1$, and resets the dual-averaging counter (`self.adaptation.reset()`).
-3. **Phase 3 ($0.80 W \le t < W$):** Converges step size $h$ against the frozen transform and metric, then freezes $`h \leftarrow \bar{h}_W`$ at $t = W - 1$.
-
----
-
-## 4. Formal Verification in Lean 4 & Analytical Theorems
-
-### 4.1 Lean 4 Formal Specification (`formal/McmcRobustFormal.lean`)
-
-The formalization in `formal/McmcRobustFormal.lean` contains **37 machine-checked theorems** compiling under Lean 4 (`cd formal && lake build`) with **zero errors, zero warnings, and zero `sorry` axioms** (`#print axioms` depends solely on `[propext, Classical.choice, Quot.sound]`):
-
-| Category | Lean 4 Theorem Names | Formal Mathematical Guarantee |
-| :--- | :--- | :--- |
-| **1. Unscaled & Scaled Bijection** | `arcsinh_inv_right`, `arcsinh_inv_left`, `scaled_invertibility_roundtrip_forward`, `scaled_invertibility_roundtrip_inverse`, `inverseMap_jacobian_factor_pos` | Global bijection $\psi_R(\phi_R(x)) = x$, $\phi_R(\psi_R(z)) = z$, and Jacobian positivity $R \cosh(z) > 0$. |
-| **2. Shift-Equivariant Bijection** | `shifted_invertibility_roundtrip_forward`, `shifted_invertibility_roundtrip_inverse`, `shiftedForwardMap_translation_invariant`, `shiftedInverseMap_jacobian_pos` | Exact round-trip $\psi_{\mu,R}(\phi_{\mu,R}(x)) = x$ and translation invariance $\phi_{\mu+c,R}(x+c) = \phi_{\mu,R}(x)$. |
-| **3. Derivatives & Metric Bounds** | `arsinh_deriv_eq`, `metric_scale_pos`, `metric_scale_le_one`, `hasDerivAt_forwardMap`, `forwardMap_deriv_eq`, `forwardMap_metric_pos`, `hasDerivAt_shiftedForwardMap`, `shiftedForwardMap_deriv_eq` | Exact Fréchet derivatives $`\phi'_{\mu,R}(x) = (R\sqrt{1+((x-\mu)/R)^2})^{-1} > 0`$ and metric contraction $\in (0, 1]$. |
-| **4. Pure Square-Root Damping & Basin** | `rho_pos`, `rho_le_one`, `rho_strictAntiOn`, `pureSqrtStepSq_lt_div_gamma`, `pureSqrt_quartic_discrete_basin_bound` | Monotonicity of $\rho(\kappa) = (1+\kappa)^{-1/2}$ and exact discrete non-overshoot basin $h r^2 < 4\gamma \implies \Delta(r) < 2r$. |
-| **5. Soft-Capped Global Contraction** | `softCap_dimensionless_drift_sq_lt`, `softCap_dimensionless_drift_lt`, `softCappedDriftStep_lt_bound`, `softCapped_global_contraction_no_overshoot` | Global step cap $\Delta_{\text{cap}}(r) < s \kappa_{\max}/\gamma$ and strict inward contraction $0 < r - \Delta_{\text{cap}}(r) < r$ for all $r \ge s \kappa_{\max}/\gamma$. |
-| **6. Metropolis–Hastings Reversibility** | `mhAccept_bounds`, `mh_detailed_balance` | Acceptance bounds $0 \le \alpha(x,y) \le 1$ and exact detailed balance $\pi(x)q(x,y)\alpha(x,y) = \pi(y)q(y,x)\alpha(y,x)$. |
-| **7. Student-*t* Score & Shrinkage Penalty (§7)** | `studentTNegLogKernel_nonneg`, `hasDerivAt_studentTNegLogKernel`, `studentTScore_mul_le`, `studentTScore_zero`, `cauchyShrinkagePenalty_nonneg` | Non-negativity of the Student-*t* negative log-kernel and the Cauchy shrinkage penalty, the score $\frac{d}{dr}\frac{\nu+1}{2}\log(1+r^2/\nu) = \frac{(\nu+1)r}{\nu+r^2}$ with $s_\nu(0) = 0$, and the bound $`\lvert r\, s_\nu(r)\rvert \le \nu + 1`$. |
-| **8. Pure-JAX 3-Phase Scale & Location Calibration (§8)** | `calibratedRadius_ge_min`, `calibratedRadius_pos`, `calibratedRadius_le_max`, `calibratedRadius_mono`, `calibrated_shifted_roundtrip_forward`, `calibrated_shifted_roundtrip_inverse` | Strict interval bounds $0 < R_{\min} \le R_{\text{cal}}(\sigma, R_{\min}, R_{\max}, c) \le R_{\max}$, monotonicity in $\sigma$, and exact round-trip invertibility for all $\mu, \sigma \in \mathbb{R}$. |
-
----
-
-### 4.2 Analytical Stationarity, Basin of Attraction, and Global Contraction Proofs
-
-#### Theorem 4.1 (Exact Detailed Balance & $\pi$-Invariance):
-Let $\pi_X$ be a positive differentiable density on $\mathbb{R}^d$. Post-warmup (when $\mu, R, S, h$ are frozen via `finalize_adaptation()`), the transition kernels of `GentleMALA`, `AnisotropicTailMALA`, `UnifiedRobustSampler`, `UnifiedRobustHMC`, and `UnifiedRobustNUTS` satisfy exact detailed balance / reversibility with respect to $\pi_X$.
-*Proof:* Machine-checked for the Metropolis–Hastings kernel in Lean 4 theorem `mh_detailed_balance` (`formal/McmcRobustFormal.lean`), and preserved under the smooth bijection $x = \psi_{\mu,R}(z)$ by the change-of-variables formula $\pi_Z(z) = \pi_X(\psi_{\mu,R}(z)) |\det J_\psi(z)|$. $\blacksquare$
-
-#### Proposition 4.2 (Discrete Basin of Attraction & $O(1)$ Continuous Return for Pure Square-Root Damping):
-Consider the quartic potential $U(x) = \frac{1}{4}\Vert x\Vert^4$ ($\nabla U(x) = \Vert x\Vert^2 x$) under pure square-root damping $\rho(\kappa) = (1 + \kappa)^{-1/2}$ ($\kappa_{\max} = \infty$) with step size $h > 0$, unit metric $s = I_d$, and stiffness parameter $\gamma > 0$.
-1. **(Exact Discrete Non-Overshoot Basin — Lean 4 `pureSqrt_quartic_discrete_basin_bound`):** Along the radial direction $`r = \Vert x\Vert_2 > 0`$, the deterministic Euler step $x_{\text{det}}(x) = x - \Delta(r)\frac{x}{r}$ with $\Delta(r) = \frac{h r^3}{\sqrt{1 + \gamma h r^3}}$ strictly contracts toward the origin ($`\Vert x_{\text{det}}(x)\Vert_2 < r`$) if and only if $\Delta(r) < 2r$, which holds for all initial radii satisfying:
-
-   $`\displaystyle h r^2 < 4\gamma \quad \Longleftrightarrow \quad r < R_{\max}(h, \gamma) := \left(\frac{4\gamma}{h}\right)^{1/2}.`$
-
-   Conversely, for $h r^3 \gg 1$, $`\Delta(r) \sim \sqrt{h/\gamma} \, r^{3/2}`$ grows faster than $2r$, so outside the basin $r \gtrsim (4\gamma/h)^{1/2}$ an un-capped discrete step overshoots the origin ($|r - \Delta(r)| > r$).
-2. **(Uniform $O(1)$ Continuous ODE Return Time Inside the Basin):** Within the basin, the continuous radial ODE $`\dot{r} = -\Delta(r) \approx -\sqrt{h/\gamma} \, r^{3/2}`$ contracts from $R_0$ to $R_{\text{bulk}}$ in pseudo-time:
-
-   $`\displaystyle T = \int_{R_{\text{bulk}}}^{R_0} \sqrt{\frac{\gamma}{h}} r^{-3/2} \, dr = 2\sqrt{\frac{\gamma}{h}} \left(\frac{1}{\sqrt{R_{\text{bulk}}}} - \frac{1}{\sqrt{R_0}}\right) < \frac{2}{\sqrt{R_{\text{bulk}}}} \sqrt{\frac{\gamma}{h}} = O(1). \quad \blacksquare`$
-
-#### Theorem 4.3 (Global Non-Overshoot Contraction for Soft-Capped GentleMALA):
-Consider Soft-Capped `GentleMALA` with attenuation factor:
+The sampler targets the exact pullback density, whose Jacobian is diagonal:
 
 ```math
-\rho(\kappa) = \frac{1}{\sqrt{1 + \kappa + (\kappa / \kappa_{\max})^2}}, \quad \kappa = \gamma u, \quad u = h s \|\nabla U(x)\|_2 \ge 0, \quad \kappa_{\max} > 0.
+\log \pi_Z(z) = \log \pi_X(x(z)) + \sum_{i:\, m_i = 1} \left[\log R_i + \log\cosh(z_i)\right],
 ```
 
-1. **(Global Step Cap — Lean 4 `softCappedDriftStep_lt_bound`):** For all $x \in \mathbb{R}^d$ and all step sizes $h > 0$, the deterministic drift step norm $`\Delta_{\text{cap}}(x) = \Vert h s^2 \rho(\kappa_h(x)) \nabla U(x)\Vert_2`$ satisfies the strict global upper bound:
+```math
+\nabla_{z_i} \log \pi_Z(z) = \sqrt{R_i^2 + (x_i - \mu_i)^2}\; \partial_{x_i} \log \pi_X(x) + \frac{x_i - \mu_i}{\sqrt{R_i^2 + (x_i - \mu_i)^2}}.
+```
 
-   $`\displaystyle 0 \le \Delta_{\text{cap}}(x) = \frac{s u}{\sqrt{1 + \gamma u + (\gamma u / \kappa_{\max})^2}} < \frac{s \kappa_{\max}}{\gamma}.`$
+**Numerics.**
+- $`\log\cosh z = \lvert z\rvert - \log 2 + \mathop{\mathrm{log1p}}(e^{-2\lvert z\rvert})`$ avoids overflow.
+- The square root is computed with `np.hypot`.
+- Each gradient of $\pi_Z$ costs one gradient of $\pi_X$ plus $O(d)$ work.
 
-2. **(Global Non-Overshoot Contraction — Lean 4 `softCapped_global_contraction_no_overshoot`):** For any state $x$ with $`r = \Vert x\Vert_2 \ge \frac{s \kappa_{\max}}{\gamma}`$ and any radially outward-pointing gradient $\nabla U(x) = g(r)\frac{x}{r}$ with $g(r) > 0$, the deterministic update $r_{\text{next}} = r - \Delta_{\text{cap}}(x)$ never overshoots the origin and strictly contracts:
+### 2.2 What the transform does to tails
 
-   $`\displaystyle 0 < r - \frac{s \kappa_{\max}}{\gamma} < r_{\text{next}} < r.`$
+**Heavy coordinates.** For a polynomial tail $`\pi(x_i) \propto \lvert x_i - \mu_i\rvert^{-\alpha_i}`$, the pullback score tends to a constant:
 
-   Consequently, Soft-Capped `GentleMALA` combines rapid $O(1)$ square-root contraction inside the basin ($\kappa \ll \kappa_{\max}$) with unconditional non-overshoot contraction from arbitrarily distant initializations $R_0 \to \infty$. $\blacksquare$
+```math
+\nabla_{z_i} \log \pi_Z(z) \to -(\alpha_i - 1)\,\mathop{\mathrm{sgn}}(z_i), \qquad \lvert z_i\rvert \to \infty.
+```
 
----
+The pullback tail is therefore Laplace-like. That is $\beta = 1$ in the class of §1.2, its lower edge.
 
-## 5. Experimental Methodology & Comprehensive Benchmark Results
+**Light coordinates.** For a Gaussian coordinate $`x_i \sim \mathcal{N}(\mu_i, \sigma_i^2)`$:
 
-### 5.1 Verification of Guardrail Criteria (AC1 – AC4)
+```math
+\log \pi_Z(z) = -\frac{R_i^2 \sinh^2(z_i)}{2\sigma_i^2} + \log\cosh(z_i) + \text{const},
+```
 
-| Guardrail Criterion | Required Threshold | Empirical Result | Status | Verification Artifact |
-|---|---|---|---|---|
-| **AC1: Automated Coverage & Correctness** | 100% pass on $\ge 500$ tests; transform invertibility $< 10^{-10}$ | **810 / 810 passed (0 warnings under `-W error`)**; invertibility $< 10^{-14}$ | **PASS** | `pytest -v -W error` |
-| **AC2: Benign Regime Parity ($d=50$ Gaussian)** | $`\ge 70.0\%`$ ESS/grad of tuned MALA | **103.5% overall** ($`113.1\%`$ iso-bulk, $`87.1\%`$ iso-tail, $`91.4\%`$ aniso-bulk, $`130.1\%`$ aniso-tail) | **PASS** | `reports/benchmark_results.json` |
-| **AC3: Roughness Stability & Fast Burn-in** | $\ge 10\times$ wider step-size range & $\ge 2.0\times$ burn-in speedup vs Tamed | **$121.2\times$ wider window** (`GentleMALA`), **$825.4\times$ wider** (`UnifiedRobust`); **$2.85\times\text{–}6.50\times$ faster median burn-in** | **PASS** | `reports/sweep_results.json` |
-| **AC4: Heavy-Tail Efficiency** | $\ge 2.0\times$ Tail-ESS/grad & lower $q_{99}$ error vs baselines | **$3.85\times$ ($d=10$) to $4.62\times$ ($d=20$) higher Tail-ESS/grad**; **$`33.6\%\text{–}71.6\%`$ lower $q_{99}$ error** | **PASS** | `reports/benchmark_results.json` & `reports/sota_comparison_results.json` |
+which falls like $`-R_i^2 e^{2\lvert z_i\rvert} / (8\sigma_i^2)`$. That is doubly exponential, outside the class ($\beta > 2$).
 
----
+**Consequences for the implementation.**
+- The NUTS samplers transform every coordinate unless a mask is passed.
+- Light coordinates therefore get stiffer tails in $z$.
+- The committed benchmarks do not yet measure the cost on light-tailed targets (§6).
 
-### 5.2 Detailed Empirical Results Grounded in `reports/benchmark_results.json` & `reports/sweep_results.json`
+### 2.3 Calibration
 
-#### Table 1: Benign Gaussian Regime ($d=50$, Isotropic & Anisotropic, Budget $B=3000$, 4 Chains)
+**Estimates.** From the Phase 1 draws $`x_{\cdot i}`$:
 
-| Target & Initialization | Sampler | Bulk ESS | Tail ESS | ESS / Grad | Tail-ESS / Grad | Split $\widehat{R}$ | Folded $\widehat{R}$ | Bulk Parity vs MALA |
-|---|---|---|---|---|---|---|---|---|
-| **Isotropic ($d=50$, Bulk)** | **MALA (Tuned)** | 160.8 | 211.4 | 0.05361 | 0.07047 | 1.037 | 1.013 | $`100.0\%`$ (ref) |
-| **Isotropic ($d=50$, Bulk)** | **Barker** | 73.3 | 55.9 | 0.02443 | 0.01863 | 1.054 | 1.055 | $`45.6\%`$ |
-| **Isotropic ($d=50$, Bulk)** | **Globally Tamed MALA** | 47.9 | 44.6 | 0.01596 | 0.01485 | 1.104 | 1.047 | $`29.8\%`$ |
-| **Isotropic ($d=50$, Bulk)** | **GentleMALA** | 102.1 | 87.1 | 0.03405 | 0.02904 | 1.057 | 1.022 | $`63.5\%`$ |
-| **Isotropic ($d=50$, Bulk)** | **UnifiedRobustSampler** | **181.9** | 139.4 | **0.06064** | 0.04646 | **1.037** | **1.012** | **113.1%** |
-| **Isotropic ($d=50$, Tail $10\sqrt{d}$)** | **MALA (Tuned)** | 182.2 | 93.6 | 0.06074 | 0.03119 | 1.032 | 1.013 | $`100.0\%`$ (ref) |
-| **Isotropic ($d=50$, Tail $10\sqrt{d}$)** | **Barker** | 82.2 | 73.2 | 0.02741 | 0.02439 | 1.068 | 1.036 | $`45.1\%`$ |
-| **Isotropic ($d=50$, Tail $10\sqrt{d}$)** | **Globally Tamed MALA** | 67.0 | 75.2 | 0.02232 | 0.02506 | 1.077 | 1.047 | $`36.7\%`$ |
-| **Isotropic ($d=50$, Tail $10\sqrt{d}$)** | **GentleMALA** | 96.1 | 107.5 | 0.03202 | 0.03584 | 1.066 | 1.020 | $`52.7\%`$ ($`114.9\%`$ tail) |
-| **Isotropic ($d=50$, Tail $10\sqrt{d}$)** | **UnifiedRobustSampler** | 158.8 | **141.7** | 0.05292 | **0.04725** | 1.040 | 1.015 | **87.1%** (**151.5%** tail) |
-| **Anisotropic ($d=50$, Bulk)** | **MALA (Tuned)** | 6.6 | 16.2 | 0.00220 | 0.00542 | 1.891 | 1.574 | $`100.0\%`$ (ref) |
-| **Anisotropic ($d=50$, Bulk)** | **UnifiedRobustSampler** | 6.0 | **17.3** | 0.00201 | **0.00577** | **1.885** | **1.423** | **91.4%** (**106.5%** tail) |
-| **Anisotropic ($d=50$, Tail $10\sqrt{d}$)** | **MALA (Tuned)** | 5.9 | 14.8 | 0.00196 | 0.00493 | 2.124 | 1.719 | $`100.0\%`$ (ref) |
-| **Anisotropic ($d=50$, Tail $10\sqrt{d}$)** | **UnifiedRobustSampler** | **7.7** | **17.4** | **0.00255** | **0.00579** | **1.649** | **1.348** | **130.1%** (**117.4%** tail) |
+```math
+\hat\mu_i = \mathrm{median}(x_{\cdot i}), \qquad
+\hat\sigma_i = \frac{q_{0.75}(x_{\cdot i} - \hat\mu_i) - q_{0.25}(x_{\cdot i} - \hat\mu_i)}{1.3489795}, \qquad
+R_i = \min\left(R_{\max}, \max\left(R_{\min}, c\,\hat\sigma_i\right)\right),
+```
 
----
+The defaults are:
+- $c = 1.5$;
+- $R_{\min} = 0.1$;
+- $R_{\max}$ = 10⁴ in NumPy and 100 in the JAX pipeline.
 
-#### Table 2: Roughness Pathologies — Quartic Potential $U(x) = \frac{1}{4}\Vert x\Vert^4$ Step-Size Sweep (`reports/sweep_results.json`)
+**Fallback.** If $`\hat\sigma_i \le R_{\min}`$, the scale falls back to the larger of the normalised MAD and the 0.9 quantile of $`\lvert x_{\cdot i} - \hat\mu_i\rvert`$.
 
-| Dimension & Sampler | Stable Step-Size Window ($h$) | Window Ratio $W = h_{\max}/h_{\min}$ | Stability Factor vs MALA | Median Burn-in Steps across Grid | Burn-in at $h \approx 0.13\text{–}0.15$ |
-|---|---|---|---|---|---|
-| **$d=2$:** Classical MALA | $[0.0001, 0.00464]$ | $46.4\times$ | $1.0\times$ (ref) | $91.0$ steps | Frozen ($`0\%`$ accept) |
-| **$d=2$:** Globally Tamed MALA | $[0.0001, 1.468]$ | $14,678\times$ | $316.2\times$ | $44.0$ steps | $23$ steps |
-| **$d=2$:** Barker Proposal | $[0.0001, 10.0]$ | $100,000\times$ | $2,154\times$ | $38.0$ steps | $38$ steps |
-| **$d=2$:** **GentleMALA** | $[0.0001, 0.562]$ | $5,623\times$ | **121.2x** | **16.0 steps (2.75x vs Tamed)** | **2 steps (11.5x vs Tamed)** |
-| **$d=2$:** **UnifiedRobustSampler** | $[0.0001, 10.0]$ | $100,000\times$ | **2,154x** | **11.5 steps (3.83x vs Tamed)** | **2 steps (11.5x vs Tamed)** |
-| **$d=10$:** Classical MALA | $[0.0001, 0.000681]$ | $6.81\times$ | $1.0\times$ (ref) | $377.5$ steps | Frozen ($`0\%`$ accept) |
-| **$d=10$:** Globally Tamed MALA | $[0.0001, 0.909]$ | $9,085\times$ | $1,334\times$ | $104.0$ steps | $17$ steps |
-| **$d=10$:** Barker Proposal | $[0.0001, 10.0]$ | $100,000\times$ | $14,678\times$ | $102.5$ steps | $95$ steps |
-| **$d=10$:** **GentleMALA** | $[0.0001, 0.0825]$ | $825.4\times$ | **121.2x** | **36.5 steps (2.85x vs Tamed)** | **5 steps (3.4x vs Tamed)** |
-| **$d=10$:** **UnifiedRobustSampler** | $[0.0001, 0.562]$ | $5,623\times$ | **825.4x** | **16.0 steps (6.50x vs Tamed)** | **10 steps (1.7x vs Tamed)** |
+**Translation equivariance.** Shifting a coordinate by $c$ shifts $\hat\mu_i$ by $c$ and leaves the map unchanged; `shiftedForwardMap_translation_invariant` in Lean.
 
----
+**Where it lives.** `CoordinateWiseArcsinhTransform.compute_phase1_calibration` implements this rule, and every sampler uses it.
 
-#### Table 3: Heterogeneous Heavy Tails ($d=10$ Budget $B=3000$ in `benchmark_results.json` & $d=20$ in `sota_comparison_results.json`)
+### 2.4 Warm-up and exactness
 
-| Benchmark Suite & Sampler | Total Grads | Tail-ESS / Grad | Gain vs Baseline | 99th-Quantile Relative Error ($q_{99}$) | Error Reduction |
-|---|---|---|---|---|---|
-| **$d=10$ ($B=3000$):** Classical MALA | 3,000 | $0.00752$ | $1.22\times$ | $0.3010$ ($`30.1\%`$) | $`-15.8\%`$ |
-| **$d=10$ ($B=3000$):** Barker Proposal | 3,000 | $0.00617$ | $1.00\times$ (ref) | $0.2599$ ($`26.0\%`$) | $`0.0\%`$ (ref) |
-| **$d=10$ ($B=3000$):** Stereographic MALA | 3,000 | $0.01319$ | $2.14\times$ | $0.3560$ ($`35.6\%`$) | $`-37.0\%`$ |
-| **$d=10$ ($B=3000$):** Radial Diffeomorphic MALA | 3,000 | $0.01159$ | $1.88\times$ | $0.2468$ ($`24.7\%`$) | $`+5.0\%`$ |
-| **$d=10$ ($B=3000$):** **AnisotropicTailMALA** | 3,000 | **0.02373** | **3.85x** | **0.1727 (17.3%)** | **+33.6% vs Barker (+51.5% vs Stereo)** |
-| **$d=10$ ($B=3000$):** **UnifiedRobustSampler** | 3,000 | **0.01343** | **2.18x** | $0.2459$ ($`24.6\%`$) | **+30.9% vs Stereo** |
-| **$d=20$ (SOTA 4x1000):** BlackJAX NUTS | 133,000 | $0.01677$ | $1.00\times$ (ref) | $0.1129$ ($`11.3\%`$) | $`0.0\%`$ (ref) |
-| **$d=20$ (SOTA 4x1000):** BarkerProposal | 6,004 | $0.06345$ | $3.78\times$ | $0.2026$ ($`20.3\%`$) | $`-79.5\%`$ |
-| **$d=20$ (SOTA 4x1000):** **AnisotropicTailMALA** | 6,004 | **0.07748** | **4.62x** | $0.1577$ ($`15.8\%`$) | **+22.1% vs Barker** |
-| **$d=20$ (SOTA 4x1000):** **UnifiedRobustNUTS** | 71,545 | **0.03927** | **2.34x** | **0.0575 (5.8%)** | **+49.0% vs NUTS (+71.6% vs Barker)** |
+**`UnifiedRobustNUTS` (NumPy)** splits warm-up into three phases:
+1. **Phase 1, the first 15% (at least 10 steps):** collects draws and calibrates $(\mu, R)$ at its last step.
+2. **Phase 2, the next 65%:** optionally adapts a diagonal metric in $z$ with Welford variance updates (`adapt_preconditioner`).
+3. **Phase 3, the remaining 20%:** tunes the step size by dual averaging. The averaged step size is frozen at the last warm-up step.
 
----
+The dual-averaging state is reset at each phase boundary.
 
-### 5.3 Publication Figures & Visual Diagnostics
+**`sample_blackjax_unified_nuts` (JAX):**
+- **Phase 1:** BlackJAX window adaptation on the initial transform for the first 15% of tuning steps. The transform is calibrated from the second half of those draws, pooled across chains.
+- **Then:** each chain runs BlackJAX window adaptation in $z$ for the rest of the tuning budget, and samples with its own step size and diagonal metric.
 
-All five publication-grade figures are generated directly from the committed JSON artifacts (`reports/benchmark_results.json`, `reports/sweep_results.json`, `reports/sota_comparison_results.json`) via `uv run python -m mcmc_robust.bench.plot` with zero synthetic fallbacks:
+**Exactness.** After warm-up, the transform, metric and step size are fixed. The retained draws are then NUTS draws targeting $\pi_Z$, mapped through $x = x(z)$, so their law is $\pi_X$.
+- This rests on the standard correctness of NUTS and on the change-of-variables formula. Neither is machine-checked here.
+- `Sampler.sample` adapts only while $t$ < `burn_in`. Pass `burn_in` at least `warmup_steps`, or calibration may never run.
 
-#### Figure 1: Quartic Roughness Stability & Tail Contraction Dynamics
-![Figure 1: Roughness Stability & Contraction Dynamics](reports/figures/figure1_roughness_stability.png)
+### 2.5 Configurations used in the benchmarks
 
-#### Figure 2: Heterogeneous Tails & Coordinate Decoupling
-![Figure 2: Heterogeneous Heavy Tails](reports/figures/figure2_heterogeneous_tails.png)
+The benchmarked `UnifiedRobustNUTS` is not a single configuration.
 
-#### Figure 3: Practical Bayesian Applications
-![Figure 3: Practical Bayesian Inference](reports/figures/figure3_bayesian_inference.png)
+**SOTA Tasks 1 and 3** (`bench/sota_runner.py`):
+- `step_size=0.15, max_depth=10, adapt_tail_scale=True`;
+- `gamma = 0`, so no drift damping;
+- no metric adaptation, i.e. an identity metric in $z$;
+- the step size is still adapted by dual averaging.
 
-#### Figure 4: Benign Efficiency Parity
-![Figure 4: Benign Parity](reports/figures/figure4_benign_parity.png)
+**Tasks 2 and 4:** `gamma` = 0.2 and 0.5, which switches on the damped leapfrog force of §3.1.
 
-#### Figure 5: External SOTA NUTS Head-to-Head Comparison
-![Figure 5: Publication-Grade SOTA NUTS Comparison](reports/figures/figure5_sota_nuts_comparison.png)
+**Applied runner** (`bench/applied_runner.py`): `gamma = 0.15` with metric adaptation.
 
----
+**Stock baselines:**
+- BlackJAX NUTS uses window adaptation;
+- PyMC NUTS uses its defaults;
+- both target an acceptance rate of 0.8.
 
-## 6. External SOTA NUTS Benchmarks & Framework Integrations
+**Own implementations, not the published methods:**
+- `AutoMALA` differs from the published method in its step-selection rule and tuning.
+- "Stereographic MALA" is a MALA in stereographic coordinates. It is not the published stereographic random-walk or bouncy-particle samplers.
 
-### 6.1 Grounded 4-Chain Benchmark Results (`reports/sota_comparison_results.csv`, $4 \times 1,000$ Draws, $500$ Warmup)
+## 3. Experimental components
 
-#### 1. Heavy-Tailed Cauchy Regression ($d=10$)
-| Sampler | Framework | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | ESS/grad | Tail-ESS/grad | Post-Warmup Divs | $q_{99}$ Rel Error |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| PyMC NUTS (Standard) | `pymc` | 450,980 | 1,964.7 | 1,160.5 | 1.013 | 0.00436 | 0.00257 | 0 (16 warmup) | 41.6% |
-| BlackJAX NUTS (Standard) | `blackjax` | 2,109,517 | 1,684.5 | 984.8 | 1.037 | 0.00080 | 0.00047 | 0 (21 warmup) | 45.3% |
-| BarkerLangevin (2022) | Reference | 6,004 | 334.6 | 377.6 | 2.323 | 0.05572 | **0.06290** | **0 (0 warmup)** | 62.3% |
-| Stereographic MALA (2024) | Reference | 6,004 | 331.3 | 269.1 | 2.465 | 0.05519 | 0.04483 | **0 (0 warmup)** | 65.7% |
-| AutoMALA (2024) | Reference | 11,126 | 395.8 | 523.7 | 2.438 | 0.03557 | 0.04707 | **0 (0 warmup)** | 68.6% |
-| **UnifiedRobustSampler** | `mcmc-robust` | 6,004 | 347.0 | 364.7 | 2.312 | **0.05780** | 0.06074 | **0 (0 warmup)** | 48.5% |
-| **UnifiedRobustHMC** | `mcmc-robust` | 29,892 | 1,021.0 | 550.8 | 1.040 | 0.03416 | 0.01843 | **0 (79 warmup)** | 54.2% |
-| **UnifiedRobustNUTS** | `mcmc-robust` | 174,625 | **3,441.5** | **1,917.4** | **1.002** | 0.01971 | 0.01098 | **0 (34 warmup)** | **8.1%** |
+### 3.1 `GentleMALA`: damped drift for stiff targets
 
-#### 2. Hierarchical Funnels — Rubin's Eight-Schools & Neal's Funnel ($d=10$)
-| Target & Sampler | Framework | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | ESS/grad | Post-Warmup Divs | Warmup Divs | Neck Mass | Neck $q_{0.05}$ |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Eight-Schools:** PyMC NUTS | `pymc` | 117,717 | 539.9 | 677.0 | 1.032 | 0.00459 | 148 (3.70%) | 46 | 0.0% | -0.11 |
-| **Eight-Schools:** BlackJAX NUTS | `blackjax` | 149,818 | 659.4 | 933.7 | 1.012 | 0.00440 | 68 (1.70%) | 77 | 0.0% | -0.07 |
-| **Eight-Schools:** GloballyTamedMALA | Reference | 6,004 | 7.5 | 9.7 | 2.053 | 0.00124 | **0 (0.0%)** | 0 | 30.2% | -2.58 |
-| **Eight-Schools:** AutoMALA (2024) | Reference | 14,036 | 7.4 | 9.9 | 1.900 | 0.00053 | **0 (0.0%)** | 0 | 7.2% | -1.08 |
-| **Eight-Schools:** GentleMALA | `mcmc-robust` | 6,004 | 5.7 | 7.7 | 2.445 | 0.00095 | **0 (0.0%)** | 0 | 6.7% | -1.07 |
-| **Eight-Schools:** **UnifiedRobustSampler** | `mcmc-robust` | 6,004 | 5.1 | 6.8 | 3.040 | 0.00085 | **0 (0.0%)** | 0 | **16.6%** | **-1.49** |
-| **Eight-Schools:** **UnifiedRobustNUTS** | `mcmc-robust` | 291,573 | 515.8 | 732.8 | 1.017 | 0.00177 | **7 (0.18%)** | 23 | 1.5% | -0.53 |
-| **Neal's Funnel:** BlackJAX NUTS | `blackjax` | 160,066 | 4,130.7 | 300.8 | 1.151 | 0.02581 | 3 (0.08%) | 81 | 5.0% | -2.01 |
-| **Neal's Funnel:** **UnifiedRobustSampler** | `mcmc-robust` | 6,004 | 11.8 | 10.2 | 2.092 | 0.00197 | **0 (0.0%)** | 0 | **29.1%** | **-4.47** |
-| **Neal's Funnel:** **UnifiedRobustNUTS** | `mcmc-robust` | 160,757 | 273.8 | 208.8 | **1.079** | 0.00170 | 34 (0.85%) | 21 | **22.3%** | **-4.40** |
+**Definition.** With step size $h$, diagonal scale $s$ and sensitivity $\gamma$, the stiffness measure and damping factor are:
 
-#### 3. High-Dimensional Heterogeneous Mixed Tails ($d=20$)
-| Sampler | Framework | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | Tail-ESS/grad | Tail Gain vs Standard | $q_{99}$ Rel Error |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| BlackJAX NUTS (Standard) | `blackjax` | 133,000 | 3,877.1 | 2,230.2 | 1.015 | 0.01677 | 1.00x (Baseline) | 11.3% |
-| BarkerLangevin (2022) | Reference | 6,004 | 276.2 | 381.0 | 1.824 | 0.06345 | 3.78x | 20.3% |
-| AutoMALA (2024) | Reference | 11,008 | 126.7 | 183.6 | 1.237 | 0.01668 | 0.99x | 18.6% |
-| **AnisotropicTailMALA** | `mcmc-robust` | 6,004 | 317.9 | 465.2 | 1.285 | **0.07748** | **4.62x** | 15.8% |
-| **UnifiedRobustSampler** | `mcmc-robust` | 6,004 | 93.9 | 170.1 | 1.130 | 0.02832 | 1.69x | 13.0% |
-| **UnifiedRobustNUTS** | `mcmc-robust` | 71,545 | **4,608.6** | **2,809.8** | **1.003** | 0.03927 | **2.34x** | **5.8%** |
+```math
+\kappa_h(x) = \gamma h \Vert s \odot \nabla \log \pi(x)\Vert_2 \;\; \text{(global mode)}, \qquad
+\kappa_{h,i}(x) = \gamma h s_i \lvert \partial_i \log \pi(x)\rvert \;\; \text{(coordinate mode)},
+```
 
-#### 4. Stiff Quartic Tail Return ($\Vert x_0\Vert = 10\sqrt{d}, d=10$)
-| Sampler | Framework | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | Tail-ESS/grad | Burn-in Grads to Bulk | Post-Warmup Divs |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| Classical MALA ($h=0.10$) | Reference | 6,004 | 4.0 | 4.0 | $\infty$ (Frozen) | 0.00067 | $\infty$ | 0 (100% reject) |
-| BlackJAX HMC (Standard) | `blackjax` | 60,000 | 4,993.6 | 2,208.3 | 1.003 | 0.03680 | 50 | 0 (273 warmup) |
-| BlackJAX NUTS (Standard) | `blackjax` | 45,978 | 7,188.2 | 3,171.0 | 1.006 | 0.06897 | 40 | 0 (75 warmup) |
-| GloballyTamedMALA (2025) | Reference | 6,004 | 202.9 | 346.1 | 1.036 | 0.05765 | 17 | **0 (0 warmup)** |
-| AutoMALA (2024) | Reference | 19,625 | 4.3 | 4.6 | 4.558 | 0.00023 | $\infty$ | **0 (0 warmup)** |
-| **GentleMALA** | `mcmc-robust` | 6,004 | 611.9 | 920.5 | 1.010 | **0.15332 (2.22x)** | **5** | **0 (0 warmup)** |
-| **UnifiedRobustSampler** | `mcmc-robust` | 6,004 | 403.7 | 765.0 | 1.019 | **0.12741 (1.85x)** | **10** | **0 (0 warmup)** |
-| **UnifiedRobustNUTS** | `mcmc-robust` | 62,131 | 4,697.1 | **3,502.7** | **1.002** | 0.05638 | **15** | **0 (24 warmup)** |
+```math
+\rho(\kappa) = \left(1 + \kappa + (\kappa/\kappa_{\max})^2\right)^{-1/2}, \qquad
+y = x + h\, s^2 \odot \rho(\kappa_h(x)) \nabla \log \pi(x) + \sqrt{2h}\, s \odot \xi,
+```
 
-### 6.2 Applied Models on Simulated Data, PosteriorDB-Inspired (`reports/applied_benchmark_results.csv`, $4 \times 1,000$ Draws, $1,000$ Warm-up)
-Five models with the structure of standard applied posteriors, each fitted to **simulated** data, so they are not the PosteriorDB posteriors: a radon-style hierarchical regression (`RadonHierarchicalTarget`, $d=18$), sparse horseshoe logistic regression (`SparseHorseshoeLogisticTarget`, $d=21$), robust Student-*t* regression with outliers (`RobustStudentTRegressionTarget`, $d=12$), a hierarchical 2PL IRT model (`HierarchicalItemResponse2PLTarget`, $d=22$) and AR(1) stochastic volatility (`StochasticVolatilityLogReturnTarget`, $d=22$). Every sampler runs $4 \times 1,000$ draws after $1,000$ warm-up steps with seed 42, and all NUTS variants share a maximum tree depth of 10. Generated with `uv run python -m mcmc_robust.bench.applied_runner`.
+followed by an exact Metropolis–Hastings correction, at one gradient per step.
 
-| Model | Sampler | Max $\widehat{R}$ | Converged | Min Bulk-ESS | Min Tail-ESS | Tail-ESS/grad ($\times 10^{-3}$) | Divergences | Grads | Wall time (s) |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| Radon-style hierarchical ($d=18$) | MALA | 1.385 | no | 9 | 10 | 21.40 | 0 | 8,004 | 0.6 |
-| Radon-style hierarchical ($d=18$) | AutoMALA | 1.096 | no | 34 | 63 | 14.34 | 0 | 16,604 | 1.1 |
-| Radon-style hierarchical ($d=18$) | UnifiedRobustSampler | 1.304 | no | 11 | 11 | 11.52 | 0 | 8,004 | 1.1 |
-| Radon-style hierarchical ($d=18$) | BlackJAX NUTS (stock) | 1.019 | no | 295 | 250 | 12.14 | 10 | 151,503 | 12.5 |
-| Radon-style hierarchical ($d=18$) | BlackJAX NUTS + Arcsinh | 1.022 | no | 227 | 154 | 16.61 | 30 | 106,174 | 12.3 |
-| Radon-style hierarchical ($d=18$) | UnifiedRobustNUTS | 1.011 | no | 475 | 417 | 21.05 | 3 | 114,269 | 15.0 |
-| Horseshoe logistic ($d=21$) | MALA | 2.108 | no | 5 | 6 | 3.77 | 0 | 8,004 | 0.8 |
-| Horseshoe logistic ($d=21$) | AutoMALA | 1.584 | no | 7 | 6 | 1.40 | 0 | 21,012 | 2.0 |
-| Horseshoe logistic ($d=21$) | UnifiedRobustSampler | 1.412 | no | 8 | 11 | 3.39 | 0 | 8,004 | 1.5 |
-| Horseshoe logistic ($d=21$) | BlackJAX NUTS (stock) | 1.029 | no | 179 | 119 | 1.64 | 559 | 361,983 | 13.3 |
-| Horseshoe logistic ($d=21$) | BlackJAX NUTS + Arcsinh | 1.088 | no | 38 | 17 | 1.47 | 851 | 375,654 | 14.2 |
-| Horseshoe logistic ($d=21$) | UnifiedRobustNUTS | 1.011 | no | 365 | 306 | 2.59 | 122 | 455,219 | 73.5 |
-| Student-*t* regression ($d=12$) | MALA | 1.045 | no | 151 | 211 | 43.06 | 0 | 8,004 | 0.6 |
-| Student-*t* regression ($d=12$) | AutoMALA | 1.038 | no | 161 | 182 | 23.07 | 0 | 15,281 | 1.2 |
-| Student-*t* regression ($d=12$) | UnifiedRobustSampler | 1.024 | no | 199 | 306 | 49.19 | 0 | 8,004 | 1.3 |
-| Student-*t* regression ($d=12$) | BlackJAX NUTS (stock) | 1.002 | yes | 1,744 | 2,497 | 41.14 | 0 | 67,334 | 11.2 |
-| Student-*t* regression ($d=12$) | BlackJAX NUTS + Arcsinh | 1.004 | yes | 1,637 | 2,300 | 37.35 | 0 | 70,234 | 11.2 |
-| Student-*t* regression ($d=12$) | UnifiedRobustNUTS | 1.001 | yes | 2,267 | 2,793 | 41.61 | 0 | 71,254 | 11.0 |
-| IRT-2PL ($d=22$) | MALA | 1.259 | no | 13 | 14 | 7.20 | 0 | 8,004 | 0.8 |
-| IRT-2PL ($d=22$) | AutoMALA | 1.113 | no | 30 | 41 | 8.68 | 0 | 17,127 | 1.7 |
-| IRT-2PL ($d=22$) | UnifiedRobustSampler | 1.412 | no | 9 | 12 | 10.23 | 0 | 8,004 | 1.5 |
-| IRT-2PL ($d=22$) | BlackJAX NUTS (stock) | 1.013 | no | 337 | 460 | 9.54 | 38 | 185,666 | 12.7 |
-| IRT-2PL ($d=22$) | BlackJAX NUTS + Arcsinh | 1.124 | no | 22 | 8 | 7.21 | 106 | 211,194 | 13.9 |
-| IRT-2PL ($d=22$) | UnifiedRobustNUTS | 1.008 | yes | 397 | 556 | 11.84 | 38 | 175,595 | 28.6 |
-| Stochastic volatility ($d=22$) | MALA | 1.893 | no | 6 | 7 | 3.49 | 0 | 8,004 | 0.6 |
-| Stochastic volatility ($d=22$) | AutoMALA | 1.580 | no | 7 | 9 | 2.03 | 0 | 17,953 | 1.2 |
-| Stochastic volatility ($d=22$) | UnifiedRobustSampler | 1.551 | no | 7 | 7 | 2.07 | 0 | 8,004 | 1.6 |
-| Stochastic volatility ($d=22$) | BlackJAX NUTS (stock) | 1.018 | no | 137 | 225 | 3.65 | 0 | 263,446 | 11.5 |
-| Stochastic volatility ($d=22$) | BlackJAX NUTS + Arcsinh | 1.019 | no | 114 | 194 | 3.40 | 1 | 207,953 | 11.6 |
-| Stochastic volatility ($d=22$) | UnifiedRobustNUTS | 1.022 | no | 134 | 200 | 3.93 | 0 | 232,745 | 31.0 |
+**What is proved** (Lean, §4):
+- for any finite $\kappa_{\max}$, the deterministic step is bounded by $`s\kappa_{\max}/\gamma`$;
+- in the global (radial) mode, the chain contracts without overshooting the origin from radius $`r \ge s\kappa_{\max}/\gamma`$;
+- for pure square-root damping ($\kappa_{\max} = \infty$) on $`U(x) = \Vert x\Vert^4/4`$, a step does not overshoot when $`0 < r < 4\gamma/h`$. That is a sufficient condition, not a characterisation.
 
-How to read this table:
-- **Converged** means the largest rank-normalized split $\widehat{R}$ over all coordinates is at most 1.01 (Vehtari et al., 2021). Only 4 of the 30 runs meet it, so efficiency differences between unconverged runs are not evidence of an advantage.
-- **Min Bulk-ESS** and **Min Tail-ESS** are for the worst-mixing coordinate, usually a hierarchical scale. **Tail-ESS/grad** is the coordinate-mean Tail-ESS divided by all gradient evaluations, warm-up included.
-- **Divergences** counts post-warm-up divergent transitions only.
-- **Wall time** includes JAX JIT compilation for the two BlackJAX rows, while `UnifiedRobustNUTS` runs in NumPy, so it is not a like-for-like speed comparison.
-- `BlackJAX NUTS + Arcsinh` uses a fixed transform ($R = 2.5$, centred at the origin); `UnifiedRobustNUTS` learns its location and radii during warm-up.
-- Each cell is a single seed, so the table has no error bars.
+**What is not proved or not supported:**
+- **No guarantee for the coordinate mode.** The benchmarks run the coordinate mode, for which no result is stated.
+- **Still bounded drift.** For finite $\kappa_{\max}$ the drift is bounded, so this is a member of the tamed-drift family (Roberts & Tweedie, 1996; Brosse et al., 2019; Lytras & Sabanis, 2025). It does not escape the over-conservatism that Power & Vasdekis describe in §3.3.
 
-What the table shows:
-- The three first-order samplers (MALA, AutoMALA, `UnifiedRobustSampler`) do not converge on any of the five models within $2,000$ iterations per chain.
-- On the Student-*t* regression, the only model where all three NUTS variants converge, their Tail-ESS/grad is similar ($37\text{–}42 \times 10^{-3}$) and `UnifiedRobustNUTS` has the highest worst-coordinate ESS.
-- `UnifiedRobustNUTS` has the highest worst-coordinate Bulk-ESS on four of the five models, the fewest divergences of the three NUTS variants on the horseshoe model ($122$ vs. $559$ for stock NUTS), and is the only sampler that converges on IRT-2PL. These are single-seed results with $\widehat{R}$ values close to the threshold.
-- The fixed-radius arcsinh wrapper is worse than stock NUTS on the horseshoe and IRT models (lower worst-coordinate ESS and more divergences), so a static transform is not a safe default for hierarchical models.
-- In wall time, `UnifiedRobustNUTS` ranges from parity to $5.5\times$ slower than BlackJAX NUTS, even though the BlackJAX times include compilation.
+**Step-size sweep on the quartic target.**
 
----
+<!-- BEGIN GENERATED: langevin-sweep -->
+Quartic target U(x) = ‖x‖⁴/4 started at ‖x₀‖ = 10√d; 25 step sizes log-spaced on [0.0001, 10]. A step size is stable when the run neither diverges nor accepts fewer than 1 in 100 proposals. Source: `reports/sweep_results.json`.
 
-## 7. Discussion, Limitations & Practitioner Guide
+| d | Sampler | Largest stable h | h_max / h_min | Median burn-in steps |
+| :--- | :--- | ---: | ---: | ---: |
+| 2 | MALA | 0.00464 | 46 | 91 |
+| 2 | Tamed MALA | 1.47 | 14,678 | 44 |
+| 2 | Barker | 10 | 100,000 | 38 |
+| 2 | GentleMALA | 0.562 | 5,623 | 16 |
+| 2 | UnifiedRobustSampler | 10 | 100,000 | 11.5 |
+| 10 | MALA | 0.000681 | 7 | 377.5 |
+| 10 | Tamed MALA | 0.909 | 9,085 | 104 |
+| 10 | Barker | 10 | 100,000 | 102.5 |
+| 10 | GentleMALA | 0.0825 | 825 | 36.5 |
+| 10 | UnifiedRobustSampler | 0.562 | 5,623 | 16 |
+| 50 | MALA | 0.000162 | 2 | not reached |
+| 50 | Tamed MALA | 2.37 | 23,714 | not reached |
+| 50 | Barker | 10 | 100,000 | 317 |
+| 50 | GentleMALA | 0.0121 | 121 | 160 |
+| 50 | UnifiedRobustSampler | 0.562 | 5,623 | 92 |
+<!-- END GENERATED: langevin-sweep -->
 
-1. **When to Use Non-Centered Reparameterization vs. Coordinate-Wise Diffeomorphisms:**
-   Because `CoordinateWiseArcsinhTransform` has a diagonal Jacobian, it does not algebraically remove the multiplicative cross-coordinate coupling $x_i \sim \mathcal{N}(0, e^v)$ of a centered hierarchical funnel. Whenever the generative model is explicitly known, non-centered parameterization ($`x_i = e^{v/2} \tilde{x}_i`$) or within-orbit adaptive step-size integrators such as WALNUTS (Bou-Rabee et al., 2025) remain ideal for funnel geometries. For black-box centered models, `UnifiedRobustNUTS` and `UnifiedRobustSampler` combine coordinate warping with local stiffness damping to substantially improve neck penetration ($`\hat{\mathbb{P}}(v < -2) = 22.3\%\text{–}29.1\%`$ vs. $`5.0\%`$ for BlackJAX NUTS on Neal's Funnel) and reduce Eight-Schools post-warmup divergences by $`90\%\text{–}95\%`$.
-2. **When to Use `AnisotropicTailMALA` / `UnifiedRobustNUTS`:**
-   For heavy-tailed posteriors (Cauchy/Student-*t* regression, sparse horseshoe/Cauchy priors, outlier-robust models) and high-dimensional mixed heavy/light tail geometries, the shift-equivariant coordinate-wise $\mathop{\mathrm{arsinh}}$ transform converts polynomial tails into constant restoring drift without compressing orthogonal Gaussian dimensions, delivering $2.34\times\text{–}23.5\times$ higher Tail-ESS/grad than standard NUTS on the synthetic targets of §6.1 (Tables 1 and 3). The gain does not carry over to every applied model: on the simulated-data Student-*t* regression of §6.2, where all NUTS variants converge, Tail-ESS/grad is at parity with stock NUTS ($41.6$ vs. $41.1 \times 10^{-3}$); the clearer differences there are in worst-coordinate ESS and, on the horseshoe model, in divergences.
+**Benign Gaussians.** At this budget no sampler reaches the convergence threshold on these targets, so the efficiency ratios below are indicative only.
 
----
+<!-- BEGIN GENERATED: langevin-benign -->
+d = 50, budget 3,000 gradients per chain, 4 chains, seed 42; "tail" starts at ‖x₀‖ = 10√d. Source: `reports/benchmark_results.json`.
+
+| Gaussian | Start | Sampler | ESS/grad | Tail-ESS/grad | R-hat | Converged | ESS/grad vs MALA |
+| :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| isotropic | bulk | MALA | 0.0536 | 0.0705 | 1.037 | no | 100.0% |
+| isotropic | bulk | Barker | 0.0244 | 0.0186 | 1.054 | no | 45.6% |
+| isotropic | bulk | Tamed MALA | 0.016 | 0.0149 | 1.104 | no | 29.8% |
+| isotropic | bulk | GentleMALA | 0.034 | 0.029 | 1.057 | no | 63.5% |
+| isotropic | bulk | UnifiedRobustSampler | 0.0606 | 0.0465 | 1.037 | no | 113.1% |
+| isotropic | tail | MALA | 0.0607 | 0.0312 | 1.032 | no | 100.0% |
+| isotropic | tail | Barker | 0.0274 | 0.0244 | 1.068 | no | 45.1% |
+| isotropic | tail | Tamed MALA | 0.0223 | 0.0251 | 1.077 | no | 36.7% |
+| isotropic | tail | GentleMALA | 0.032 | 0.0358 | 1.066 | no | 52.7% |
+| isotropic | tail | UnifiedRobustSampler | 0.0529 | 0.0472 | 1.040 | no | 87.1% |
+| anisotropic | bulk | MALA | 0.0022 | 0.00542 | 1.891 | no | 100.0% |
+| anisotropic | bulk | Barker | 0.00229 | 0.00494 | 2.109 | no | 104.0% |
+| anisotropic | bulk | Tamed MALA | 0.00167 | 0.00487 | 3.134 | no | 76.1% |
+| anisotropic | bulk | GentleMALA | 0.00203 | 0.00558 | 1.915 | no | 92.2% |
+| anisotropic | bulk | UnifiedRobustSampler | 0.00201 | 0.00577 | 1.885 | no | 91.5% |
+| anisotropic | tail | MALA | 0.00196 | 0.00493 | 2.124 | no | 100.0% |
+| anisotropic | tail | Barker | 0.00203 | 0.00489 | 2.006 | no | 103.7% |
+| anisotropic | tail | Tamed MALA | 0.0015 | 0.00488 | 6.997 | no | 76.5% |
+| anisotropic | tail | GentleMALA | 0.00221 | 0.00487 | 2.077 | no | 112.9% |
+| anisotropic | tail | UnifiedRobustSampler | 0.00255 | 0.00579 | 1.649 | no | 130.3% |
+<!-- END GENERATED: langevin-benign -->
+
+### 3.2 First-order samplers with the transform
+
+- **What they are:**
+  - `UnifiedRobustSampler` combines the transform with `GentleMALA`'s damping;
+  - `AnisotropicTailMALA` applies the transform only to coordinates classified as heavy-tailed by a Hill-type test.
+- **Why their numbers are not evidence:** in Tables 1–5 these samplers mostly do not converge within their budgets. Their ESS and efficiency ratios therefore don't support any claim.
+
+### 3.3 Funnels
+
+**Why the transform can't help.** A coordinate-wise map has a diagonal Jacobian, so it cannot remove the dependence of $`x_i \mid v \sim \mathcal{N}(0, e^{v})`$ on $v$ in a centred funnel. Table 2 shows the effect.
+
+**Eight-Schools.** `UnifiedRobustNUTS` records fewer divergences than stock NUTS, but it also places far less mass in the neck than the exact posterior does.
+
+**Neal's funnel.** It reaches deeper into the neck than BlackJAX NUTS, without converging, and with more divergences.
+
+**A learned partial non-centring** was explored and not merged (PR #3).
+- With a linear scale function, it is the variationally inferred parameterisation of Gorinova, Moore & Hoffman (2020), with the parameter fitted by regression.
+- Its accuracy depended on the funnel's apex being at the origin.
+
+**Recommendation.** Use a non-centred parameterisation when the model structure is known (Papaspiliopoulos, Roberts & Sköld, 2007). Otherwise, consider samplers built for multiscale geometry: WALNUTS, GIST, or delayed-rejection HMC.
+
+## 4. Formal verification (Lean 4)
+
+**Build.** `cd formal && lake build` checks the proofs. The build has no `sorry` and no `admit`, and the axiom audit at the end of the file pins each theorem to `propext`, `Classical.choice` and `Quot.sound`.
+
+**Scope.** The theorems are about scalar building blocks:
+- the arcsinh map's invertibility, derivative and translation equivariance;
+- the damping inequalities of §3.1;
+- the calibration clip of §2.3;
+- Student-*t* score bounds;
+- the algebraic identity behind Metropolis–Hastings detailed balance.
+
+**Not covered:** no transition kernel, no change-of-variables argument and no NUTS property is formalised. `mh_detailed_balance` states $`a \min(1, b/a) = b \min(1, a/b)`$ for positive reals, the algebra behind detailed balance, not a fact about any sampler here.
+
+<!-- BEGIN GENERATED: lean-inventory -->
+37 theorems in `formal/McmcRobustFormal.lean`, listed under the file's own section headings:
+
+| Section (as titled in the Lean file) | Theorems |
+| :--- | :--- |
+| Exact Invertibility of Shift-Equivariant Arcsinh/Sinh Diffeomorphism | `arcsinh_inv_right`, `arcsinh_inv_left`, `scaled_invertibility_roundtrip_forward`, `scaled_invertibility_roundtrip_inverse`, `shifted_invertibility_roundtrip_forward`, `shifted_invertibility_roundtrip_inverse`, `shiftedForwardMap_translation_invariant`, `inverseMap_jacobian_factor_pos` |
+| Derivative Identity and Metric Scale Strict Positivity | `arsinh_deriv_eq`, `metric_scale_pos`, `metric_scale_le_one`, `hasDerivAt_forwardMap`, `forwardMap_metric_pos` |
+| Pure Square-Root Attenuation & Exact Discrete Basin Boundary | `rho_pos`, `rho_le_one`, `rho_strictAntiOn`, `pureSqrtStepSq_lt_div_gamma`, `pureSqrt_quartic_discrete_basin_bound` |
+| Soft-Capped Gentle Attenuation Global Drift & Non-Overshoot | `rhoSoft_pos`, `rhoSoft_le_one`, `softCap_dimensionless_drift_sq_lt`, `softCap_dimensionless_drift_lt`, `softCappedDriftStep_lt_bound`, `softCapped_global_contraction_no_overshoot` |
+| Metropolis-Hastings Kernel Reversibility (Detailed Balance) | `mhAccept_bounds`, `mh_detailed_balance` |
+| Applied Heavy-Tailed & Shrinkage Posterior Score Bounds | `studentTNegLogKernel_nonneg`, `hasDerivAt_studentTNegLogKernel`, `studentTScore_mul_le`, `cauchyShrinkagePenalty_nonneg`, `studentTScore_zero` |
+| Pure-JAX 3-Phase Scale & Location Calibration Bounds | `calibratedRadius_ge_min`, `calibratedRadius_pos`, `calibratedRadius_le_max`, `calibratedRadius_mono`, `calibrated_shifted_roundtrip_forward`, `calibrated_shifted_roundtrip_inverse` |
+<!-- END GENERATED: lean-inventory -->
+
+## 5. Results
+
+**Two runners produce the tables.**
+
+`bench/sota_runner.py --full` writes `reports/sota_comparison_results.json`, with four tasks:
+1. a sparse regression with Cauchy priors, d = 10;
+2. Eight-Schools and Neal's funnel;
+3. mixed heavy and Gaussian tails, d = 20;
+4. a quartic target started far in the tail.
+
+`bench/applied_runner.py` writes `reports/applied_benchmark_results.json`. It covers five applied models fitted to simulated data.
+
+**How to read the tables:**
+- A run is converged when its largest split R-hat is at most 1.01.
+- Efficiency ratios involving unconverged runs are not evidence of an advantage.
+- Langevin samplers build no trajectories, so they have no divergence count ("–").
+
+### Table 1: Sparse regression with Cauchy priors (Task 1, d = 10)
+
+**Target.** A Bayesian regression with $`\beta_j \sim \mathrm{Cauchy}(0, 1)`$ and true signal $`(5, -4, 3, 0, \dots, 0)`$.
+- Only the three active coefficients have non-zero design columns.
+- The other seven posteriors therefore equal their independent Cauchy prior.
+
+**Why it matters.** This is a product of Cauchy and near-Gaussian coordinates: the most favourable case for a coordinate-wise map.
+
+<!-- BEGIN GENERATED: sota-task1 -->
+Seed 42 only, 4 chains × 1,000 draws after 500 warm-up steps per chain; gradient counts include warm-up. Source: `reports/sota_comparison_results.json` (run 2026-10-23). A run is converged when its largest rank-normalised split R-hat is at most 1.01.
+
+| Sampler | Gradients | Bulk-ESS | Tail-ESS | Max R-hat | Converged | Tail-ESS/grad | vs BlackJAX NUTS | Divergences | q99 error |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| PyMC NUTS | 450,980 | 1,965 | 1,161 | 1.013 | no | 0.00257 | 5.5× | 0 | 41.6% |
+| BlackJAX NUTS | 2,109,517 | 1,684 | 985 | 1.037 | no | 0.000467 | 1.0× | 0 | 45.3% |
+| Barker | 6,004 | 335 | 378 | 2.323 | no | 0.0629 | 134.7× | – | 62.3% |
+| Stereographic MALA (own implementation) | 6,004 | 331 | 269 | 2.465 | no | 0.0448 | 96.0× | – | 65.7% |
+| AutoMALA (own re-implementation) | 11,126 | 396 | 524 | 2.438 | no | 0.0471 | 100.8× | – | 68.6% |
+| `UnifiedRobustSampler` | 6,004 | 347 | 365 | 2.312 | no | 0.0607 | 130.1× | – | 48.5% |
+| `UnifiedRobustHMC` | 29,892 | 1,021 | 551 | 1.040 | no | 0.0184 | 39.5× | 0 | 54.2% |
+| `UnifiedRobustNUTS` | 174,625 | 3,442 | 1,917 | 1.002 | yes | 0.011 | 23.5× | 0 | 8.1% |
+<!-- END GENERATED: sota-task1 -->
+
+### Table 2a: Centred Eight-Schools (Task 2)
+
+**Target.** Rubin's (1981) model with $`\tau \sim \text{Half-Cauchy}(0, 5)`$, sampled in $(\mu, \log\tau, \theta)$. The reference neck statistics come from exact one-dimensional marginalisation (`EightSchoolsTarget.exact_moments_or_quantiles`).
+
+<!-- BEGIN GENERATED: sota-eight-schools -->
+Seed 42 only, 4 chains × 1,000 draws after 500 warm-up steps per chain; gradient counts include warm-up. Source: `reports/sota_comparison_results.json` (run 2026-10-23). A run is converged when its largest rank-normalised split R-hat is at most 1.01. Exact reference: P(log τ < −1) = 7.49%, q05(log τ) = −1.40.
+
+| Sampler | Gradients | Bulk-ESS | Tail-ESS | Max R-hat | Converged | Divergences | P(log τ < −1) | q05(log τ) |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| PyMC NUTS | 117,717 | 540 | 677 | 1.032 | no | 148 | 0.0% | −0.11 |
+| BlackJAX NUTS | 149,818 | 659 | 934 | 1.012 | no | 68 | 0.0% | −0.07 |
+| Tamed MALA | 6,004 | 7 | 10 | 2.053 | no | – | 30.2% | −2.58 |
+| AutoMALA (own re-implementation) | 14,036 | 7 | 10 | 1.900 | no | – | 7.2% | −1.08 |
+| `GentleMALA` | 6,004 | 6 | 8 | 2.445 | no | – | 6.7% | −1.07 |
+| `UnifiedRobustSampler` | 6,004 | 5 | 7 | 3.040 | no | – | 16.6% | −1.49 |
+| `UnifiedRobustNUTS` | 291,573 | 516 | 733 | 1.017 | no | 7 | 1.5% | −0.53 |
+<!-- END GENERATED: sota-eight-schools -->
+
+### Table 2b: Neal's funnel (Task 2, d = 10)
+
+**Target.** $`v \sim \mathcal{N}(0, 3^2)`$ and $`x_i \mid v \sim \mathcal{N}(0, e^{v})`$ for the other nine coordinates.
+
+<!-- BEGIN GENERATED: sota-neal -->
+Seed 42 only, 4 chains × 1,000 draws after 500 warm-up steps per chain; gradient counts include warm-up. Source: `reports/sota_comparison_results.json` (run 2026-10-23). A run is converged when its largest rank-normalised split R-hat is at most 1.01. Exact reference (v ~ N(0, 3²)): P(v < −2) = 25.25%, q05(v) = −4.93.
+
+| Sampler | Gradients | Bulk-ESS | Tail-ESS | Max R-hat | Converged | Divergences | P(v < −2) | q05(v) |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| BlackJAX NUTS | 160,066 | 4,131 | 301 | 1.151 | no | 3 | 5.0% | −2.01 |
+| `UnifiedRobustSampler` | 6,004 | 12 | 10 | 2.092 | no | – | 29.1% | −4.47 |
+| `UnifiedRobustNUTS` | 160,757 | 274 | 209 | 1.079 | no | 34 | 22.2% | −4.40 |
+<!-- END GENERATED: sota-neal -->
+
+### Table 3: Mixed heavy and Gaussian tails (Task 3, d = 20)
+
+**Target.** Ten Student-*t* coordinates, with $\nu$ evenly spaced from 1.2 to 2.5, and ten standard Gaussian coordinates, all independent.
+
+<!-- BEGIN GENERATED: sota-task3 -->
+Seed 42 only, 4 chains × 1,000 draws after 500 warm-up steps per chain; gradient counts include warm-up. Source: `reports/sota_comparison_results.json` (run 2026-10-23). A run is converged when its largest rank-normalised split R-hat is at most 1.01.
+
+| Sampler | Gradients | Bulk-ESS | Tail-ESS | Max R-hat | Converged | Tail-ESS/grad | vs BlackJAX NUTS | Divergences | q99 error |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| BlackJAX NUTS | 133,000 | 3,877 | 2,230 | 1.015 | no | 0.0168 | 1.0× | 0 | 11.3% |
+| Barker | 6,004 | 276 | 381 | 1.824 | no | 0.0635 | 3.8× | – | 20.3% |
+| AutoMALA (own re-implementation) | 11,008 | 127 | 184 | 1.237 | no | 0.0167 | 1.0× | – | 18.6% |
+| `AnisotropicTailMALA` | 6,004 | 318 | 465 | 1.285 | no | 0.0775 | 4.6× | – | 15.8% |
+| `UnifiedRobustSampler` | 6,004 | 94 | 170 | 1.130 | no | 0.0283 | 1.7× | – | 13.0% |
+| `UnifiedRobustNUTS` | 71,545 | 4,609 | 2,810 | 1.003 | yes | 0.0393 | 2.3× | 4 | 5.8% |
+<!-- END GENERATED: sota-task3 -->
+
+### Table 4: Quartic target started in the tail (Task 4, d = 10)
+
+<!-- BEGIN GENERATED: sota-task4 -->
+Seed 42 only, 4 chains × 1,000 draws after 500 warm-up steps per chain; gradient counts include warm-up. Source: `reports/sota_comparison_results.json` (run 2026-10-23). A run is converged when its largest rank-normalised split R-hat is at most 1.01. Chains start at ‖x₀‖ = 10√d; "Gradients to reach the bulk" is the median over chains of the gradient evaluations until ‖x‖ ≤ 3.5, or the chain's whole budget when it never gets there.
+
+| Sampler | Gradients | Bulk-ESS | Tail-ESS | Max R-hat | Converged | Tail-ESS/grad | Divergences | Gradients to reach the bulk |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| MALA | 6,004 | 4 | 4 | n/a | no | 0.000672 | – | 1,501 |
+| BlackJAX HMC | 60,000 | 4,994 | 2,208 | 1.003 | yes | 0.0368 | 0 | 50 |
+| BlackJAX NUTS | 45,978 | 7,188 | 3,171 | 1.006 | yes | 0.069 | 0 | 40 |
+| Tamed MALA | 6,004 | 203 | 346 | 1.036 | no | 0.0577 | – | 17 |
+| AutoMALA (own re-implementation) | 19,625 | 4 | 5 | 4.558 | no | 0.000233 | – | 5,002 |
+| `GentleMALA` | 6,004 | 612 | 921 | 1.010 | no | 0.153 | – | 5 |
+| `UnifiedRobustSampler` | 6,004 | 404 | 765 | 1.019 | no | 0.127 | – | 10 |
+| `UnifiedRobustNUTS` | 62,131 | 4,697 | 3,503 | 1.002 | yes | 0.0564 | 0 | 15 |
+<!-- END GENERATED: sota-task4 -->
+
+### Table 5: Applied models on simulated data
+
+**The models.** They have the structure of standard applied posteriors but are fitted to simulated data, so they are not the posteriordb posteriors:
+- a radon-style hierarchical regression;
+- a sparse horseshoe logistic regression;
+- a robust Student-*t* regression;
+- a hierarchical 2PL item-response model;
+- AR(1) stochastic volatility.
+
+**The arcsinh row.** "BlackJAX NUTS + fixed arcsinh" uses a fixed transform centred at the origin. It is not the calibrated JAX pipeline of §2.4.
+
+<!-- BEGIN GENERATED: applied -->
+Seed 42 only, 4 chains × 1,000 draws after 1,000 warm-up steps, NUTS tree depth at most 10. Min ESS is over coordinates; Tail-ESS/grad is the coordinate mean divided by all gradients, warm-up included. Wall time includes JIT compilation for the BlackJAX rows, while `UnifiedRobustNUTS` runs in NumPy. Source: `reports/applied_benchmark_results.json`.
+
+| Model | Sampler | Max R-hat | Converged | Min Bulk-ESS | Min Tail-ESS | Tail-ESS/grad (×10⁻³) | Divergences | Gradients | Wall time (s) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Radon-style hierarchical (d=18) | MALA | 1.385 | no | 9 | 10 | 21.40 | – | 8,004 | 0.6 |
+| Radon-style hierarchical (d=18) | AutoMALA (own re-implementation) | 1.096 | no | 34 | 63 | 14.34 | – | 16,604 | 1.1 |
+| Radon-style hierarchical (d=18) | UnifiedRobustSampler | 1.304 | no | 11 | 11 | 11.52 | – | 8,004 | 1.1 |
+| Radon-style hierarchical (d=18) | BlackJAX NUTS | 1.019 | no | 295 | 250 | 12.14 | 10 | 151,503 | 12.5 |
+| Radon-style hierarchical (d=18) | BlackJAX NUTS + fixed arcsinh (R = 2.5) | 1.022 | no | 227 | 154 | 16.61 | 30 | 106,174 | 12.3 |
+| Radon-style hierarchical (d=18) | UnifiedRobustNUTS | 1.011 | no | 475 | 417 | 21.05 | 3 | 114,269 | 15.0 |
+| Horseshoe logistic (d=21) | MALA | 2.108 | no | 5 | 6 | 3.77 | – | 8,004 | 0.8 |
+| Horseshoe logistic (d=21) | AutoMALA (own re-implementation) | 1.584 | no | 7 | 6 | 1.40 | – | 21,012 | 2.0 |
+| Horseshoe logistic (d=21) | UnifiedRobustSampler | 1.412 | no | 8 | 11 | 3.39 | – | 8,004 | 1.5 |
+| Horseshoe logistic (d=21) | BlackJAX NUTS | 1.029 | no | 179 | 119 | 1.64 | 559 | 361,983 | 13.3 |
+| Horseshoe logistic (d=21) | BlackJAX NUTS + fixed arcsinh (R = 2.5) | 1.088 | no | 38 | 17 | 1.47 | 851 | 375,654 | 14.2 |
+| Horseshoe logistic (d=21) | UnifiedRobustNUTS | 1.011 | no | 365 | 306 | 2.59 | 122 | 455,219 | 73.5 |
+| Student-t regression (d=12) | MALA | 1.045 | no | 151 | 211 | 43.06 | – | 8,004 | 0.6 |
+| Student-t regression (d=12) | AutoMALA (own re-implementation) | 1.038 | no | 161 | 182 | 23.07 | – | 15,281 | 1.2 |
+| Student-t regression (d=12) | UnifiedRobustSampler | 1.024 | no | 199 | 306 | 49.19 | – | 8,004 | 1.3 |
+| Student-t regression (d=12) | BlackJAX NUTS | 1.002 | yes | 1,744 | 2,497 | 41.14 | 0 | 67,334 | 11.2 |
+| Student-t regression (d=12) | BlackJAX NUTS + fixed arcsinh (R = 2.5) | 1.004 | yes | 1,637 | 2,300 | 37.35 | 0 | 70,234 | 11.2 |
+| Student-t regression (d=12) | UnifiedRobustNUTS | 1.001 | yes | 2,267 | 2,793 | 41.61 | 0 | 71,254 | 11.0 |
+| IRT-2PL (d=22) | MALA | 1.259 | no | 13 | 14 | 7.20 | – | 8,004 | 0.8 |
+| IRT-2PL (d=22) | AutoMALA (own re-implementation) | 1.113 | no | 30 | 41 | 8.68 | – | 17,127 | 1.7 |
+| IRT-2PL (d=22) | UnifiedRobustSampler | 1.412 | no | 9 | 12 | 10.23 | – | 8,004 | 1.5 |
+| IRT-2PL (d=22) | BlackJAX NUTS | 1.013 | no | 337 | 460 | 9.54 | 38 | 185,666 | 12.7 |
+| IRT-2PL (d=22) | BlackJAX NUTS + fixed arcsinh (R = 2.5) | 1.124 | no | 22 | 8 | 7.21 | 106 | 211,194 | 13.9 |
+| IRT-2PL (d=22) | UnifiedRobustNUTS | 1.008 | yes | 397 | 556 | 11.84 | 38 | 175,595 | 28.6 |
+| Stochastic volatility (d=22) | MALA | 1.893 | no | 6 | 7 | 3.49 | – | 8,004 | 0.6 |
+| Stochastic volatility (d=22) | AutoMALA (own re-implementation) | 1.580 | no | 7 | 9 | 2.03 | – | 17,953 | 1.2 |
+| Stochastic volatility (d=22) | UnifiedRobustSampler | 1.551 | no | 7 | 7 | 2.07 | – | 8,004 | 1.6 |
+| Stochastic volatility (d=22) | BlackJAX NUTS | 1.018 | no | 137 | 225 | 3.65 | 0 | 263,446 | 11.5 |
+| Stochastic volatility (d=22) | BlackJAX NUTS + fixed arcsinh (R = 2.5) | 1.019 | no | 114 | 194 | 3.40 | 1 | 207,953 | 11.6 |
+| Stochastic volatility (d=22) | UnifiedRobustNUTS | 1.022 | no | 134 | 200 | 3.93 | 0 | 232,745 | 31.0 |
+
+- 4 of 30 runs converge (largest split R-hat at most 1.01).
+- First-order samplers converge in 0 of 15 runs.
+- Student-t regression is a model on which every NUTS variant converges: `UnifiedRobustNUTS` reaches 1.0× the tail-ESS per gradient of stock BlackJAX NUTS.
+<!-- END GENERATED: applied -->
+
+## 6. Limitations and open work
+
+**About the evidence:**
+- **One seed per cell, no error bars.** JAX gradient counts for stock BlackJAX also vary across platforms, so single-seed ratios can shift between machines.
+- **Unconverged denominators.** Several ratios compare against baselines that are not converged; for example, BlackJAX NUTS on Task 1. An unconverged denominator makes a ratio unreliable in either direction.
+- **The best case for the method.** Task 1 is built so that most coordinates are independent and heavy-tailed. Task 3 is also product-form.
+- **A noisy accuracy metric.** For a Cauchy marginal at an effective sample size of about a thousand, the Monte Carlo error of an estimated 0.99 quantile is comparable to the quantile errors reported in Tables 1 and 3. Single-seed differences in that column are therefore weak evidence. A tail-probability error with its MCSE would be a better metric.
+
+**Not yet evaluated:**
+- heavy tails that are not aligned with the coordinate axes (rotated or elliptical);
+- the cost of the transform on well-behaved targets;
+- reparameterisation by hand (scale mixtures);
+- nutpie's flow adaptation;
+- diffeomorphic MCMC (Brešar & Mijatović, 2026);
+- posteriordb posteriors with reference draws.
+
+**Engineering:**
+- **Speed.** `UnifiedRobustNUTS` is a NumPy implementation and is slower per gradient than BlackJAX; the JAX pipeline is the faster path.
+- **Figures.** `bench/plot.py` writes figures to `reports/figures/`. They are not embedded here until their annotations are revised to match the tables.
+
+## 7. Practitioner guide
+
+**When to use it.** Use `sample_blackjax_unified_nuts` when the posterior has heavy-tailed coordinates that roughly align with the parameters. Typical cases:
+- Cauchy or half-Cauchy priors on weakly identified coefficients;
+- Student-*t* components.
+
+Check R-hat and ESS as usual.
+
+**When not to expect help:**
+- **Funnels:** non-centre the model (§3.3).
+- **Strongly correlated heavy tails:** not yet evaluated.
+- **Targets that stock NUTS already samples well:** the transform is not expected to help there.
+
+**If you use `UnifiedRobustNUTS` directly:** pass `adapt_step_size=True` and set `burn_in` to at least `warmup_steps`.
 
 ## 8. References
 
-1. **Power, S., & Vasdekis, G. (2025).** *Some aspects of robustness in modern Markov Chain Monte Carlo.* arXiv preprint arXiv:2511.21563v1.
-2. **Johnson, L. T., & Geyer, C. J. (2012).** *Variable transformation to obtain geometric ergodicity in the random-walk Metropolis algorithm.* The Annals of Statistics, 40(6), 3050–3076.
-3. **Livingstone, S., & Zanella, G. (2022).** *The Barker proposal: combining robustness and efficiency in gradient-based MCMC.* Journal of the Royal Statistical Society: Series B (Statistical Methodology), 84(2), 496–523.
-4. **Yang, K., Łatuszyński, K., & Roberts, G. O. (2024).** *Stereographic Markov Chain Monte Carlo.* The Annals of Statistics, 52(1), 1–28.
-5. **Bell, J., et al. (2024).** *Adaptive heavy-tailed diffeomorphisms for geometrically ergodic Markov chain Monte Carlo.*
-6. **Bou-Rabee, N., Carpenter, B., Marsden, M., & Torelli, J. (2025).** *Within-Orbit Adaptive Leapfrog No-U-Turn Sampler (WALNUTS).* arXiv preprint arXiv:2506.18746.
-7. **Biron-Lattes, M., Surjanovic, N., Syed, S., Campbell, T., & Bouchard-Côté, A. (2024).** *autoMALA: Locally adaptive Metropolis-adjusted Langevin algorithm.* Proceedings of the 27th International Conference on Artificial Intelligence and Statistics (AISTATS), PMLR 238, arXiv:2310.14975.
-8. **Brešar, M., & Mijatović, A. (2026).** *Diffeomorphic Coordinate Transformation for Heavy-Tailed Markov Chain Monte Carlo (DCS).*
-9. **Margossian, C. C., Hoffman, M. D., Sountsov, P., et al. (2024).** *For how many iterations should we run Markov chain Monte Carlo?* Bayesian Analysis / arXiv:2311.02726.
-10. **Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P. C. (2021).** *Rank-normalization, folding, and localization: An improved* $\widehat{R}$ *for assessing convergence of MCMC.* Bayesian Analysis, 16(2), 667–718.
-11. **Roberts, G. O., & Tweedie, R. L. (1996).** *Exponential convergence of Langevin distributions and their discrete approximations.* Bernoulli, 2(4), 341–363.
-12. **Brosse, N., Durmus, A., Moulines, É., & Sabanis, S. (2018).** *The tamed unadjusted Langevin algorithm.* Stochastic Processes and their Applications, 129(10), 3646–3685.
-13. **Neal, R. M. (2003).** *Slice sampling.* The Annals of Statistics, 31(3), 705–767.
-14. **Hoffman, M. D., & Gelman, A. (2014).** *The No-U-Turn Sampler: Adaptively setting path lengths in Hamiltonian Monte Carlo.* Journal of Machine Learning Research, 15(1), 1593–1623.
-15. **Betancourt, M. (2017).** *A Conceptual Introduction to Hamiltonian Monte Carlo.* arXiv preprint arXiv:1701.02434.
-16. **Roberts, G. O., & Rosenthal, J. S. (2001).** *Optimal scaling for various Metropolis-Hastings algorithms.* Statistical Science, 16(4), 351–367.
-17. **Lean Community (2024).** *The Lean 4 Mathematical Library (Mathlib).* https://github.com/leanprover-community/mathlib4.
+1. Atchadé, Y. F. (2006). An adaptive version for the Metropolis adjusted Langevin algorithm with a truncated drift. *Methodology and Computing in Applied Probability*, 8(2), 235–254.
+2. Bell, C., Łatuszyński, K., & Roberts, G. O. (2024). Adaptive stereographic MCMC. arXiv:2408.11780.
+3. Betancourt, M. (2017). A conceptual introduction to Hamiltonian Monte Carlo. arXiv:1701.02434.
+4. Betancourt, M. (2018). Fitting the Cauchy. Stan case study.
+5. Biron-Lattes, M., Surjanovic, N., Syed, S., Campbell, T., & Bouchard-Côté, A. (2024). autoMALA: Locally adaptive Metropolis-adjusted Langevin algorithm. *AISTATS*, PMLR 238. arXiv:2310.16782.
+6. Bou-Rabee, N., Carpenter, B., Kleppe, T. S., & Liu, S. (2025). The within-orbit adaptive leapfrog no-U-turn sampler (WALNUTS). arXiv:2506.18746.
+7. Bou-Rabee, N., Carpenter, B., & Marsden, M. (2024). GIST: Gibbs self-tuning for locally adaptive Hamiltonian Monte Carlo. arXiv:2404.15253.
+8. Brešar, M., & Mijatović, A. (2026). Diffeomorphic Markov chain Monte Carlo: fast mixing for heavy-tailed distributions. arXiv:2608.04284.
+9. Brosse, N., Durmus, A., Moulines, É., & Sabanis, S. (2019). The tamed unadjusted Langevin algorithm. *Stochastic Processes and their Applications*, 129(10), 3638–3663. doi:10.1016/j.spa.2018.10.002.
+10. Gelman, A., & Hill, J. (2006). *Data Analysis Using Regression and Multilevel/Hierarchical Models*. Cambridge University Press.
+11. Gorinova, M. I., Moore, D., & Hoffman, M. D. (2020). Automatic reparameterisation of probabilistic programs. *ICML*, PMLR 119, 3648–3657. arXiv:1906.03028.
+12. He, Y., Balasubramanian, K., & Erdogdu, M. A. (2024). An analysis of transformed unadjusted Langevin algorithm for heavy-tailed sampling. *IEEE Transactions on Information Theory*, 70(1), 571–593. arXiv:2201.08349.
+13. Hickling, T., & Prangle, D. (2025). Flexible tails for normalizing flows. *ICML*, PMLR 267, 23155–23178. arXiv:2406.16971.
+14. Hoffman, M. D., & Gelman, A. (2014). The No-U-Turn sampler: Adaptively setting path lengths in Hamiltonian Monte Carlo. *Journal of Machine Learning Research*, 15, 1593–1623.
+15. Hoffman, M., Sountsov, P., Dillon, J. V., Langmore, I., Tran, D., & Vasudevan, S. (2019). NeuTra-lizing bad geometry in Hamiltonian Monte Carlo using neural transport. arXiv:1903.03704.
+16. Jaini, P., Kobyzev, I., Yu, Y., & Brubaker, M. (2020). Tails of Lipschitz triangular flows. *ICML*. arXiv:1907.04481.
+17. Johnson, L. T., & Geyer, C. J. (2012). Variable transformation to obtain geometric ergodicity in the random-walk Metropolis algorithm. *The Annals of Statistics*, 40(6), 3050–3076. doi:10.1214/12-AOS1048.
+18. Kim, S., Shephard, N., & Chib, S. (1998). Stochastic volatility: Likelihood inference and comparison with ARCH models. *The Review of Economic Studies*, 65(3), 361–393.
+19. Laszkiewicz, M., Lederer, J., & Fischer, A. (2022). Marginal tail-adaptive normalizing flows. *ICML*, PMLR 162, 12020–12048. arXiv:2206.10311.
+20. Liang, F., Mahoney, M. W., & Hodgkinson, L. (2022). Fat-tailed variational inference with anisotropic tail adaptive flows. *ICML*, PMLR 162, 13257–13270. arXiv:2205.07918.
+21. Livingstone, S., Betancourt, M., Byrne, S., & Girolami, M. (2019). On the geometric ergodicity of Hamiltonian Monte Carlo. *Bernoulli*, 25(4A), 3109–3138. doi:10.3150/18-BEJ1083.
+22. Livingstone, S., & Zanella, G. (2022). The Barker proposal: Combining robustness and efficiency in gradient-based MCMC. *Journal of the Royal Statistical Society: Series B*, 84(2), 496–523.
+23. Lytras, I., & Sabanis, S. (2025). Taming under isoperimetry. *Stochastic Processes and their Applications*, 188, 104684. arXiv:2311.09003.
+24. Modi, C., Barnett, A., & Carpenter, B. (2024). Delayed rejection Hamiltonian Monte Carlo for sampling multiscale distributions. *Bayesian Analysis*, 19(3), 815–842. doi:10.1214/23-BA1360.
+25. Neal, R. M. (2003). Slice sampling. *The Annals of Statistics*, 31(3), 705–767.
+26. nutpie: a NUTS implementation with gradient-based and normalizing-flow adaptation. https://github.com/pymc-devs/nutpie.
+27. Papaspiliopoulos, O., Roberts, G. O., & Sköld, M. (2007). A general framework for the parametrization of hierarchical models. *Statistical Science*, 22(1), 59–73.
+28. Piironen, J., & Vehtari, A. (2017). Sparsity information and regularization in the horseshoe and other shrinkage priors. *Electronic Journal of Statistics*, 11(2), 5018–5051.
+29. Power, S., & Vasdekis, G. (2025). Some aspects of robustness in modern Markov chain Monte Carlo. arXiv:2511.21563.
+30. Roberts, G. O., & Tweedie, R. L. (1996). Exponential convergence of Langevin distributions and their discrete approximations. *Bernoulli*, 2(4), 341–363.
+31. Rubin, D. B. (1981). Estimation in parallel randomized experiments. *Journal of Educational Statistics*, 6(4), 377–401.
+32. The Mathlib Community. The Lean 4 mathematical library (mathlib4). https://github.com/leanprover-community/mathlib4.
+33. Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P.-C. (2021). Rank-normalization, folding, and localization: An improved $\widehat{R}$ for assessing convergence of MCMC. *Bayesian Analysis*, 16(2), 667–718.
+34. Yang, J., Łatuszyński, K., & Roberts, G. O. (2024). Stereographic Markov chain Monte Carlo. *The Annals of Statistics*, 52(6), 2692–2713. doi:10.1214/24-AOS2426.

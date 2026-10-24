@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "mcmc-robust"
 version = "0.1.0"
-description = "Novel gradient-based MCMC samplers resolving target roughness and flatness pathologies"
+description = "NUTS with calibrated coordinate-wise arcsinh transforms for heavy-tailed targets, plus experimental robust samplers"
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "MIT" }
@@ -133,5 +133,7 @@ markers = [
 # file. Dependency and pytest-config files (uv.lock, pyproject.toml, conftest.py) select every test.
 impacted_module = "src/mcmc_robust"
 impacted_tests_dir = "tests"
-# tests/unit/test_bench.py reads these generated reports, a dependency import analysis cannot see.
-impacted_invalidate_all = ["reports/*.json"]
+# Files that tests read as data, which import analysis cannot see: the generated reports (test_bench.py,
+# test_docs_consistency.py), the docs and the Lean file (rendered and checked by test_docs_consistency.py,
+# test_readme_snippets.py) and example.py (imported from the repository root by test_example.py).
+impacted_invalidate_all = ["reports/*.json", "README.md", "REPORT.md", "formal/*.lean", "example.py"]

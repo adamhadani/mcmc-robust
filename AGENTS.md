@@ -1,7 +1,7 @@
 # AGENTS.md — Engineering Guide for AI & Human Contributors
 
 ## Overview
-`mcmc-robust` is a research and production-grade library providing novel gradient-based MCMC and No-U-Turn Samplers (NUTS) designed to address the dual geometric pathologies of target roughness (stiff super-linear gradients) and target flatness (sub-exponential polynomial heavy tails) without compromising benign efficiency.
+`mcmc-robust` is a research library centred on NUTS with a calibrated coordinate-wise arcsinh transform for heavy-tailed targets (`sample_blackjax_unified_nuts`, `UnifiedRobustNUTS`). It also contains experimental samplers for stiff targets (`GentleMALA`) and first-order samplers that use the transform. REPORT.md states what each component does and does not establish.
 
 ---
 
@@ -17,7 +17,13 @@
   import jax.numpy as jnp
   ```
 - **Formal Verification**: The Lean 4 formalization lives in `formal/` and builds with zero errors, zero warnings, and zero `sorry`/`admit` statements via `cd formal && lake build`.
-- **Integrity Mandate**: No hardcoded numbers, mock facades, or dummy outputs in source code. All reported empirical results and unit tests must be genuine and reproducible. Every number quoted in `README.md` or `REPORT.md` must come from a committed results file in `reports/` written by a runner in `src/mcmc_robust/bench/`, or from a test. Ratios must be computable from the table they summarise, and claims must state their scope (seeds, chains, targets). A new feature's benchmark goes into a runner, not a one-off script.
+- **Integrity Mandate**: No hardcoded numbers, mock facades, or dummy outputs in source code. All reported empirical results and unit tests must be genuine and reproducible. A new feature's benchmark goes into a runner in `src/mcmc_robust/bench/`, not a one-off script.
+- **Single source of truth for documented results**:
+  - **Where numbers live.** Every result number lives in a committed results file in `reports/`, written by a runner. `README.md` and `REPORT.md` show them only inside generated blocks (`<!-- BEGIN GENERATED: name -->` … `<!-- END GENERATED: name -->`). Each block is rendered by the function registered under `name` in `src/mcmc_robust/bench/render_docs.py`.
+  - **Prose.** Prose outside the blocks must not state ratios or percentages. Claims must state their scope (seeds, chains, targets).
+  - **Enforcement.** `tests/unit/test_docs_consistency.py` fails on a stale block, a hand-typed number, or a dead relative link. `tests/unit/test_readme_snippets.py` runs every Python snippet in the README.
+  - **What to document where.** README.md is the entry point (what it is, status, usage, a generated summary). REPORT.md is the only technical record (method, theory and its scope, full tables, limitations, references). Do not add further Markdown files that state results.
+  - **Volatile counts.** Do not state counts that change often, such as tests or theorems, except inside generated blocks.
 
 ---
 
@@ -35,14 +41,15 @@
 │   ├── diagnostics/           # Rank-normalised ESS and R-hat, accuracy metrics (KS, W1, quantile error), tracker
 │   ├── integrations.py        # PyMC bridge (PyMCModelTarget, sample_pymc_model) and JaxArcsinhTransform
 │   ├── jax_unified_nuts.py    # Pure-JAX 3-phase NUTS (sample_blackjax_unified_nuts, calibrate_jax_arcsinh_transform)
-│   └── bench/                 # Runners (sota_runner, applied_runner, sweep), CLI (python -m mcmc_robust.bench), plots
+│   └── bench/                 # Runners (sota_runner, applied_runner, sweep), CLI (python -m mcmc_robust.bench), plots,
+│                              #   render_docs (fills the generated blocks of README.md and REPORT.md from reports/)
 ├── tests/                     # unit/, e2e/ (tiers 1-4) and tier5_adversarial/, all run with -W error
 ├── benchmarks/                # Standalone CLI runner script (run_benchmarks.py)
-├── example.py                 # Minimal, runnable head-to-head comparison script (~10s)
+├── example.py                 # Stock vs arcsinh-transformed BlackJAX NUTS on mixed heavy tails (~15s); prints only measured facts
 ├── formal/                    # Lean 4 formal proofs (McmcRobustFormal.lean, lakefile.toml)
 ├── reports/                   # Committed benchmark results (CSV, JSON) and figures: the source of every number in the docs
-├── README.md, REPORT.md       # User-facing results and technical report (GitHub math rules: Section 5)
-├── SOTA_ANALYSIS.md           # Plain-language comparison with the state of the art
+├── README.md, REPORT.md       # Entry point and the single technical record; results only in generated blocks (Section 5 math rules)
+├── LICENSE                    # MIT
 ├── .github/workflows/         # ci.yml (lint; tests on Python 3.13-3.15, impacted-only on PRs), lean.yml (lake build)
 ├── pyproject.toml             # Project metadata, dependencies, tool configuration (ruff, mypy, pytest, pytest-impacted)
 └── .pre-commit-config.yaml    # Pre-commit hooks enforcing formatting, linting, typing, and impacted tests
@@ -79,16 +86,19 @@ uv run pre-commit run --all-files
 
 - `uv run pytest -v -W error --impacted` covers uncommitted changes. This is what the pre-commit hook runs.
 - `--impacted-git-mode=branch --impacted-base-branch=main` covers a whole branch. CI runs this on pull requests (against `origin/main`), and the full suite on every push to `main`.
-- Changes to `uv.lock`, `pyproject.toml`, any `conftest.py` or `reports/*.json` select every test. Documentation and Lean-only changes select none.
+- Changes to `uv.lock`, `pyproject.toml`, any `conftest.py`, `reports/*.json`, `README.md`, `REPORT.md`, `formal/*.lean` or `example.py` select every test, because the docs tests read them as data. Other Markdown changes select none.
 - Import analysis cannot see data-file or subprocess dependencies. If a test starts reading a new generated file, add its glob to `impacted_invalidate_all`.
 
-**Regenerating reported results.** The tables in `README.md` and `REPORT.md` come from these commands. Rerun them whenever a sampler change affects a reported number, and commit the regenerated `reports/` files together with the doc edits:
+**Regenerating reported results.** The tables in `README.md` and `REPORT.md` come from these commands. Rerun them whenever a sampler change affects a reported number, then regenerate the docs, and commit the `reports/` files together with the regenerated blocks:
 
 ```bash
 uv run python -m mcmc_robust.bench.sota_runner --full   # Tables 1-4 -> reports/sota_comparison_results.{json,csv}
 uv run python -m mcmc_robust.bench.applied_runner       # Table 5   -> reports/applied_benchmark_results.{json,csv}
 uv run python -m mcmc_robust.bench.plot                 # figures   -> reports/figures/
+uv run python -m mcmc_robust.bench.render_docs --write  # README.md / REPORT.md generated blocks
 ```
+
+`render_docs --check` exits non-zero when any block is stale; the docs tests run the same check.
 
 ---
 

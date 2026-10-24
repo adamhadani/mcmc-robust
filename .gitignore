@@ -24,3 +24,6 @@ ORIGINAL_REQUEST.md
 PROJECT.md
 TEST_INFRA.md
 TEST_READY.md
+
+# Claude Code agent worktrees
+.claude/worktrees/
