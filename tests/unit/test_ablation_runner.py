@@ -247,12 +247,16 @@ def test_arms_share_paired_initial_positions(monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("seed", [0, 2])
 @pytest.mark.parametrize("arm", ["stock", "arcsinh", "scale_mixture"])
-def test_rows_carry_the_tail_alignment_check_of_their_own_x_draws(monkeypatch: pytest.MonkeyPatch, arm: str) -> None:
+def test_rows_carry_the_tail_alignment_check_of_their_own_x_draws(
+    monkeypatch: pytest.MonkeyPatch, arm: str, seed: int
+) -> None:
     """Each row scores the run's x-space draws (mapped back for the scale mixture) with the tail-alignment check.
 
-    On the rotated product of Cauchys the check fires (4 chains x 500 draws; REPORT.md §5.1). The
-    pipeline's own warning must not turn the run into an error row when warnings are errors.
+    On the rotated product of Cauchys the check fires for stock NUTS (4 chains x 500 draws; REPORT.md §5.1).
+    Seeds 0 and 2 cover both a verdict and, for the arcsinh arm on some platforms, no verdict. The pipeline's
+    own warning must not turn the run into an error row when warnings are errors.
     """
     results: list[Any] = []
     real = ar.sample_blackjax_unified_nuts
@@ -263,10 +267,10 @@ def test_rows_carry_the_tail_alignment_check_of_their_own_x_draws(monkeypatch: p
 
     monkeypatch.setattr(ar, "sample_blackjax_unified_nuts", spy)
     spec = make_ablation_target("rot_prod_cauchy")
-    config = ar.AblationConfig.quick(targets=("rot_prod_cauchy",), seeds=(0,), tune=300, draws=500)
+    config = ar.AblationConfig.quick(targets=("rot_prod_cauchy",), seeds=(seed,), tune=300, draws=500)
     with warnings.catch_warnings():
         warnings.simplefilter("error", TailAlignmentWarning)
-        row = ar.run_single(spec, arm, 0, config)
+        row = ar.run_single(spec, arm, seed, config)
     assert row["error"] is None, row["error"]
 
     (res,) = results
@@ -276,10 +280,15 @@ def test_rows_carry_the_tail_alignment_check_of_their_own_x_draws(monkeypatch: p
         assert sm is not None
         x = np.asarray(jax.vmap(jax.vmap(sm.to_x))(jnp.asarray(res.samples)))
     expected = tail_alignment_diagnostic(x)
-    assert row["tail_alignment_max_chi"] == expected.max_chi
+    # Rows store a non-finite statistic (no verdict: fewer than two heavy coordinates) as None.
+    assert row["tail_alignment_max_chi"] == (expected.max_chi if np.isfinite(expected.max_chi) else None)
     assert row["tail_alignment_n_heavy"] == len(expected.heavy_coordinates)
     assert row["tail_alignment_warning"] is expected.warn
-    if arm != "scale_mixture":
+    if arm == "stock":
+        # Stock NUTS reaches these rotated tails often enough for the check to fire: chi was 0.75-0.99 on
+        # each of 12 seeds of this configuration. The arcsinh arm can under-explore them so badly that too
+        # few coordinates look heavy for a verdict (2 of those 12 seeds), the blind spot REPORT.md §2.7
+        # documents, so firing is asserted for stock only.
         assert row["tail_alignment_warning"] is True
 
 
