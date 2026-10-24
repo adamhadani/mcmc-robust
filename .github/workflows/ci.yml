@@ -57,6 +57,9 @@ jobs:
     name: test (Python ${{ matrix.python-version }})
     steps:
     - uses: actions/checkout@v4
+      with:
+        # pytest-impacted diffs a pull request against its merge base with the base branch.
+        fetch-depth: 0
     - name: Install uv and set the python version
       id: setup-uv
       continue-on-error: true
@@ -78,4 +81,14 @@ jobs:
     - name: Install the project
       run: uv sync --all-extras --dev
     - name: Run tests
-      run: uv run pytest -v -W error
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        BASE_REF: ${{ github.base_ref }}
+      run: |
+        if [ "$EVENT_NAME" = "pull_request" ]; then
+          # Only the tests a change can reach; dependency or pytest-config changes select every test.
+          uv run pytest -v -W error --impacted --impacted-git-mode=branch --impacted-base-branch="origin/$BASE_REF"
+        else
+          # Pushes to main keep running the full suite as the safety net.
+          uv run pytest -v -W error
+        fi

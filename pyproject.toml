@@ -41,6 +41,7 @@ dev = [
     "mypy>=1.15.0",
     "pre-commit>=4.6.1",
     "pytest-cov>=6.1.1",
+    "pytest-impacted[fast]>=0.35.0",
     "ruff>=0.11.9",
 ]
 
@@ -50,6 +51,7 @@ dev = [
     "mypy>=1.15.0",
     "pre-commit>=4.6.1",
     "pytest-cov>=6.1.1",
+    "pytest-impacted[fast]>=0.35.0",
     "ruff>=0.11.9",
 ]
 
@@ -127,3 +129,9 @@ markers = [
     "guardrails: Verification gates for formal acceptance criteria",
     "bench: Full benchmark execution runs across the 5 target regimes",
 ]
+# pytest-impacted (active only with --impacted): run just the tests whose imports reach a changed
+# file. Dependency and pytest-config files (uv.lock, pyproject.toml, conftest.py) select every test.
+impacted_module = "src/mcmc_robust"
+impacted_tests_dir = "tests"
+# tests/unit/test_bench.py reads these generated reports, a dependency import analysis cannot see.
+impacted_invalidate_all = ["reports/*.json"]
