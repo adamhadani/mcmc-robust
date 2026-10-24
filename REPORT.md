@@ -19,7 +19,8 @@ This is the technical record for the code in this repository. Every result numbe
 
   It shows where the gain comes from and where the transform is not the best choice.
 - **Comparison with nutpie (§5.2).** nutpie is the closest existing tool. The comparison covers its default (a gradient-based mass matrix) and its normalizing-flow adaptation. The transform is ahead per gradient on axis-aligned heavy tails, and behind the flow on rotated targets.
-- **Single-seed comparisons (§5.3).** On two synthetic targets whose heavy tails are aligned with the coordinate axes, the transform raises tail-ESS per gradient over stock BlackJAX and PyMC NUTS and lowers the error of the estimated 0.99 quantile (Tables 1 and 3).
+- **Real posteriors (§5.3).** Every posteriordb posterior with reference draws, compared with stock NUTS on Stan's unconstrained space. There neither transform is a uniform improvement over stock NUTS, both add divergences on posteriors where stock NUTS has none, and the Tukey h-map's losses come where its guard sets h > 0.
+- **Single-seed comparisons (§5.4).** On two synthetic targets whose heavy tails are aligned with the coordinate axes, the transform raises tail-ESS per gradient over stock BlackJAX and PyMC NUTS and lowers the error of the estimated 0.99 quantile (Tables 1 and 3).
 - It does not resolve funnel geometry (Table 2).
 - The repository's other components remain experimental (§3): a damped Langevin drift for stiff targets, and first-order samplers that use the transform.
 
@@ -228,7 +229,9 @@ x_i = \mu_i + R_i\, z_i \exp\left(\tfrac{1}{2} h_i z_i^2\right), \qquad
 - It separates Gaussian tails from Tukey-h tails, not polynomial tails from exponential ones. A Laplace-tailed coordinate is often warped, which makes its pullback lighter than Gaussian.
 - The test assumes independent draws, while Phase 1 draws are autocorrelated.
 
-**Default.** arcsinh remains the default `transform_kind`. Table A (§5.1) compares the two maps.
+**Default.** arcsinh remains the default `transform_kind`.
+- Table A (§5.1) compares the two maps on synthetic targets.
+- Table C (§5.3) compares them on real posteriors. There `tukey_h` is close to stock NUTS where the guard keeps h = 0 everywhere, and loses where it sets h > 0.
 
 ### 2.7 Tail-alignment warning
 
@@ -420,7 +423,7 @@ d = 50, budget 3,000 gradients per chain, 4 chains, seed 42; "tail" starts at �
 - `scale_mixture`, on the Student-t-family targets: the practitioner's rewrite of a Student-t or Cauchy component as a non-centred Gaussian scale mixture, x = μ + √λ·L·η with an inverse-gamma λ.
 
 **Targets.**
-- Tasks 1 and 3 of §5.3;
+- Tasks 1 and 3 of §5.4;
 - rotated and isotropic multivariate *t* targets, whose heavy tails are not aligned with the axes;
 - a rotated product of Cauchys, whose heavy tails lie along rotated axes without being elliptical;
 - two Gaussians, which measure the cost on targets stock NUTS already handles.
@@ -560,7 +563,109 @@ Excluded: `dcs_bresar_mijatovic_2026` (not run: no official code found).
 - **Seeds converged** (max R-hat at most 1.01): `arcsinh_nuts` Task 1: 4 of 5; rotated Gaussian: 5 of 5; Task 3: 5 of 5; rotated t (ν = 1): 1 of 5; `nutpie_flow` Task 1: 1 of 5; rotated Gaussian: 5 of 5; Task 3: 3 of 5; rotated t (ν = 1): 4 of 5.
 <!-- END GENERATED: competitor-findings -->
 
-### 5.3 Single-seed comparisons (Tables 1–5)
+### 5.3 Real posteriors from posteriordb (Table C)
+
+`bench/posteriordb_runner.py` writes `reports/posteriordb_results.json`. It needs the optional `posteriordb` extra (BridgeStan) and a checkout of posteriordb, which `--fetch` makes at the pinned commit.
+
+**Why this table.** Tables A and B use synthetic targets built to have heavy tails. Table C asks what the transforms do on posteriors that people fit. It runs every posterior in posteriordb (Magnusson et al., 2025) that has reference draws; none is selected or excluded by its results. It is the evidence for or against making `tukey_h` the default (§2.6).
+
+**How the arms run.**
+- BridgeStan (Roualdes et al., 2023) compiles each Stan model. `stan_bridge.bridgestan_logdensity_fn` passes its log density and gradient on Stan's unconstrained space to `sample_blackjax_unified_nuts`. Every arm samples the same density; only `transform_kind` differs.
+- Initial positions follow Stan: uniform on (−2, 2) for each unconstrained coordinate, redrawn until the density is finite.
+- Draws are mapped to the parameters that have reference draws, transformed parameters included. ESS, R-hat and accuracy are measured on those.
+
+**Accuracy against the reference.** posteriordb's reference draws are themselves a Monte Carlo sample. `diagnostics/tail_accuracy.reference_agreement` compares tail probabilities at the reference's quantiles, and means, as z-scores that count the Monte Carlo error of both the run and the reference.
+
+**Two diagnostics in each row.**
+- *Where Phase 1 calibrated:* the distance between Phase 1's location and scale and the run's own post-warm-up draws. Phase 1 calibrates on the first part of warm-up (§2.4); when the chains have not reached the posterior by then, the transform is centred and scaled on the transient.
+- *What the `tukey_h` guard decided:* how many unconstrained coordinates it gave h > 0.
+
+<!-- BEGIN GENERATED: posteriordb-table -->
+Every posterior of posteriordb (commit `91027f9cdd13`) with reference draws: 58 posteriors, 10 seeds each. Each run has 4 chains × 1,000 draws after 500 warm-up steps, on Stan's unconstrained space through BridgeStan; arms share each seed's Stan-style initial positions and random key, so ratios are paired by seed. ESS and accuracy are measured on the parameters that have reference draws; the ratios compare the worst parameter's tail-ESS per gradient. Source: `reports/posteriordb_results.json` (run 2026-10-24, commit 6a860fd).
+
+A run disagrees with the reference when a tail-probability z-score (at the reference's 1%, 5%, 95% and 99% quantiles) or a mean z-score exceeds 5 in absolute value; z counts the Monte Carlo error of the run and of the reference. Not converged: max R-hat above 1.01. d is the unconstrained dimension.
+
+| Posterior | d | Stock min-tail-ESS/grad, median | `arcsinh` ÷ stock (seeds better) | `tukey_h` ÷ stock (seeds better) | `tukey_h` ÷ `arcsinh` (seeds better) | Median divergences (stock / arcsinh / tukey_h) | Seeds disagreeing with reference (stock / arcsinh / tukey_h) | Seeds not converged (stock / arcsinh / tukey_h) | `tukey_h` coordinates with h > 0, median |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Rate_1_data-Rate_1_model | 1 | 0.111 | 0.57× (0 of 10) | 0.93× (5 of 10) | 1.45× (10 of 10) | 0 / 6 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| Rate_2_data-Rate_2_model | 2 | 0.105 | 0.78× (1 of 10) | 0.90× (2 of 10) | 1.24× (10 of 10) | 0 / 2 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| Rate_3_data-Rate_3_model | 1 | 0.113 | 0.61× (0 of 10) | 0.99× (4 of 10) | 1.77× (10 of 10) | 0 / 10.5 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| Rate_5_data-Rate_5_model | 1 | 0.106 | 0.68× (0 of 10) | 1.04× (6 of 10) | 1.49× (10 of 10) | 0 / 13.5 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| arK-arK | 7 | 0.0125 | 0.98× (4 of 10) | 0.99× (5 of 10) | 1.03× (6 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| arma-arma11 | 4 | 0.000113 | 1.21× (8 of 10) | 0.52× (3 of 10) | 0.38× (2 of 10) | 122 / 0 / 49.5 | 5 / 2 / 3 | 7 / 6 / 8 | 3 |
+| bball_drive_event_0-hmm_drive_0 | 6 | 0.000334 | 95.00× (8 of 10) | 47.48× (8 of 10) | 0.50× (4 of 10) | 19 / 4.5 / 3 | 3 / 1 / 2 | 7 / 3 / 2 | 2 |
+| bball_drive_event_1-hmm_drive_1 | 6 | 0.016 | 1.05× (6 of 10) | 0.63× (1 of 10) | 0.54× (2 of 10) | 0 / 0 / 94 | 0 / 0 / 0 | 0 / 0 / 0 | 5 |
+| diamonds-diamonds | 26 | 0.000328 | 0.99× (4 of 10) | 1.06× (8 of 10) | 1.06× (6 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 20.5 |
+| dogs-dogs | 3 | 0.026 | 0.89× (2 of 10) | 0.98× (3 of 10) | 1.05× (6 of 10) | 0 / 0 / 0 | 1 / 0 / 0 | 0 / 1 / 0 | 0 |
+| dogs-dogs_hierarchical | 2 | 0.0683 | 0.78× (0 of 10) | 0.98× (3 of 10) | 1.23× (10 of 10) | 0 / 1.5 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| earnings-earn_height | 3 | 0.00229 | 0.77× (4 of 10) | 0.03× (1 of 10) | 0.10× (3 of 10) | 0 / 0 / 120 | 0 / 2 / 6 | 0 / 3 / 9 | 1 |
+| earnings-log10earn_height | 3 | 0.00246 | 1.32× (9 of 10) | 1.12× (9 of 10) | 0.89× (4 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 1 / 0 | 0 |
+| earnings-logearn_height | 3 | 0.00276 | 1.07× (6 of 10) | 1.07× (7 of 10) | 1.07× (6 of 10) | 0 / 0 / 0 | 0 / 1 / 0 | 0 / 1 / 0 | 1 |
+| earnings-logearn_height_male | 4 | 0.00219 | 1.01× (7 of 10) | 0.91× (3 of 10) | 0.84× (2 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 1 | 2 |
+| earnings-logearn_interaction | 5 | 0.00111 | 0.95× (3 of 10) | 0.88× (3 of 10) | 0.92× (4 of 10) | 0 / 0 / 0 | 0 / 0 / 1 | 0 / 1 / 1 | 2 |
+| earnings-logearn_interaction_z | 5 | 0.0291 | 0.93× (1 of 10) | 0.59× (0 of 10) | 0.65× (0 of 10) | 0 / 0 / 7.5 | 0 / 0 / 0 | 0 / 0 / 1 | 5 |
+| earnings-logearn_logheight_male | 4 | 0.000546 | 1.01× (5 of 10) | 1.03× (6 of 10) | 0.98× (5 of 10) | 0 / 16 / 0 | 0 / 3 / 1 | 0 / 2 / 1 | 0 |
+| eight_schools-eight_schools_centered | 10 | 0.000229 | 5.23× (9 of 10) | 1.49× (7 of 10) | 0.29× (4 of 10) | 150.5 / 57.5 / 141.5 | 10 / 10 / 10 | 10 / 10 / 10 | 5 |
+| eight_schools-eight_schools_noncentered | 10 | 0.0342 | 1.12× (6 of 10) | 1.23× (7 of 10) | 1.06× (6 of 10) | 0 / 25 / 77 | 0 / 0 / 0 | 0 / 0 / 0 | 1 |
+| garch-garch11 | 4 | 0.0295 | 0.98× (4 of 10) | 0.95× (2 of 10) | 0.92× (2 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 1 |
+| gp_pois_regr-gp_pois_regr | 13 | 0.00163 | 0.88× (2 of 10) | 1.01× (5 of 10) | 1.15× (9 of 10) | 11.5 / 43 / 16 | 0 / 0 / 0 | 0 / 1 / 0 | 0 |
+| gp_pois_regr-gp_regr | 3 | 0.0858 | 0.79× (0 of 10) | 1.08× (7 of 10) | 1.31× (10 of 10) | 0 / 11 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| hmm_example-hmm_example | 4 | 0.0253 | 1.01× (5 of 10) | 0.97× (3 of 10) | 0.94× (3 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 1 | 1 |
+| hudson_lynx_hare-lotka_volterra | 8 | 0.00539 | 1.13× (6 of 10) | 1.08× (7 of 10) | 1.02× (5 of 10) | 0 / 0 / 1.5 | 0 / 0 / 0 | 4 / 2 / 1 | 8 |
+| kidiq-kidscore_interaction | 5 | 0.00165 | 0.92× (5 of 10) | 0.62× (2 of 10) | 0.86× (3 of 10) | 0 / 10 / 127.5 | 0 / 1 / 5 | 0 / 3 / 6 | 3 |
+| kidiq-kidscore_momhs | 3 | 0.0209 | 1.26× (10 of 10) | 0.90× (3 of 10) | 0.77× (2 of 10) | 0 / 0 / 2 | 0 / 0 / 0 | 0 / 0 / 0 | 3 |
+| kidiq-kidscore_momhsiq | 4 | 0.00577 | 1.40× (10 of 10) | 1.32× (9 of 10) | 0.94× (4 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 1 |
+| kidiq-kidscore_momiq | 3 | 0.00649 | 1.35× (8 of 10) | 1.28× (10 of 10) | 1.05× (7 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0.5 |
+| kidiq_with_mom_work-kidscore_interaction_c | 5 | 0.0526 | 1.10× (8 of 10) | 0.90× (5 of 10) | 0.89× (2 of 10) | 0 / 2 / 18.5 | 0 / 0 / 0 | 0 / 0 / 0 | 3 |
+| kidiq_with_mom_work-kidscore_interaction_c2 | 5 | 0.0374 | 0.94× (4 of 10) | 0.58× (0 of 10) | 0.58× (0 of 10) | 0 / 0 / 23 | 0 / 0 / 0 | 0 / 0 / 1 | 5 |
+| kidiq_with_mom_work-kidscore_interaction_z | 5 | 0.0328 | 1.43× (9 of 10) | 1.00× (5 of 10) | 0.68× (1 of 10) | 0 / 2 / 24.5 | 0 / 0 / 0 | 0 / 0 / 0 | 3 |
+| kidiq_with_mom_work-kidscore_mom_work | 5 | 0.013 | 1.24× (10 of 10) | 1.06× (6 of 10) | 0.90× (4 of 10) | 0 / 1.5 / 21.5 | 0 / 0 / 0 | 0 / 0 / 1 | 2 |
+| kilpisjarvi_mod-kilpisjarvi | 3 | 0.000205 | 0.11× (1 of 10) | 1.32× (6 of 10) | 7.22× (8 of 10) | 0 / 106.5 / 0 | 0 / 8 / 2 | 3 / 9 / 2 | 0.5 |
+| low_dim_gauss_mix-low_dim_gauss_mix | 5 | 0.0602 | 1.00× (5 of 10) | 0.56× (2 of 10) | 0.55× (1 of 10) | 0 / 0 / 22.5 | 0 / 0 / 0 | 0 / 0 / 1 | 5 |
+| mcycle_gp-accel_gp | 66 | 0.000398 | 1.01× (6 of 10) | 0.93× (5 of 10) | 0.91× (4 of 10) | 40.5 / 102 / 97.5 | 1 / 0 / 0 | 0 / 0 / 2 | 6 |
+| mesquite-logmesquite | 8 | 0.0113 | 0.89× (3 of 10) | 0.95× (4 of 10) | 1.18× (7 of 10) | 0 / 1 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| mesquite-logmesquite_logva | 5 | 0.0099 | 0.99× (4 of 10) | 0.95× (3 of 10) | 1.02× (6 of 10) | 0 / 1 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| mesquite-logmesquite_logvas | 8 | 0.0058 | 0.90× (2 of 10) | 0.98× (3 of 10) | 1.11× (7 of 10) | 0 / 12 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| mesquite-logmesquite_logvash | 7 | 0.00567 | 0.83× (0 of 10) | 1.00× (5 of 10) | 1.17× (10 of 10) | 0 / 4.5 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| mesquite-logmesquite_logvolume | 3 | 0.0544 | 0.92× (3 of 10) | 1.01× (6 of 10) | 1.04× (7 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| mesquite-mesquite | 8 | 0.00385 | 0.59× (0 of 10) | 1.09× (5 of 10) | 1.76× (9 of 10) | 0 / 11 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 1 |
+| nes1972-nes | 10 | 0.00756 | 0.96× (4 of 10) | 1.00× (5 of 10) | 1.03× (7 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| nes1976-nes | 10 | 0.00741 | 1.01× (5 of 10) | 1.03× (7 of 10) | 1.06× (6 of 10) | 0 / 1 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| nes1980-nes | 10 | 0.00733 | 0.99× (5 of 10) | 0.98× (4 of 10) | 0.97× (3 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| nes1984-nes | 10 | 0.0073 | 1.10× (8 of 10) | 1.06× (6 of 10) | 0.97× (2 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| nes1988-nes | 10 | 0.00746 | 0.93× (3 of 10) | 1.00× (5 of 10) | 1.07× (8 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| nes1992-nes | 10 | 0.00779 | 0.98× (4 of 10) | 0.99× (5 of 10) | 1.01× (6 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| nes1996-nes | 10 | 0.00686 | 0.93× (4 of 10) | 0.99× (5 of 10) | 1.08× (6 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| nes2000-nes | 10 | 0.00665 | 0.94× (3 of 10) | 0.96× (3 of 10) | 0.94× (3 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| nes_logit_data-nes_logit_model | 2 | 0.0168 | 0.85× (1 of 10) | 0.88× (1 of 10) | 1.08× (5 of 10) | 0 / 0 / 0.5 | 0 / 0 / 1 | 0 / 1 / 1 | 1 |
+| one_comp_mm_elim_abs-one_comp_mm_elim_abs | 4 | 0.00842 | 0.83× (4 of 10) | 0.70× (2 of 10) | 1.14× (5 of 10) | 12.5 / 138.5 / 171 | 5 / 10 / 5 | 2 / 3 / 2 | 1 |
+| radon_all-radon_pooled | 3 | 0.0898 | 0.96× (4 of 10) | 0.98× (4 of 10) | 1.02× (6 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| radon_mn-radon_pooled | 3 | 0.0861 | 0.99× (4 of 10) | 1.00× (5 of 10) | 1.02× (6 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| sblrc-blr | 6 | 0.00755 | 2.87× (10 of 10) | 2.67× (10 of 10) | 0.89× (2 of 10) | 0 / 0 / 0 | 1 / 0 / 1 | 1 / 0 / 0 | 5 |
+| sblri-blr | 6 | 0.0143 | 4.63× (10 of 10) | 4.49× (10 of 10) | 0.93× (3 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 5 |
+| wells_data-wells_dist | 2 | 0.00761 | 3.27× (10 of 10) | 1.85× (10 of 10) | 0.57× (2 of 10) | 0 / 0 / 8 | 0 / 0 / 0 | 1 / 0 / 2 | 2 |
+| wells_data-wells_dist100_model | 2 | 0.0365 | 0.85× (3 of 10) | 1.01× (6 of 10) | 1.19× (8 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+<!-- END GENERATED: posteriordb-table -->
+
+<!-- BEGIN GENERATED: posteriordb-findings -->
+- **`arcsinh` vs stock NUTS** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `arcsinh` better on 24 of 58 posteriors, worse by more than a fifth on 9; median over posteriors 0.98× (range 0.11× to 95.00×).
+- **`tukey_h` vs stock NUTS** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `tukey_h` better on 24 of 58 posteriors, worse by more than a fifth on 8; median over posteriors 0.99× (range 0.03× to 47.48×).
+- **`tukey_h` vs `arcsinh`** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `tukey_h` better on 31 of 58 posteriors, worse by more than a fifth on 11; median over posteriors 1.02× (range 0.10× to 7.22×).
+- **Posteriors where most runs disagree with the reference** (a z-score above 5 on at least half the seeds): `stock`: 3 of 58 (arma-arma11, eight_schools-eight_schools_centered, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `arcsinh`: 3 of 58 (eight_schools-eight_schools_centered, kilpisjarvi_mod-kilpisjarvi, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `tukey_h`: 4 of 58 (earnings-earn_height, eight_schools-eight_schools_centered, kidiq-kidscore_interaction, one_comp_mm_elim_abs-one_comp_mm_elim_abs).
+- **Posteriors with divergences on at least half the seeds**: `stock`: 6 of 58 (arma-arma11, bball_drive_event_0-hmm_drive_0, eight_schools-eight_schools_centered, gp_pois_regr-gp_pois_regr, mcycle_gp-accel_gp, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `arcsinh`: 24 of 58; `tukey_h`: 20 of 58.
+- **Posteriors not converged on at least half the seeds** (max R-hat above 1.01): `stock`: 3 of 58 (arma-arma11, bball_drive_event_0-hmm_drive_0, eight_schools-eight_schools_centered); `arcsinh`: 3 of 58 (arma-arma11, eight_schools-eight_schools_centered, kilpisjarvi_mod-kilpisjarvi); `tukey_h`: 4 of 58 (arma-arma11, earnings-earn_height, eight_schools-eight_schools_centered, kidiq-kidscore_interaction).
+- **Phase 1 calibrated off the posterior** (median over seeds of the largest distance between the calibrated location and the run's final median, above 3 posterior scales): `arcsinh`: 10 of 58 posteriors, worse than stock by more than a fifth on 2 of them; `tukey_h`: 10 of 58 posteriors, worse than stock by more than a fifth on 1 of them.
+- **The `tukey_h` guard** (median over seeds) set h > 0 on 103 of 394 unconstrained coordinates (31 of 58 posteriors); everywhere else the h-map is the affine map.
+- **`tukey_h` by the guard's decision** (per-posterior medians over seeds): where it kept h = 0 on every coordinate (27 of 58 posteriors), `tukey_h` vs `arcsinh` 1.06× (better on 22) and worse than stock by more than a fifth on 0; where it set h > 0 somewhere (31 of 58), 0.90× (better on 9) and worse than stock on 8. `arcsinh` vs stock on the same groups: 0.93× and 1.05×.
+- **`TailAlignmentWarning`** on the default `arcsinh` runs' unconstrained draws fired, on at least half the seeds, on 0 of 58 posteriors.
+<!-- END GENERATED: posteriordb-findings -->
+
+**What the table does and does not show.**
+- It compares the transforms with stock NUTS on Stan's unconstrained parameterisation of each model, as posteriordb defines it. Most of these posteriors are regressions that stock NUTS already samples well, so Table C tests whether the transforms are safe as a default, not whether they help on heavy tails (Tables A and B).
+- The split by the guard's decision is observational: the guard's decision and the posterior are not varied independently. Running `tukey_h` with h held at 0, which is the `affine` arm, on the same posteriors would test whether the h > 0 decisions cause the losses.
+- Each run has the protocol of Table A; stock NUTS on posteriordb is usually run with a longer warm-up.
+
+### 5.4 Single-seed comparisons (Tables 1–5)
 
 **Two runners produce the tables.**
 
@@ -726,6 +831,7 @@ Seed 42 only, 4 chains × 1,000 draws after 1,000 warm-up steps, NUTS tree depth
   - On the rotated multivariate Cauchy, the arcsinh arm converges on few seeds (Table A), so its ratio there is not a supported gain.
   - On the rotated product of Cauchys it misses tails without any R-hat warning.
   - Do not rely on the transform when heavy tails may lie along directions that are not coordinate axes.
+- **Real posteriors.** On posteriordb (§5.3) neither transform is a uniform improvement over stock NUTS, and both add divergences on posteriors that stock NUTS samples without any. Phase 1 calibrating on draws that have not yet reached the posterior happens there too, but does not account for most of the losses.
 - **Unconverged denominators.** Several ratios compare against baselines that are not converged; for example, BlackJAX NUTS on Task 1. An unconverged denominator makes a ratio unreliable in either direction.
 - **The best case for the method.** Task 1 is built so that most coordinates are independent and heavy-tailed. Task 3 is also product-form.
 - **A noisy accuracy metric.** For a Cauchy marginal at an effective sample size of about a thousand, the Monte Carlo error of an estimated 0.99 quantile is comparable to the quantile errors reported in Tables 1 and 3. Single-seed differences in that column are therefore weak evidence. A tail-probability error with its MCSE would be a better metric.
@@ -733,16 +839,13 @@ Seed 42 only, 4 chains × 1,000 draws after 1,000 warm-up steps, NUTS tree depth
 **Not yet evaluated:**
 - elliptical heavy tails with several scales, beyond the rotated *t* targets of Table A;
 - diffeomorphic MCMC (Brešar & Mijatović, 2026), for which no public code was found;
-- posteriordb posteriors with reference draws.
+- the `affine` arm on posteriordb, which would test whether the `tukey_h` guard's h > 0 decisions cause its losses there (§5.3).
 
-**Alternative transforms under exploration** (exploration branches, not part of the library):
-- a Tukey h-map, whose pullback of polynomial tails is Gaussian (§4);
-- whitened radial and block-structured maps for elliptical heavy tails.
+**Alternative transforms under exploration** (exploration branches, not part of the library): whitened radial and block-structured maps for elliptical heavy tails.
 
 **The new options:**
-- The `tukey_h` guard and the tail-alignment warning are calibrated on synthetic targets only.
-- Both can be wrong in the ways described in §2.6 and §2.7.
-- Neither has been evaluated on posteriors from real data.
+- The `tukey_h` guard and the tail-alignment warning were calibrated on synthetic targets, and both can be wrong in the ways described in §2.6 and §2.7.
+- On posteriordb (§5.3) the guard sets h > 0 on coordinates of many posteriors, and those are the posteriors where `tukey_h` loses. Its test treats autocorrelated, early warm-up draws as independent; a guard that accounts for that is open work.
 
 **Engineering:**
 - **Speed.** `UnifiedRobustNUTS` is a NumPy implementation and is slower per gradient than BlackJAX; the JAX pipeline is the faster path.
@@ -761,9 +864,9 @@ Check R-hat and ESS as usual.
 **When not to expect help:**
 - **Funnels:** non-centre the model (§3.3).
 - **Heavy tails that are strongly rotated relative to the coordinates:** gains are smaller and less reliable, and a tail can be missed without warning (Table A). nutpie's normalizing-flow adaptation is worth trying there (Table B).
-- **Targets that stock NUTS already samples well:** the transform is not expected to help there.
+- **Targets that stock NUTS already samples well:** the transform is not expected to help there, and on real posteriors it can add divergences (Table C). Use it when you expect heavy tails, not as a default for every model.
 
-**Try the Tukey h-map.** On axis-aligned heavy tails, try `transform_kind="tukey_h"` (Table A compares it with arcsinh). Check `result.transform.h` to see which coordinates were warped.
+**Try the Tukey h-map.** On axis-aligned heavy tails, try `transform_kind="tukey_h"` (Table A compares it with arcsinh). Check `result.transform.h` to see which coordinates were warped. If it is positive on coordinates you expect to be light-tailed, prefer arcsinh or stock NUTS: on real posteriors, the guard's h > 0 decisions are where `tukey_h` lost (Table C).
 
 **Heed the warning.** If `TailAlignmentWarning` fires, treat tail estimates with caution. Reparameterise the model, or try a method that follows tail directions, such as nutpie's flow (Table B).
 
@@ -795,15 +898,17 @@ Check R-hat and ESS as usual.
 22. Livingstone, S., & Zanella, G. (2022). The Barker proposal: Combining robustness and efficiency in gradient-based MCMC. *Journal of the Royal Statistical Society: Series B*, 84(2), 496–523.
 23. Livingstone, S., Betancourt, M., Byrne, S., & Girolami, M. (2019). On the geometric ergodicity of Hamiltonian Monte Carlo. *Bernoulli*, 25(4A), 3109–3138. doi:10.3150/18-BEJ1083.
 24. Lytras, I., & Sabanis, S. (2025). Taming under isoperimetry. *Stochastic Processes and their Applications*, 188, 104684. arXiv:2311.09003.
-25. Modi, C., Barnett, A., & Carpenter, B. (2024). Delayed rejection Hamiltonian Monte Carlo for sampling multiscale distributions. *Bayesian Analysis*, 19(3), 815–842. doi:10.1214/23-BA1360.
-26. Neal, R. M. (2003). Slice sampling. *The Annals of Statistics*, 31(3), 705–767.
-27. Papaspiliopoulos, O., Roberts, G. O., & Sköld, M. (2007). A general framework for the parametrization of hierarchical models. *Statistical Science*, 22(1), 59–73.
-28. Piironen, J., & Vehtari, A. (2017). Sparsity information and regularization in the horseshoe and other shrinkage priors. *Electronic Journal of Statistics*, 11(2), 5018–5051.
-29. Power, S., & Vasdekis, G. (2025). Some aspects of robustness in modern Markov chain Monte Carlo. arXiv:2511.21563.
-30. Roberts, G. O., & Tweedie, R. L. (1996). Exponential convergence of Langevin distributions and their discrete approximations. *Bernoulli*, 2(4), 341–363.
-31. Rubin, D. B. (1981). Estimation in parallel randomized experiments. *Journal of Educational Statistics*, 6(4), 377–401.
-32. Self, S. G., & Liang, K.-Y. (1987). Asymptotic properties of maximum likelihood estimators and likelihood ratio tests under nonstandard conditions. *Journal of the American Statistical Association*, 82(398), 605–610.
-33. Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P.-C. (2021). Rank-normalization, folding, and localization: An improved $\widehat{R}$ for assessing convergence of MCMC. *Bayesian Analysis*, 16(2), 667–718.
-34. Yang, J., Łatuszyński, K., & Roberts, G. O. (2024). Stereographic Markov chain Monte Carlo. *The Annals of Statistics*, 52(6), 2692–2713. doi:10.1214/24-AOS2426.
-35. nutpie: a NUTS implementation with gradient-based and normalizing-flow adaptation. https://github.com/pymc-devs/nutpie.
-36. The Mathlib Community. The Lean 4 mathematical library (mathlib4). https://github.com/leanprover-community/mathlib4.
+25. Magnusson, M., Torgander, J., Bürkner, P.-C., Zhang, L., Carpenter, B., & Vehtari, A. (2025). posteriordb: Testing, benchmarking and developing Bayesian inference algorithms. *AISTATS*, PMLR 258, 1198–1206. arXiv:2407.04967.
+26. Modi, C., Barnett, A., & Carpenter, B. (2024). Delayed rejection Hamiltonian Monte Carlo for sampling multiscale distributions. *Bayesian Analysis*, 19(3), 815–842. doi:10.1214/23-BA1360.
+27. Neal, R. M. (2003). Slice sampling. *The Annals of Statistics*, 31(3), 705–767.
+28. Papaspiliopoulos, O., Roberts, G. O., & Sköld, M. (2007). A general framework for the parametrization of hierarchical models. *Statistical Science*, 22(1), 59–73.
+29. Piironen, J., & Vehtari, A. (2017). Sparsity information and regularization in the horseshoe and other shrinkage priors. *Electronic Journal of Statistics*, 11(2), 5018–5051.
+30. Power, S., & Vasdekis, G. (2025). Some aspects of robustness in modern Markov chain Monte Carlo. arXiv:2511.21563.
+31. Roberts, G. O., & Tweedie, R. L. (1996). Exponential convergence of Langevin distributions and their discrete approximations. *Bernoulli*, 2(4), 341–363.
+32. Roualdes, E. A., Ward, B., Carpenter, B., Seyboldt, A., & Axen, S. D. (2023). BridgeStan: Efficient in-memory access to the methods of a Stan model. *Journal of Open Source Software*, 8(87), 5236. doi:10.21105/joss.05236.
+33. Rubin, D. B. (1981). Estimation in parallel randomized experiments. *Journal of Educational Statistics*, 6(4), 377–401.
+34. Self, S. G., & Liang, K.-Y. (1987). Asymptotic properties of maximum likelihood estimators and likelihood ratio tests under nonstandard conditions. *Journal of the American Statistical Association*, 82(398), 605–610.
+35. Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P.-C. (2021). Rank-normalization, folding, and localization: An improved $\widehat{R}$ for assessing convergence of MCMC. *Bayesian Analysis*, 16(2), 667–718.
+36. Yang, J., Łatuszyński, K., & Roberts, G. O. (2024). Stereographic Markov chain Monte Carlo. *The Annals of Statistics*, 52(6), 2692–2713. doi:10.1214/24-AOS2426.
+37. nutpie: a NUTS implementation with gradient-based and normalizing-flow adaptation. https://github.com/pymc-devs/nutpie.
+38. The Mathlib Community. The Lean 4 mathematical library (mathlib4). https://github.com/leanprover-community/mathlib4.

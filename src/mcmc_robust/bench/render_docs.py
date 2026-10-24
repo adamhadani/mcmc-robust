@@ -1152,11 +1152,46 @@ def render_posteriordb_findings(reports: Reports) -> str:
             f"- **The `tukey_h` guard** (median over seeds) set h > 0 on {positive} of {total_d} unconstrained "
             f"coordinates ({with_h} of {n} posteriors); everywhere else the h-map is the affine map."
         )
+        if {"arcsinh", "stock"} <= set(arms):
+            groups: dict[bool, list[str]] = {False: [], True: []}
+            for p in posts:
+                runs = list(_pdb_runs(reports, p, "tukey_h").values())
+                if runs:
+                    groups[float(np.median([r["tukey_h_n_positive"] for r in runs])) > 0].append(p)
+
+            def medians(ps: list[str], arm: str, reference: str) -> list[float]:
+                return [float(np.median(r)) for p in ps if (r := _pdb_ratios(reports, p, arm, reference))]
+
+            def overall(ms: list[float]) -> str:
+                return f"{float(np.median(ms)):.2f}×" if ms else "n/a"
+
+            parts = []
+            for positive_h, where in ((False, "kept h = 0 on every coordinate"), (True, "set h > 0 somewhere")):
+                ps = groups[positive_h]
+                vs_arc, vs_stock = medians(ps, "tukey_h", "arcsinh"), medians(ps, "tukey_h", "stock")
+                better = sum(m > 1.0 for m in vs_arc)
+                worse = sum(m < POSTERIORDB_WORSE_RATIO for m in vs_stock)
+                if positive_h:
+                    parts.append(
+                        f"where it {where} ({len(ps)} of {n}), {overall(vs_arc)} (better on {better}) "
+                        f"and worse than stock on {worse}"
+                    )
+                else:
+                    parts.append(
+                        f"where it {where} ({len(ps)} of {n} posteriors), `tukey_h` vs `arcsinh` {overall(vs_arc)} "
+                        f"(better on {better}) and worse than stock by more than a fifth on {worse}"
+                    )
+            control = " and ".join(overall(medians(groups[g], "arcsinh", "stock")) for g in (False, True))
+            bullets.append(
+                "- **`tukey_h` by the guard's decision** (per-posterior medians over seeds): "
+                + "; ".join(parts)
+                + f". `arcsinh` vs stock on the same groups: {control}."
+            )
     if "arcsinh" in arms:
         warned = posteriors_where("arcsinh", lambda r: bool(r.get("tail_alignment_warning")))
         bullets.append(
-            "- **`TailAlignmentWarning`** on the default `arcsinh` runs' unconstrained draws fired on at least half "
-            f"the seeds of {len(warned)} of {n} posteriors"
+            "- **`TailAlignmentWarning`** on the default `arcsinh` runs' unconstrained draws fired, on at least half "
+            f"the seeds, on {len(warned)} of {n} posteriors"
             + (f" ({', '.join(warned)})" if 0 < len(warned) <= 8 else "")
             + "."
         )
@@ -1164,6 +1199,9 @@ def render_posteriordb_findings(reports: Reports) -> str:
 
 
 BLOCKS: dict[str, Callable[[Reports], str]] = {
+    "readme-posteriordb": render_posteriordb_findings,
+    "posteriordb-findings": render_posteriordb_findings,
+    "posteriordb-table": render_posteriordb_table,
     "readme-competitors": render_competitor_findings,
     "competitor-findings": render_competitor_findings,
     "competitor-table": render_competitor_table,

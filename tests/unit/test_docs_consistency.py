@@ -330,3 +330,13 @@ def test_posteriordb_findings_relate_losses_to_phase1_calibrating_off_the_poster
     # b-light: arcsinh's median offset is 10 scales, and arcsinh / stock is 0.5 there.
     assert "`arcsinh`: 1 of 2 posteriors (b-light), worse than stock by more than a fifth on 1 of them" in text
     assert "`tukey_h`: 0 of 2 posteriors" in text
+
+
+def test_posteriordb_findings_split_tukey_h_by_the_guards_decision(tmp_path: Path) -> None:
+    text = render_docs.render_posteriordb_findings(_synthetic_posteriordb(tmp_path))
+    # b-light: median h > 0 count 0 (affine everywhere); a-heavy: median 2 (some h > 0).
+    assert (
+        "where it kept h = 0 on every coordinate (1 of 2 posteriors), `tukey_h` vs `arcsinh` 1.00× (better on 0) "
+        "and worse than stock by more than a fifth on 1; where it set h > 0 somewhere (1 of 2), 2.00× (better on 1) "
+        "and worse than stock on 0. `arcsinh` vs stock on the same groups: 0.50× and 2.00×." in text
+    )
