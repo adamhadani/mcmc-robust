@@ -146,6 +146,16 @@ def test_rows_score_constrained_draws_against_the_reference(monkeypatch: pytest.
     assert row["total_grad_evals"] == res.grad_evals
     assert row["divergences"] == res.divergences
     assert (row["d"], row["k"], row["posterior"], row["arm"], row["seed"]) == (2, 2, "toy-scale", arm, 0)
+    if arm == "stock":
+        assert row["calib_location_offset_max"] is None and row["calib_scale_ratio_max"] is None
+    else:
+        # How far Phase 1's calibration sits from the run's own post-warm-up draws, per unconstrained coordinate.
+        x = res.samples.reshape(-1, 2)
+        med = np.median(x, axis=0)
+        scale = (np.quantile(x, 0.75, axis=0) - np.quantile(x, 0.25, axis=0)) / pr.IQR_TO_SD
+        mu, radius = np.asarray(res.transform.location), np.asarray(res.transform.radius)
+        assert row["calib_location_offset_max"] == pytest.approx(float(np.max(np.abs(mu - med) / scale)))
+        assert row["calib_scale_ratio_max"] == pytest.approx(float(np.max(np.maximum(radius / scale, scale / radius))))
     if arm == "tukey_h":
         h = np.asarray(res.transform.h)
         assert row["tukey_h_n_positive"] == int(np.sum(h > 0.0))

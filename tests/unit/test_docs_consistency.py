@@ -252,6 +252,8 @@ def _synthetic_posteriordb(tmp_path: Path) -> render_docs.Reports:
     divs = {("a-heavy", "tukey_h"): [3, 0, 5]}
     h_pos = {("a-heavy", "tukey_h"): [2, 2, 1], ("b-light", "tukey_h"): [0, 1, 0]}
     warned = {("a-heavy", "arcsinh"): [True, True, False]}
+    # Phase 1's location offset from the final draws, in posterior scales; far (> 3) on b-light for arcsinh only.
+    offsets = {("b-light", "arcsinh"): [10.0, 12.0, 0.5]}
     rows = [
         {
             "posterior": p,
@@ -269,6 +271,7 @@ def _synthetic_posteriordb(tmp_path: Path) -> render_docs.Reports:
             "ref_mean_max_abs_z": 1.0,
             "tukey_h_n_positive": h_pos[(p, a)][s] if a == "tukey_h" else None,
             "tail_alignment_warning": warned.get((p, a), [False, False, False])[s],
+            "calib_location_offset_max": None if a == "stock" else offsets.get((p, a), [0.2, 0.3, 0.1])[s],
             "error": None,
         }
         for (p, a), vals in mtpg.items()
@@ -319,3 +322,11 @@ def test_posteriordb_table_has_one_row_per_posterior(tmp_path: Path) -> None:
     # Columns: d, stock's median, then arcsinh / stock, tukey_h / stock, tukey_h / arcsinh (median, seeds better).
     assert "| a-heavy | 4 | 1 | 2.00× (3 of 3) | 4.00× (2 of 3) | 2.00× (2 of 3) |" in text
     assert "| b-light | 3 |" in text
+
+
+def test_posteriordb_findings_relate_losses_to_phase1_calibrating_off_the_posterior(tmp_path: Path) -> None:
+    text = render_docs.render_posteriordb_findings(_synthetic_posteriordb(tmp_path))
+    assert "**Phase 1 calibrated off the posterior**" in text
+    # b-light: arcsinh's median offset is 10 scales, and arcsinh / stock is 0.5 there.
+    assert "`arcsinh`: 1 of 2 posteriors (b-light), worse than stock by more than a fifth on 1 of them" in text
+    assert "`tukey_h`: 0 of 2 posteriors" in text
