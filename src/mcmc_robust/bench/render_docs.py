@@ -946,6 +946,10 @@ POSTERIORDB_DISAGREE_Z: float = 5.0
 #: Paired ratio below which an arm counts as worse "by more than a fifth" in the findings.
 POSTERIORDB_WORSE_RATIO: float = 0.8
 
+#: Phase 1 counts as calibrated off the posterior when its location is this many posterior scales from the
+#: run's final median (the runner's `calib_location_offset_max`).
+POSTERIORDB_CALIB_OFFSET: float = 3.0
+
 
 def _pdb_runs(reports: Reports, posterior: str, arm: str) -> dict[int, dict[str, Any]]:
     return {
@@ -1104,6 +1108,34 @@ def render_posteriordb_findings(reports: Reports) -> str:
         + "; ".join(listing(a, lambda r: not r["converged"]) for a in arms)
         + "."
     )
+    calib_parts = []
+    for arm in ("arcsinh", "tukey_h"):
+        if arm not in arms:
+            continue
+        off = []
+        for p in posts:
+            vals = [r["calib_location_offset_max"] for r in _pdb_runs(reports, p, arm).values()]
+            vals = [v for v in vals if v is not None]
+            if vals and float(np.median(vals)) > POSTERIORDB_CALIB_OFFSET:
+                off.append(p)
+        if "stock" in arms:
+            losses = sum(
+                1
+                for p in off
+                if (r := _pdb_ratios(reports, p, arm, "stock")) and float(np.median(r)) < POSTERIORDB_WORSE_RATIO
+            )
+        names = f" ({', '.join(off)})" if off and len(off) <= 8 else ""
+        part = f"`{arm}`: {len(off)} of {n} posteriors{names}"
+        if off and "stock" in arms:
+            part += f", worse than stock by more than a fifth on {losses} of them"
+        calib_parts.append(part)
+    if calib_parts:
+        bullets.append(
+            "- **Phase 1 calibrated off the posterior** (median over seeds of the largest distance between the "
+            f"calibrated location and the run's final median, above {POSTERIORDB_CALIB_OFFSET:g} posterior scales): "
+            + "; ".join(calib_parts)
+            + "."
+        )
     if "tukey_h" in arms:
         total_d = 0
         positive = 0

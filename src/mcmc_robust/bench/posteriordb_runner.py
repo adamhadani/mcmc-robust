@@ -83,6 +83,9 @@ from mcmc_robust.stan_bridge import StanLogDensity, bridgestan_logdensity_fn
 
 SCHEMA_VERSION: int = 1
 
+#: IQR of a standard normal: IQR / IQR_TO_SD is a normal-consistent scale.
+IQR_TO_SD: float = 1.3489795003921634
+
 #: Draws per chain tried before an initial position is given up on (Stan's limit).
 MAX_INIT_ATTEMPTS: int = 100
 
@@ -129,6 +132,8 @@ ROW_FIELDS: tuple[str, ...] = (
     "tail_alignment_n_heavy",
     "tukey_h_n_positive",
     "tukey_h_max",
+    "calib_location_offset_max",
+    "calib_scale_ratio_max",
     "step_size_median",
     "wall_time_sec",
     "error",
@@ -152,6 +157,8 @@ AGG_METRICS: tuple[str, ...] = (
     "ref_mean_abs_z",
     "ref_mean_max_abs_z",
     "tukey_h_n_positive",
+    "calib_location_offset_max",
+    "calib_scale_ratio_max",
     "wall_time_sec",
 )
 
@@ -296,6 +303,22 @@ def _empty_row(post: LoadedPosterior, arm: str, seed: int, config: PosteriorDBCo
     return row
 
 
+def _calibration_offsets(transform: Any, samples: np.ndarray) -> tuple[float | None, float | None]:
+    """How far Phase 1's (mu, R) sit from the run's post-warm-up draws: the largest |mu - median| / scale and the
+    largest max(R / scale, scale / R) over unconstrained coordinates, with scale = IQR / 1.349 of the draws.
+
+    Phase 1 calibrates on the first 15% of warm-up; a large offset means it saw draws that had not yet reached
+    the posterior.
+    """
+    x = np.asarray(samples, dtype=np.float64).reshape(-1, samples.shape[-1])
+    scale = (np.quantile(x, 0.75, axis=0) - np.quantile(x, 0.25, axis=0)) / IQR_TO_SD
+    mu, radius = np.asarray(transform.location), np.asarray(transform.radius)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        offset = np.max(np.abs(mu - np.median(x, axis=0)) / scale)
+        ratio = np.max(np.maximum(radius / scale, scale / radius))
+    return _finite_or_none(offset), _finite_or_none(ratio)
+
+
 def run_single(post: LoadedPosterior, arm: str, seed: int, config: PosteriorDBConfig) -> dict[str, Any]:
     """Runs one (posterior, arm, seed) cell and returns its row (`error` holds the message if it failed)."""
     arm_spec = ARMS[arm]
@@ -327,6 +350,8 @@ def run_single(post: LoadedPosterior, arm: str, seed: int, config: PosteriorDBCo
         min_tail_ess = _finite_or_none(m["min_tail_ess"])
         max_rhat = _finite_or_none(m["split_rhat"])
         h = np.asarray(getattr(res.transform, "h", np.zeros(0)))
+        calibrated = arm_spec.transform_kind != "identity"
+        offset, ratio = _calibration_offsets(res.transform, res.samples) if calibrated else (None, None)
         row.update(
             total_grad_evals=grads,
             warmup_grad_evals=int(res.phase1_grad_evals + res.phase2_grad_evals),
@@ -350,6 +375,8 @@ def run_single(post: LoadedPosterior, arm: str, seed: int, config: PosteriorDBCo
             tail_alignment_n_heavy=len(alignment.heavy_coordinates),
             tukey_h_n_positive=int(np.sum(h > 0.0)) if arm_spec.transform_kind == "tukey_h" else None,
             tukey_h_max=float(np.max(h)) if arm_spec.transform_kind == "tukey_h" and h.size else None,
+            calib_location_offset_max=offset,
+            calib_scale_ratio_max=ratio,
             step_size_median=float(np.median(res.step_size)),
             wall_time_sec=float(wall),
         )
@@ -408,6 +435,10 @@ NOTES: tuple[str, ...] = (
     ),
     "tail_alignment_* is the library's tail-alignment check on the sampled (unconstrained) draws.",
     "tukey_h_n_positive counts unconstrained coordinates whose calibrated h is positive (the guard rejected h = 0).",
+    (
+        "calib_*: Phase 1's location and scale against the run's own post-warm-up draws (unconstrained, scale = "
+        "IQR / 1.349): max |mu - median| / scale and max of R / scale or scale / R. Null for stock."
+    ),
     "Ratios are paired by seed (same initial positions and JAX key) and summarised by median and IQR.",
     (
         "wall_time_sec includes JAX compilation and the host callbacks; vectorised chains also evaluate the model for "
