@@ -1125,7 +1125,7 @@ theorem arcsinh_cauchy_pullback_linear_lower (z : ℝ) (hz : 0 ≤ z) :
   rw [log_div (exp_pos z).ne' two_ne_zero, log_exp] at hl
   linarith
 
-/-- Consequence for arcsinh: the Gaussian pullback potential `sinh² z / 2 - log cosh z` admits no
+/-- Consequence for arcsinh: the Gaussian pullback potential `sinh² z / 2 - log cosh z` has no
     quadratic upper bound `A z² + B` on `[0, ∞)`, for any constants `A`, `B`. -/
 theorem arcsinh_gauss_pullback_not_quadratic (A B : ℝ) :
     ¬ ∀ z, 0 ≤ z → gaussPullbackPotential sinh cosh z ≤ A * z ^ 2 + B := by
