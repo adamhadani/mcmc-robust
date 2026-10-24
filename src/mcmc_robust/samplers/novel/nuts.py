@@ -144,12 +144,13 @@ class UnifiedRobustNUTS(Sampler):
         self._transform: CoordinateWiseArcsinhTransform | HierarchicalArcsinhTransform | None = None
 
         # Adaptation components
+        eff_target_accept = max(self.target_accept, 0.85) if self.funnel_coupling else self.target_accept
         if adaptation is not None:
             self.adaptation: DualAveragingAdaptation | None = adaptation
         elif self.adapt_step_size:
             self.adaptation = DualAveragingAdaptation(
                 initial_step_size=self.step_size,
-                target_accept=self.target_accept,
+                target_accept=eff_target_accept,
             )
         else:
             self.adaptation = None
@@ -189,10 +190,10 @@ class UnifiedRobustNUTS(Sampler):
                 self._transform = HierarchicalArcsinhTransform(
                     d=d,
                     radii=init_radii,
-                    coupling=0.255,
+                    coupling=1.5,
                     parent_idx=self.funnel_parent_idx,
                     parent_scale=3.0,
-                    max_log_scale=6.0,
+                    max_log_scale=15.0,
                     mask=self._mask,
                 )
             else:
@@ -224,7 +225,7 @@ class UnifiedRobustNUTS(Sampler):
         epsilon: float,
     ) -> tuple[np.ndarray, float]:
         r"""Computes gentle stiffness-attenuated leapfrog force F(z) and stiffness indicator \kappa."""
-        eff_gamma = self.gamma if self.gamma > 0.0 else (0.05 if self.funnel_coupling else 0.0)
+        eff_gamma = max(self.gamma, 0.10) if self.funnel_coupling else self.gamma
         if eff_gamma <= 0.0:
             return grad_z.copy(), 0.0
 
@@ -701,9 +702,10 @@ class UnifiedRobustNUTS(Sampler):
             if calibrate_phase1:
                 self._phase1_samples.append(result.state.x.copy())
             if self.adaptation is None:
+                eff_target = max(self.target_accept, 0.85) if self.funnel_coupling else self.target_accept
                 self.adaptation = DualAveragingAdaptation(
                     initial_step_size=self.step_size,
-                    target_accept=self.target_accept,
+                    target_accept=eff_target,
                 )
             self.step_size = self.adaptation.update(eff_accept)
 

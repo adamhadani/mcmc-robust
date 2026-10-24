@@ -49,7 +49,7 @@ class HierarchicalArcsinhTransform(SpaceTransformation):
         coupling: float | Sequence[float] | np.ndarray = 0.0,
         parent_idx: int = 0,
         parent_scale: float = 3.0,
-        max_log_scale: float = 4.0,
+        max_log_scale: float = 15.0,
         mask: Sequence[bool] | np.ndarray | None = None,
     ) -> None:
         """Initializes HierarchicalArcsinhTransform.
@@ -180,10 +180,10 @@ class HierarchicalArcsinhTransform(SpaceTransformation):
             return g, np.zeros(self.d, dtype=np.float64)
         with np.errstate(over="ignore", invalid="ignore"):
             u_p = (x_p - float(self._location[self._parent_idx])) / self._parent_scale
-            arg = np.clip(self._coupling * u_p, -500.0, 500.0)
+            arg = np.clip((self._coupling * u_p) / self._max_log_scale, -500.0, 500.0)
             tanh_arg = np.tanh(arg)
             g = self._max_log_scale * tanh_arg
-            g_prime = (self._max_log_scale * self._coupling / self._parent_scale) * (1.0 - tanh_arg**2)
+            g_prime = (self._coupling / self._parent_scale) * (1.0 - tanh_arg**2)
         return g, g_prime
 
     def forward(self, x: np.ndarray) -> tuple[np.ndarray, float]:
@@ -284,7 +284,7 @@ class HierarchicalArcsinhTransform(SpaceTransformation):
         cls,
         samples: np.ndarray,
         parent_idx: int = 0,
-        max_log_scale: float = 6.0,
+        max_log_scale: float = 15.0,
         corr_threshold: float = 0.15,
         min_radius: float = 1e-4,
         max_radius: float = 1e4,
@@ -296,8 +296,8 @@ class HierarchicalArcsinhTransform(SpaceTransformation):
         the normalized parent coordinate u_p = (x_p - mu_p) / S_p, applying a statistical
         correlation threshold so benign independent targets retain alpha_i = 0.
         For coupled child coordinates, pools slopes via empirical Bayes shrinkage toward
-        the group median and estimates the funnel apex location mu_i via inverse-variance
-        weighting in the funnel neck.
+        the group median and estimates the funnel apex location mu_i from the bottom 25%
+        neck quantile slice.
         """
         s = np.asarray(samples, dtype=np.float64)
         if s.ndim != 2:
@@ -320,7 +320,7 @@ class HierarchicalArcsinhTransform(SpaceTransformation):
         raw_s_p = iqr_p if iqr_p > min_radius else max(mad_p, std_p, min_radius)
         parent_scale = float(np.clip(raw_s_p, min_radius, max_radius))
 
-        if abs(float(med[parent_idx])) <= 2.5 * parent_scale / np.sqrt(float(n)):
+        if abs(float(med[parent_idx])) <= 0.75 * parent_scale:
             med[parent_idx] = 0.0
         cp = s[:, parent_idx] - med[parent_idx]
 
@@ -365,26 +365,25 @@ class HierarchicalArcsinhTransform(SpaceTransformation):
                 else:
                     b_eff = b_i
                 ratio = float(np.clip(b_eff / max_log_scale, -0.92, 0.92))
-                coupling[i] = float(np.arctanh(ratio))
+                coupling[i] = float(max_log_scale * np.arctanh(ratio))
 
-            # Refine funnel apex location mu_i using inverse-variance weights in the neck
-            g_matrix_init = max_log_scale * np.tanh(np.outer(u_p, coupling))
+            # Refine funnel apex location mu_i from the bottom 25% neck quantile slice
             for i in coupled_indices:
-                log_w = np.clip(-2.0 * g_matrix_init[:, i], -40.0, 40.0)
-                log_w -= float(np.max(log_w))
-                w = np.exp(log_w)
-                w /= float(np.sum(w))
-                xi = s[:, i]
-                mu_blue = float(np.sum(w * xi))
-                n_eff = 1.0 / float(np.sum(w**2))
-                w_var = float(np.sum(w * ((xi - mu_blue) ** 2)))
-                se_mu = float(np.sqrt(max(1e-16, w_var) / max(1.0, n_eff)))
-                med[i] = 0.0 if abs(mu_blue) <= 3.5 * se_mu else mu_blue
+                proj = u_p * np.sign(coupling[i])
+                neck_mask = proj <= np.quantile(proj, 0.25)
+                if int(np.sum(neck_mask)) >= 5:
+                    neck_vals = s[neck_mask, i]
+                    mu_neck = float(np.median(neck_vals))
+                    q75_n, q25_n = np.quantile(neck_vals, [0.75, 0.25])
+                    neck_iqr = max(1e-4, float(q75_n - q25_n) / 1.3489795)
+                    med[i] = 0.0 if abs(mu_neck) <= 2.5 * neck_iqr else mu_neck
+                else:
+                    med[i] = 0.0
 
         centered = s - med
 
         # 2. Compute de-warped residuals tilde_x_i = (x_i - mu_i) * exp(-g_i(x_p))
-        g_matrix = max_log_scale * np.tanh(np.outer(u_p, coupling))
+        g_matrix = max_log_scale * np.tanh(np.outer(u_p, coupling) / max_log_scale)
         dewarped = centered * np.exp(-g_matrix)
         q75, q25 = np.quantile(dewarped, [0.75, 0.25], axis=0)
         iqr_scale = (q75 - q25) / 1.3489795
