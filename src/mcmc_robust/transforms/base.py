@@ -156,3 +156,6 @@ class TransformedTarget(TargetDistribution):
             "transform": type(self._transform).__name__,
             "base_moments": self._target.exact_moments_or_quantiles(),
         }
+
+
+Transform = SpaceTransformation

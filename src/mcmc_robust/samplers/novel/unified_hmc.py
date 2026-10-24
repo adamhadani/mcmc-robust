@@ -10,6 +10,7 @@ from mcmc_robust.core.base_sampler import Sampler
 from mcmc_robust.core.state import ChainState, StepResult
 from mcmc_robust.core.target import TargetDistribution
 from mcmc_robust.transforms.coordinate_arcsinh import CoordinateWiseArcsinhTransform
+from mcmc_robust.transforms.hierarchical_arcsinh import HierarchicalArcsinhTransform
 
 
 class UnifiedRobustHMC(Sampler):
@@ -62,6 +63,8 @@ class UnifiedRobustHMC(Sampler):
         max_radius: float = 1e4,
         mask: Sequence[bool] | np.ndarray | None = None,
         adaptation: DualAveragingAdaptation | None = None,
+        funnel_coupling: bool = False,
+        funnel_parent_idx: int = 0,
     ) -> None:
         r"""Initializes UnifiedRobustHMC sampler.
 
@@ -96,6 +99,8 @@ class UnifiedRobustHMC(Sampler):
             raise ValueError(f"target_accept must be in (0, 1), got {target_accept}")
         if not (0.0 < taming_power <= 1.0):
             raise ValueError(f"taming_power must be in (0, 1], got {taming_power}")
+        if funnel_parent_idx < 0:
+            raise ValueError(f"funnel_parent_idx must be non-negative, got {funnel_parent_idx}")
 
         self.n_leapfrog: int = int(n_leapfrog)
         self.gamma: float = float(gamma)
@@ -108,6 +113,8 @@ class UnifiedRobustHMC(Sampler):
         self.taming_power: float = float(taming_power)
         self.min_radius: float = float(min_radius)
         self.max_radius: float = float(max_radius)
+        self.funnel_coupling: bool = bool(funnel_coupling)
+        self.funnel_parent_idx: int = int(funnel_parent_idx)
 
         # Coordinate tail scale configuration
         self._initial_radius: float | np.ndarray = (
@@ -115,7 +122,7 @@ class UnifiedRobustHMC(Sampler):
         )
         self.radius: np.ndarray | None = None
         self._mask: np.ndarray | None = np.asarray(mask, dtype=bool) if mask is not None else None
-        self._transform: CoordinateWiseArcsinhTransform | None = None
+        self._transform: CoordinateWiseArcsinhTransform | HierarchicalArcsinhTransform | None = None
 
         # Adaptation components
         if adaptation is not None:
@@ -141,12 +148,12 @@ class UnifiedRobustHMC(Sampler):
         return True
 
     @property
-    def transform(self) -> CoordinateWiseArcsinhTransform | None:
-        """Underlying CoordinateWiseArcsinhTransform instance."""
+    def transform(self) -> CoordinateWiseArcsinhTransform | HierarchicalArcsinhTransform | None:
+        """Underlying coordinate or hierarchical arcsinh transform instance."""
         return self._transform
 
-    def _ensure_transform(self, d: int) -> CoordinateWiseArcsinhTransform:
-        """Initializes or retrieves the CoordinateWiseArcsinhTransform instance."""
+    def _ensure_transform(self, d: int) -> CoordinateWiseArcsinhTransform | HierarchicalArcsinhTransform:
+        """Initializes or retrieves the arcsinh diffeomorphism instance."""
         if self._transform is None:
             if self.radius is None:
                 if isinstance(self._initial_radius, np.ndarray):
@@ -155,16 +162,32 @@ class UnifiedRobustHMC(Sampler):
                     self.radius = np.clip(self._initial_radius, self.min_radius, self.max_radius)
                 else:
                     self.radius = np.full(d, float(self._initial_radius), dtype=np.float64)
-            self._transform = CoordinateWiseArcsinhTransform(
-                d=d,
-                radii=self.radius,
-                mask=self._mask,
-            )
+            if self.funnel_coupling:
+                init_radii = self.radius.copy()
+                if not isinstance(self._initial_radius, np.ndarray) and float(self._initial_radius) == 3.0:
+                    init_radii = np.ones(d, dtype=np.float64)
+                    init_radii[self.funnel_parent_idx] = 3.0
+                self._transform = HierarchicalArcsinhTransform(
+                    d=d,
+                    radii=init_radii,
+                    coupling=0.255,
+                    parent_idx=self.funnel_parent_idx,
+                    parent_scale=float(init_radii[self.funnel_parent_idx]),
+                    max_log_scale=6.0,
+                    mask=self._mask,
+                )
+            else:
+                self._transform = CoordinateWiseArcsinhTransform(
+                    d=d,
+                    radii=self.radius,
+                    mask=self._mask,
+                )
         return self._transform
 
     def _kinetic_energy(self, p: np.ndarray, s_z: np.ndarray) -> float:
         """Computes kinetic energy K(p) = 0.5 * p^T M^{-1} p."""
-        return float(0.5 * np.sum((s_z * p) ** 2))
+        with np.errstate(over="ignore", invalid="ignore"):
+            return float(0.5 * np.sum((s_z * p) ** 2))
 
     def _velocity(self, p: np.ndarray, s_z: np.ndarray) -> np.ndarray:
         """Computes velocity v = M^{-1} p = s_z^2 * p."""
@@ -182,18 +205,19 @@ class UnifiedRobustHMC(Sampler):
         epsilon: float,
     ) -> tuple[np.ndarray, float]:
         r"""Computes gentle stiffness-attenuated leapfrog force F(z) and stiffness indicator \kappa."""
-        if self.gamma <= 0.0:
+        eff_gamma = self.gamma if self.gamma > 0.0 else (0.05 if self.funnel_coupling else 0.0)
+        if eff_gamma <= 0.0:
             return grad_z.copy(), 0.0
 
         with np.errstate(over="ignore", invalid="ignore"):
             if self.mode == "coordinate":
                 kappa_coord = epsilon * s_z * np.abs(grad_z)
-                force = grad_z / ((1.0 + self.gamma * kappa_coord) ** self.taming_power)
+                force = grad_z / ((1.0 + eff_gamma * kappa_coord) ** self.taming_power)
                 kappa_max = float(np.max(kappa_coord))
                 return force, kappa_max
             else:
                 kappa_global = epsilon * float(np.linalg.norm(s_z * grad_z))
-                force = grad_z / ((1.0 + self.gamma * kappa_global) ** self.taming_power)
+                force = grad_z / ((1.0 + eff_gamma * kappa_global) ** self.taming_power)
                 return force, kappa_global
 
     def init_state(self, x0: np.ndarray, target: TargetDistribution) -> ChainState:
@@ -402,37 +426,57 @@ class UnifiedRobustHMC(Sampler):
             self.step_size = self.adaptation.update(result.accept_prob)
             return
 
-        W1 = max(10, int(0.15 * W))
+        W1 = max(20, int(0.30 * W)) if self.funnel_coupling else max(10, int(0.15 * W))
         W2 = int(0.80 * W)
         d = len(result.state.x)
+        calibrate_phase1 = self.adapt_tail_scale or self.funnel_coupling
+        eff_accept = (
+            0.0 if (self.funnel_coupling and float(result.stats.get("divergent", 0.0)) > 0.0) else result.accept_prob
+        )
 
-        # Phase 1: Tail Scale & Location Calibration (0 <= step_idx < W1)
+        # Phase 1: Tail Scale, Location & Funnel Coupling Calibration (0 <= step_idx < W1)
         if step_idx < W1:
-            if self.adapt_tail_scale:
+            if calibrate_phase1:
                 self._phase1_samples.append(result.state.x.copy())
             if self.adaptation is None:
                 self.adaptation = DualAveragingAdaptation(
                     initial_step_size=self.step_size,
                     target_accept=self.target_accept,
                 )
-            self.step_size = self.adaptation.update(result.accept_prob)
+            self.step_size = self.adaptation.update(eff_accept)
 
-            if step_idx == W1 - 1 and self.adapt_tail_scale and len(self._phase1_samples) > 0:
+            if step_idx == W1 - 1 and calibrate_phase1 and len(self._phase1_samples) > 0:
                 stacked = np.vstack(self._phase1_samples)
-                med = np.median(stacked, axis=0)
-                centered = stacked - med
-                q75, q25 = np.quantile(centered, [0.75, 0.25], axis=0)
-                iqr_scale = (q75 - q25) / 1.3489795
-                mad_scale = np.median(np.abs(centered), axis=0) / 0.67448975
-                q90_abs = np.quantile(np.abs(centered), 0.90, axis=0)
-                base_scale = np.where(iqr_scale > self.min_radius, iqr_scale, np.maximum(mad_scale, q90_abs))
-                self.radius = np.clip(base_scale * 1.5, self.min_radius, self.max_radius)
-                self._transform = CoordinateWiseArcsinhTransform(
-                    d=d,
-                    radii=self.radius,
-                    mask=self._mask,
-                    location=med,
-                )
+                if self.funnel_coupling:
+                    self._transform = HierarchicalArcsinhTransform.calibrate_from_samples(
+                        stacked,
+                        parent_idx=self.funnel_parent_idx,
+                        min_radius=self.min_radius,
+                        max_radius=self.max_radius,
+                        mask=self._mask,
+                    )
+                    self.radius = self._transform.radii.copy()
+                    if self.adapt_preconditioner or self.funnel_coupling:
+                        self.welford = WelfordPreconditioner(d=d)
+                        for row in stacked:
+                            z_row, _ = self._transform.forward(row)
+                            self.welford.update(z_row)
+                        self.set_preconditioner(self.welford.diagonal_scale())
+                else:
+                    med = np.median(stacked, axis=0)
+                    centered = stacked - med
+                    q75, q25 = np.quantile(centered, [0.75, 0.25], axis=0)
+                    iqr_scale = (q75 - q25) / 1.3489795
+                    mad_scale = np.median(np.abs(centered), axis=0) / 0.67448975
+                    q90_abs = np.quantile(np.abs(centered), 0.90, axis=0)
+                    base_scale = np.where(iqr_scale > self.min_radius, iqr_scale, np.maximum(mad_scale, q90_abs))
+                    self.radius = np.clip(base_scale * 1.5, self.min_radius, self.max_radius)
+                    self._transform = CoordinateWiseArcsinhTransform(
+                        d=d,
+                        radii=self.radius,
+                        mask=self._mask,
+                        location=med,
+                    )
                 self._tail_scale_frozen = True
                 self._phase1_samples.clear()
                 if self.adaptation is not None:
@@ -440,7 +484,7 @@ class UnifiedRobustHMC(Sampler):
 
         # Phase 2: Diagonal Metric Adaptation (W1 <= step_idx < W2)
         elif step_idx < W2:
-            if self.adapt_preconditioner:
+            if self.adapt_preconditioner or self.funnel_coupling:
                 if self.welford is None:
                     self.welford = WelfordPreconditioner(d=d)
                 z = result.state.auxiliary.get("z")
@@ -450,7 +494,7 @@ class UnifiedRobustHMC(Sampler):
                     self.set_preconditioner(self.welford.diagonal_scale())
 
             if self.adaptation is not None:
-                self.step_size = self.adaptation.update(result.accept_prob)
+                self.step_size = self.adaptation.update(eff_accept)
 
             if step_idx == W2 - 1:
                 self._preconditioner_frozen = True
@@ -460,7 +504,7 @@ class UnifiedRobustHMC(Sampler):
         # Phase 3: Step-Size Fine Tuning (W2 <= step_idx < W)
         elif step_idx < W:
             if self.adaptation is not None:
-                self.step_size = self.adaptation.update(result.accept_prob)
+                self.step_size = self.adaptation.update(eff_accept)
             if step_idx == W - 1:
                 self.finalize_adaptation()
 

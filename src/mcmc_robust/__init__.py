@@ -19,6 +19,7 @@ from mcmc_robust.samplers.novel.unified_hmc import UnifiedRobustHMC
 from mcmc_robust.targets.roughness import NealsFunnelTarget
 from mcmc_robust.targets.suite import get_target
 from mcmc_robust.transforms.coordinate_arcsinh import CoordinateWiseArcsinhTransform
+from mcmc_robust.transforms.hierarchical_arcsinh import HierarchicalArcsinhTransform
 
 __version__ = "0.1.0"
 
@@ -28,6 +29,7 @@ __all__ = [
     "BlackJAXAlgorithm",
     "CoordinateWiseArcsinhTransform",
     "GentleMALA",
+    "HierarchicalArcsinhTransform",
     "JaxArcsinhTransform",
     "NealsFunnelTarget",
     "PyMCModelTarget",

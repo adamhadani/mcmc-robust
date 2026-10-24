@@ -32,8 +32,8 @@ Gradient-based Markov Chain Monte Carlo algorithms (MALA, HMC, NUTS) power moder
 │ • Quartic Potential Burn-In: 121.2x wider stable step-size window than standard MALA and 2.85x–6.50x   │
 │   faster median burn-in across step-size grids (5 steps vs. 17 for Globally Tamed MALA at h=0.15).     │
 │ • Benign Parity: 103.5% overall ESS/grad efficiency parity with tuned MALA on 50D Gaussians (0 tax).   │
-│ • Lean 4 Formal Verification: 26 machine-checked theorems (0 sorries, 0 warnings) covering shifted     │
-│   diffeomorphism invertibility, discrete basin bounds, global contraction, and MH detailed balance.    │
+│ • Lean 4 Formal Verification: 31 machine-checked theorems (0 sorries, 0 warnings) covering shifted     │
+│   & hierarchical funnel diffeomorphisms, discrete basin bounds, global contraction, and MH balance.    │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -67,12 +67,21 @@ from mcmc_robust.targets import NealsFunnelTarget
 # Define target distribution (e.g. Neal's funnel, Cauchy regression, or custom target)
 target = NealsFunnelTarget(d=10)
 
-# Instantiate novel sampler with stiffness damping and coordinate-wise transformation
-sampler = UnifiedRobustNUTS(step_size=0.15, warmup_steps=500, max_depth=10, adapt_tail_scale=True)
+# Instantiate novel sampler with triangular hierarchical funnel coupling & stiffness damping
+sampler = UnifiedRobustNUTS(
+    step_size=0.1,
+    warmup_steps=500,
+    max_depth=8,
+    adapt_step_size=True,
+    adapt_preconditioner=True,
+    adapt_tail_scale=True,
+    funnel_coupling=True,
+    funnel_parent_idx=0,
+)
 
-# Draw stationary posterior samples
+# Draw stationary posterior samples with 0 post-warmup divergences
 x0 = np.zeros(10)
-samples, results = sampler.sample(x0=x0, target=target, n_steps=1500, burn_in=500)
+samples, results = sampler.sample(x0=x0, target=target, n_steps=1500, burn_in=500, adapt=True)
 print("Posterior mean:", np.mean(samples, axis=0))
 post_warmup_divs = sum(int(r.stats.get("divergent", 0)) for r in results[500:])
 print("Post-warmup divergences:", post_warmup_divs)
@@ -150,6 +159,7 @@ final_state, samples = jax.lax.scan(body_fn, state, keys)
 | **Roughness Adaptation** | Brosse et al. (2018); Power & Vasdekis (2025, §3.3) | Global $(1 + \gamma \|\nabla U\|)^{-1}$ bounding destroys super-exponential tail pull, causing sluggish $\Omega(R_0)$ burn-in crawl. | **Soft-Capped Square-Root Stiffness Damping** (`GentleMALA`): Multiplies drift by $(1 + \kappa + (\kappa/\kappa_{\max})^2)^{-1/2}$, retaining $r^{p/2}$ pull inside the basin while guaranteeing global non-overshoot contraction outside. |
 | **Heavy-Tail Flatness** | Johnson & Geyer (2012, AoS); Yang et al. (2024, AoS); Livingstone & Zanella (2022) | Stereographic/Radial maps use scalar radius $r = \|x\|$, compressing orthogonal Gaussian coordinates by $50\times$ in mixed-tail settings. | **Shift-Equivariant Coordinate-Wise $\text{arcsinh}$ Diffeomorphism**: Maps $z_i = \text{arcsinh}((x_i - \mu_i)/R_i)$ with normal-consistent signed IQR scale calibration, decoupling coordinates with $O(d)$ diagonal Jacobian. |
 | **Non-Degenerate Symplectic NUTS** | Hoffman & Gelman (2014); Betancourt (2017); Bou-Rabee et al. (2025, WALNUTS) | Unchecked momentum integration in stiff tails/funnels causes tree-depth blowup and divergent trajectories. | **UnifiedRobustNUTS**: Warped metric space integration with localized gradient damping, complete subtree U-turn checks, and 3-phase warmup adaptation. |
+| **Hierarchical Funnel Coupling** | Neal (2003); Papamakarios et al. (2017); Hoffman et al. (2019, NeuTra) | Diagonal coordinate transforms cannot unwind multiplicative cross-coordinate scale coupling $x_i \mid v \sim \mathcal{N}(0, e^v)$ in centered funnels. | **Triangular `HierarchicalArcsinhTransform`** (`funnel_coupling=True`): Modulates child scales via $R_i(x_p) = R_{0,i}\exp(\gamma_{\max}\tanh(\alpha_i (x_p-\mu_p)/S_p))$, achieving $O(d)$ triangular inversion, **0 post-warmup divergences**, and $12.9\times$ higher ESS/grad on 10D Neal's Funnel. |
 
 ---
 
@@ -200,9 +210,10 @@ uv run python -m mcmc_robust.bench.plot
 | **Eight-Schools:** **UnifiedRobustNUTS** | `mcmc-robust` | 291,573 | 515.8 | 732.8 | 1.017 | 0.00177 | **7 (0.18%)** | 1.5% | -0.53 |
 | **Neal's Funnel:** BlackJAX NUTS | `blackjax` | 160,066 | 4,130.7 | 300.8 | 1.151 | 0.02581 | 3 (0.08%) | 5.0% | -2.01 |
 | **Neal's Funnel:** **UnifiedRobustSampler** | `mcmc-robust` | 6,004 | 11.8 | 10.2 | 2.092 | 0.00197 | **0 (0.0%)** | **29.1%** | **-4.47** |
-| **Neal's Funnel:** **UnifiedRobustNUTS** | `mcmc-robust` | 160,757 | 273.8 | 208.8 | **1.079** | 0.00170 | 34 (0.85%) | **22.3%** | **-4.40** |
+| **Neal's Funnel:** **UnifiedRobustNUTS** (Separable) | `mcmc-robust` | 160,757 | 273.8 | 208.8 | 1.079 | 0.00170 | 34 (0.85%) | 22.3% | -4.40 |
+| **Neal's Funnel:** **UnifiedRobustNUTS (`funnel_coupling=True`)** | `mcmc-robust` | **41,217** | **3,747.4** | **2,412.5** | **1.005** | **0.09092** | **0 (0.0%)** | **24.0%** | **-4.97** |
 
-> **Why Funnel Neck Diagnostics Matter alongside Divergences:** A coordinate-wise diffeomorphism $\psi_i(x_i)$ has a diagonal Jacobian and does not algebraically eliminate the multiplicative cross-coordinate coupling $x_i \sim \mathcal{N}(0, e^v)$ of a centered funnel (non-centered reparameterization remains preferred whenever model structure allows). However, inspecting the neck mass reveals why standard NUTS fails on centered funnels: on Eight-Schools, PyMC NUTS (`148` post-warmup divergences) and BlackJAX NUTS (`68` post-warmup divergences) bounce off the neck at $\log\tau \approx -0.4$, recording **$0.0\%$ probability mass in $\log\tau < -1$** (true: $13.0\%$). On Neal's Funnel ($d=10$), BlackJAX NUTS stalls at $v_{\min} = -3.81$, capturing only **$5.0\%$** of the neck region $v < -2$ (true: $25.25\%$, $q_{0.05}(v) = -4.93$) and failing convergence ($\widehat{R} = 1.151$). By contrast, `UnifiedRobustNUTS` cuts Eight-Schools post-warmup divergences by **$90\%\text{–}95\%$** and on Neal's Funnel penetrates to $v_{\min} = -6.43$, recovering **$22.3\%$ neck mass** and $q_{0.05}(v) = -4.40$ ($\widehat{R} = 1.079$).
+> **Why Funnel Neck Diagnostics & Triangular Coupling Matter alongside Divergences:** A separable coordinate-wise diffeomorphism $\psi_i(x_i)$ has a diagonal Jacobian and does not algebraically eliminate the multiplicative cross-coordinate coupling $x_i \sim \mathcal{N}(0, e^v)$ of a centered funnel. On Eight-Schools, PyMC NUTS (`148` post-warmup divergences) and BlackJAX NUTS (`68` post-warmup divergences) bounce off the neck at $\log\tau \approx -0.4$, recording **$0.0\%$ probability mass in $\log\tau < -1$** (true: $13.0\%$). On Neal's Funnel ($d=10$), BlackJAX NUTS stalls at $v_{\min} = -3.81$, capturing only **$5.0\%$** of the neck region $v < -2$ (true: $25.25\%$, $q_{0.05}(v) = -4.93$) and failing convergence ($\widehat{R} = 1.151$). Separable `UnifiedRobustNUTS` penetrates to $v_{\min} = -6.43$ ($22.3\%$ neck mass), while enabling triangular hierarchical scale coupling (`UnifiedRobustNUTS(funnel_coupling=True)`) via `HierarchicalArcsinhTransform` ($R_i(x_p) = R_{0,i}\exp(\gamma_{\max}\tanh(\alpha_i(x_p-\mu_p)/S_p))$) unwinds the funnel geometry during Phase 1 warmup—delivering **0 post-warmup divergences**, $\widehat{R} = 1.005$, $\hat{\mathbb{P}}(v < -2) = 24.0\%$, $\hat{\mathbb{P}}(v < -3) = 15.6\%$ (true: $15.87\%$), $q_{0.05}(v) = -4.97$ (true: $-4.93$), and **$12.9\times$ higher ESS/grad** using $3\times$ fewer gradient evaluations.
 
 #### Table 3: High-Dimensional Heterogeneous Mixed Tails ($d=20$, $4 \times 1,000$ draws)
 *Target: 10 heavy-tailed coordinates ($\nu \in [1.2, 2.5]$) and 10 Gaussian coordinates ($\sigma_j = 1$).*
@@ -243,7 +254,7 @@ uv run python -m mcmc_robust.bench.plot
 
 ### Lean 4 Mathematical Foundations (`formal/McmcRobustFormal.lean`)
 
-All 26 core mathematical theorems and lemmas are formally verified sorry-free in Lean 4 with 0 linter warnings under `#lint`:
+All 31 core mathematical theorems and lemmas are formally verified sorry-free in Lean 4 with 0 linter warnings under `#lint`:
 
 ```bash
 cd formal && lake build
@@ -265,6 +276,10 @@ cd formal && lake build
 | `softCappedDriftStep_lt_bound` | Global step cap $\Delta_{\text{cap}}(r) < s \kappa_{\max} / \gamma$ for all $r \ge 0, h > 0$ | **Proved (0 sorries)** |
 | `softCapped_global_contraction_no_overshoot` | Global contraction $0 < r - \Delta_{\text{cap}}(r) < r$ for all $r \ge s \kappa_{\max} / \gamma$ | **Proved (0 sorries)** |
 | `mhAccept_bounds` / `mh_detailed_balance` | $0 \le \alpha(x,y) \le 1$ and exact reversibility $\pi(x)q(x,y)\alpha(x,y) = \pi(y)q(y,x)\alpha(y,x)$ | **Proved (0 sorries)** |
+| `hierarchicalScale_pos` | $R_x > 0 \implies R_x \exp(g(v)) > 0$ for all $v \in \mathbb{R}$ | **Proved (0 sorries)** |
+| `hierarchical_roundtrip_forward` / `_inverse` | $\forall R_v, R_x > 0, \Phi(\Phi^{-1}(z)) = z$ and $\Phi^{-1}(\Phi(p)) = p$ | **Proved (0 sorries)** |
+| `hierarchical_jacobian_det_pos` | $\forall R_v, R_x > 0, (R_v \cosh z_v)(R_x \exp(g(v)) \cosh z_x) > 0$ | **Proved (0 sorries)** |
+| `hierarchical_zero_coupling_eq_separable` | $g \equiv 0 \implies \Phi, \Phi^{-1}$ reduce identically to separable `shiftedForwardMap` / `shiftedInverseMap` | **Proved (0 sorries)** |
 
 ### Reference Implementation Cross-Validation (`test_reference_scrutiny.py`)
 

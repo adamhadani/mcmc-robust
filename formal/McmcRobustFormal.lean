@@ -49,6 +49,12 @@ gradient-based MCMC samplers resolving roughness and flatness pathologies.
      satisfies $0 \le \alpha(x, y) \le 1$ and exact detailed balance:
      $$\pi(x) q(x, y) \alpha(x, y) = \pi(y) q(y, x) \alpha(y, x).$$
 
+6. **Triangular Hierarchical Scale-Coupled Arcsinh Diffeomorphism (§7)**:
+   - Modulated scale positivity: $R_x > 0 \implies R_x \exp(g(v)) > 0$.
+   - Exact triangular roundtrip invertibility: $\Phi(\Phi^{-1}(z)) = z$ and $\Phi^{-1}(\Phi(p)) = p$.
+   - Strict positivity of the triangular Jacobian determinant: $(R_v \cosh(z_v)) (R_x(v) \cosh(z_x)) > 0$.
+   - Exact reduction to separable coordinate-wise diffeomorphism when $g \equiv 0$.
+
 Author: MCMC Robustness Research Team
 Toolchain: Lean 4 + Mathlib
 -/
@@ -440,6 +446,96 @@ theorem mh_detailed_balance {pi_x pi_y q_xy q_yx : ℝ}
 
 
 /-! ============================================================================
+    §7. Triangular Hierarchical Scale-Coupled Arcsinh Diffeomorphism
+    ============================================================================ -/
+
+/-- Hierarchical scale modulation for child coordinate x given parent coordinate v:
+    R_x(v) = R_x * \exp(g(v)). -/
+def hierarchicalScale (Rx : ℝ) (g : ℝ → ℝ) (v : ℝ) : ℝ :=
+  Rx * Real.exp (g v)
+
+/-- Triangular forward hierarchical diffeomorphism (v, x) \mapsto (z_v, z_x):
+    z_v = \operatorname{arsinh}((v - \mu_v) / R_v),
+    z_x = \operatorname{arsinh}((x - \mu_x) / (R_x \exp(g(v)))). -/
+def hierarchicalForward (μv Rv μx Rx : ℝ) (g : ℝ → ℝ) (p : ℝ × ℝ) : ℝ × ℝ :=
+  (shiftedForwardMap μv Rv p.1, shiftedForwardMap μx (hierarchicalScale Rx g p.1) p.2)
+
+/-- Triangular inverse hierarchical diffeomorphism (z_v, z_x) \mapsto (v, x):
+    v = \mu_v + R_v \sinh(z_v),
+    x = \mu_x + R_x \exp(g(v)) \sinh(z_x). -/
+def hierarchicalInverse (μv Rv μx Rx : ℝ) (g : ℝ → ℝ) (z : ℝ × ℝ) : ℝ × ℝ :=
+  let v := shiftedInverseMap μv Rv z.1
+  (v, shiftedInverseMap μx (hierarchicalScale Rx g v) z.2)
+
+/-- Strict positivity of hierarchical modulated scale:
+    Rx > 0 \implies R_x \exp(g(v)) > 0 for all v \in \mathbb{R}. -/
+theorem hierarchicalScale_pos (Rx : ℝ) (g : ℝ → ℝ) (v : ℝ) (hRx : 0 < Rx) :
+    0 < hierarchicalScale Rx g v := by
+  dsimp [hierarchicalScale]
+  exact mul_pos hRx (Real.exp_pos (g v))
+
+/-- Triangular roundtrip invertibility (inverse then forward):
+    \Phi(\Phi^{-1}(z)) = z for all Rv > 0 and Rx > 0. -/
+theorem hierarchical_roundtrip_forward (μv Rv μx Rx : ℝ) (g : ℝ → ℝ) (z : ℝ × ℝ)
+    (hRv : 0 < Rv) (hRx : 0 < Rx) :
+    hierarchicalForward μv Rv μx Rx g (hierarchicalInverse μv Rv μx Rx g z) = z := by
+  dsimp [hierarchicalForward, hierarchicalInverse]
+  have hRv_ne : Rv ≠ 0 := ne_of_gt hRv
+  have hRx_pos : 0 < hierarchicalScale Rx g (shiftedInverseMap μv Rv z.1) :=
+    hierarchicalScale_pos Rx g (shiftedInverseMap μv Rv z.1) hRx
+  have hRx_ne : hierarchicalScale Rx g (shiftedInverseMap μv Rv z.1) ≠ 0 := ne_of_gt hRx_pos
+  ext
+  · exact shifted_invertibility_roundtrip_inverse μv Rv z.1 hRv_ne
+  · exact shifted_invertibility_roundtrip_inverse μx (hierarchicalScale Rx g (shiftedInverseMap μv Rv z.1)) z.2 hRx_ne
+
+/-- Triangular roundtrip invertibility (forward then inverse):
+    \Phi^{-1}(\Phi(p)) = p for all Rv > 0 and Rx > 0. -/
+theorem hierarchical_roundtrip_inverse (μv Rv μx Rx : ℝ) (g : ℝ → ℝ) (p : ℝ × ℝ)
+    (hRv : 0 < Rv) (hRx : 0 < Rx) :
+    hierarchicalInverse μv Rv μx Rx g (hierarchicalForward μv Rv μx Rx g p) = p := by
+  dsimp [hierarchicalForward, hierarchicalInverse]
+  have hRv_ne : Rv ≠ 0 := ne_of_gt hRv
+  have hv : shiftedInverseMap μv Rv (shiftedForwardMap μv Rv p.1) = p.1 :=
+    shifted_invertibility_roundtrip_forward μv Rv p.1 hRv_ne
+  have hRx_pos : 0 < hierarchicalScale Rx g p.1 := hierarchicalScale_pos Rx g p.1 hRx
+  have hRx_ne : hierarchicalScale Rx g p.1 ≠ 0 := ne_of_gt hRx_pos
+  ext
+  · exact hv
+  · dsimp
+    rw [hv]
+    exact shifted_invertibility_roundtrip_forward μx (hierarchicalScale Rx g p.1) p.2 hRx_ne
+
+/-- Strict positivity of the triangular inverse Jacobian determinant:
+    For Rv > 0 and Rx > 0, the product of diagonal entries
+    (Rv * \cosh(z_v)) * (R_x(v) * \cosh(z_x)) is strictly positive. -/
+theorem hierarchical_jacobian_det_pos (Rv Rx v zv zx : ℝ) (g : ℝ → ℝ)
+    (hRv : 0 < Rv) (hRx : 0 < Rx) :
+    0 < (Rv * Real.cosh zv) * (hierarchicalScale Rx g v * Real.cosh zx) := by
+  have h1 : 0 < Rv * Real.cosh zv := inverseMap_jacobian_factor_pos Rv zv hRv
+  have hRx_scale : 0 < hierarchicalScale Rx g v := hierarchicalScale_pos Rx g v hRx
+  have h2 : 0 < hierarchicalScale Rx g v * Real.cosh zx :=
+    inverseMap_jacobian_factor_pos (hierarchicalScale Rx g v) zx hRx_scale
+  exact mul_pos h1 h2
+
+/-- Exact reduction to separable coordinate-wise arcsinh diffeomorphism when g = 0:
+    Both forward and inverse maps reduce identically to independent shifted maps. -/
+theorem hierarchical_zero_coupling_eq_separable (μv Rv μx Rx : ℝ) (p z : ℝ × ℝ) :
+    hierarchicalForward μv Rv μx Rx (fun _ => 0) p =
+      (shiftedForwardMap μv Rv p.1, shiftedForwardMap μx Rx p.2) ∧
+    hierarchicalInverse μv Rv μx Rx (fun _ => 0) z =
+      (shiftedInverseMap μv Rv z.1, shiftedInverseMap μx Rx z.2) := by
+  have hscale : ∀ v : ℝ, hierarchicalScale Rx (fun _ => 0) v = Rx := by
+    intro v
+    dsimp [hierarchicalScale]
+    rw [Real.exp_zero, mul_one]
+  constructor
+  · dsimp [hierarchicalForward]
+    rw [hscale p.1]
+  · dsimp [hierarchicalInverse]
+    rw [hscale (shiftedInverseMap μv Rv z.1)]
+
+
+/-! ============================================================================
     PROPERTY 6: Axiom Audit & Linter Verification
     ============================================================================ -/
 
@@ -469,6 +565,25 @@ theorem mh_detailed_balance {pi_x pi_y q_xy q_yx : ℝ}
 #print axioms softCapped_global_contraction_no_overshoot
 #print axioms mhAccept_bounds
 #print axioms mh_detailed_balance
+/-- info: 'McmcRobust.hierarchicalScale_pos' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hierarchicalScale_pos
+
+/-- info: 'McmcRobust.hierarchical_roundtrip_forward' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hierarchical_roundtrip_forward
+
+/-- info: 'McmcRobust.hierarchical_roundtrip_inverse' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hierarchical_roundtrip_inverse
+
+/-- info: 'McmcRobust.hierarchical_jacobian_det_pos' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hierarchical_jacobian_det_pos
+
+/-- info: 'McmcRobust.hierarchical_zero_coupling_eq_separable' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hierarchical_zero_coupling_eq_separable
 
 #lint
 
