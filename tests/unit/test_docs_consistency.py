@@ -154,3 +154,57 @@ def test_ablation_findings_flag_tails_that_are_never_visited(tmp_path: Path) -> 
     text = render_docs.render_ablation_findings(_synthetic_ablation(tmp_path))
     assert "never visits a tail" in text
     assert "with `arcsinh`: heavy: 1 of 3 seeds" in text
+
+
+# --- competitor renderers, on a small synthetic results file ---------------------------------
+
+
+def _synthetic_competitors(tmp_path: Path) -> render_docs.Reports:
+    """One target x three seeds: arcsinh beats nutpie_flow on seeds 0 and 2 only."""
+    tpg = {
+        "stock_nuts": [1.0, 1.0, 1.0],
+        "arcsinh_nuts": [6.0, 3.0, 6.0],
+        "nutpie_diag": [2.0, 2.0, 2.0],
+        "nutpie_flow": [3.0, 4.0, 3.0],
+    }
+    rows = [
+        {
+            "target": "axis",
+            "arm": arm,
+            "seed": s,
+            "status": "ok",
+            "tail_ess_per_grad": v,
+            "tail_ess_per_sec": 10.0 * v,
+            "converged": True,
+            "split_rhat": 1.0,
+            "divergences": 0,
+            "total_grad_evals": 1000,
+            "tail_prob_abs_err_p01": 0.001,
+            "tail_prob_abs_err_p99": 0.001,
+            "tail_prob_mcse_p99": 0.002,
+        }
+        for arm, vals in tpg.items()
+        for s, v in enumerate(vals)
+    ]
+    (tmp_path / "reports").mkdir(exist_ok=True)
+    payload = {
+        "rows": rows,
+        "reference_arm": "stock_nuts",
+        "arms": {a: {"description": a, "tune": 500} for a in tpg},
+        "config": {"seeds": [0, 1, 2], "chains": 4, "draws": 1000, "tune": 500},
+        "excluded_arms": {"dcs": {"status": "not run: no official code found"}},
+    }
+    (tmp_path / "reports" / "competitor_results.json").write_text(json.dumps(payload))
+    return render_docs.Reports(tmp_path)
+
+
+def test_competitor_findings_compare_arcsinh_with_nutpie_per_seed(tmp_path: Path) -> None:
+    text = render_docs.render_competitor_findings(_synthetic_competitors(tmp_path))
+    assert "axis 2.0× (better on 2 of 3 seeds)" in text  # arcsinh / nutpie_flow = 2, 0.75, 2
+    assert "axis 3.0× (better on 3 of 3 seeds)" in text  # arcsinh / nutpie_diag = 3, 1.5, 3
+
+
+def test_competitor_table_lists_excluded_arms(tmp_path: Path) -> None:
+    text = render_docs.render_competitor_table(_synthetic_competitors(tmp_path))
+    assert "not run: no official code found" in text
+    assert "| axis | `arcsinh_nuts` | 6.00× [4.50, 6.00] |" in text

@@ -18,7 +18,8 @@ This is the technical record for the code in this repository. Every result numbe
   - a by-hand scale-mixture reparameterisation.
 
   It shows where the gain comes from and where the transform is not the best choice.
-- **Single-seed comparisons (§5.2).** On two synthetic targets whose heavy tails are aligned with the coordinate axes, the transform raises tail-ESS per gradient over stock BlackJAX and PyMC NUTS and lowers the error of the estimated 0.99 quantile (Tables 1 and 3).
+- **Comparison with nutpie (§5.2).** nutpie is the closest existing tool. The comparison covers its default (a gradient-based mass matrix) and its normalizing-flow adaptation. The transform is ahead per gradient on axis-aligned heavy tails, and behind the flow on rotated targets.
+- **Single-seed comparisons (§5.3).** On two synthetic targets whose heavy tails are aligned with the coordinate axes, the transform raises tail-ESS per gradient over stock BlackJAX and PyMC NUTS and lowers the error of the estimated 0.99 quantile (Tables 1 and 3).
 - It does not resolve funnel geometry (Table 2).
 - The repository's other components remain experimental (§3): a damped Langevin drift for stiff targets, and first-order samplers that use the transform.
 
@@ -77,11 +78,9 @@ This is the technical record for the code in this repository. Every result numbe
 - **The method:** a closed-form arcsinh map per coordinate, calibrated by median and IQR during warm-up, followed by standard NUTS adaptation on the exact pullback. This is a concrete default answer to Power & Vasdekis's §4.3(iii)–(iv).
 - **A theorem, machine-checked in Lean (§4):** no single coordinate map can bring both a Gaussian and a Cauchy coordinate into the potential class that published ergodicity results for HMC and NUTS assume. So the map's shape has to be chosen per coordinate.
 
-**Not yet done:**
-- comparison with nutpie's flow adaptation;
-- comparison with diffeomorphic MCMC.
+**Not yet done:** a comparison with diffeomorphic MCMC. No public code for it was found (§5.2, §6).
 
-§6 lists these. The comparison with reparameterisation by hand is in §5.1.
+The comparisons with reparameterisation by hand and with nutpie are in §5.1 and §5.2.
 
 ## 2. Method
 
@@ -358,7 +357,7 @@ d = 50, budget 3,000 gradients per chain, 4 chains, seed 42; "tail" starts at �
 - `scale_mixture`, on the Student-t-family targets: the practitioner's rewrite of a Student-t or Cauchy component as a non-centred Gaussian scale mixture, x = μ + √λ·L·η with an inverse-gamma λ.
 
 **Targets.**
-- Tasks 1 and 3 of §5.2;
+- Tasks 1 and 3 of §5.3;
 - rotated and isotropic multivariate *t* targets, whose heavy tails are not aligned with the axes;
 - a rotated product of Cauchys, whose heavy tails lie along rotated axes without being elliptical;
 - two Gaussians, which measure the cost on targets stock NUTS already handles.
@@ -437,7 +436,58 @@ Arms: `stock`: BlackJAX NUTS, window adaptation, target acceptance 0.8; `stock_t
   - R-hat stays low because every chain misses the same region.
   - The last finding above counts the affected runs for each arm. The scale-mixture rewrite samples the independent Cauchy factors directly, so this does not happen to it.
 
-### 5.2 Single-seed comparisons (Tables 1–5)
+### 5.2 Comparison with nutpie (Table B)
+
+`bench/competitor_runner.py` writes `reports/competitor_results.json`. It needs the optional `competitors` extra.
+
+**How the arms run.**
+- nutpie runs through `nutpie.compiled_pyfunc.from_pyfunc` on the same JAX log density as the other arms.
+- Gradient evaluations are counted by wrapping the log density.
+- Flow training reuses the gradients already stored from warm-up, so it costs wall time but no target evaluations.
+
+**Caveats when reading the table.**
+- nutpie's flow mode counts a transition as divergent at an energy error of 20, against 1000 for the other arms, so its divergence counts are not comparable.
+- Diffeomorphic MCMC (Brešar & Mijatović, 2026) was not run. No official code was found, and the paper does not specify its tuning fully enough to re-implement it faithfully; the results file records what was searched.
+
+<!-- BEGIN GENERATED: competitor-table -->
+5 seeds; each run has 4 chains × 1,000 draws. Ratios are paired by seed against stock BlackJAX NUTS; gradient counts include warm-up, and nutpie's flow training reuses warm-up gradients, so it adds wall time but no gradient evaluations. Wall-time ratios favour the jit-compiled BlackJAX arms over nutpie's Python callbacks. Source: `reports/competitor_results.json`.
+
+Arms: `stock_nuts`: BlackJAX NUTS, Stan-style window adaptation (reference); `arcsinh_nuts`: sample_blackjax_unified_nuts: BlackJAX NUTS on the calibrated coordinate-wise arcsinh pullback (this repo); `nutpie_diag`: nutpie default: NUTS with gradient-based diagonal mass-matrix adaptation; `nutpie_flow`: nutpie normalizing-flow adaptation (default flow settings), same warm-up length as the other arms; `nutpie_flow_tune1500`: nutpie normalizing-flow adaptation with nutpie's default flow warm-up of 1500 draws (all counted).
+
+Excluded: `dcs_bresar_mijatovic_2026` (not run: no official code found).
+
+| Target | Arm | Tail-ESS/grad vs stock, median [IQR] | Tail-ESS/s vs stock, median | Seeds converged | Max R-hat | Divergences, all seeds | Tail-probability error at 0.99, median (MCSE) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Task 1 | `stock_nuts` | 1 (reference) | 1 | 0 of 5 | 1.062 | 0 | 0.0056 (0.0045) |
+| Task 1 | `arcsinh_nuts` | 14.86× [10.30, 18.35] | 3.35× | 4 of 5 | 1.010 | 0 | 0.0016 (0.0021) |
+| Task 1 | `nutpie_diag` | 5.61× [5.37, 5.96] | 0.87× | 0 of 5 | 1.030 | 0 | 0.0043 (0.0045) |
+| Task 1 | `nutpie_flow` | 6.45× [5.90, 9.56] | 0.07× | 1 of 5 | 1.029 | 302 | 0.0054 (0.0046) |
+| Task 1 | `nutpie_flow_tune1500` | 6.45× [6.01, 8.54] | 0.04× | 2 of 5 | 1.057 | 855 | 0.0030 (0.0036) |
+| rotated Gaussian | `stock_nuts` | 1 (reference) | 1 | 5 of 5 | 1.004 | 0 | 0.0014 (0.0017) |
+| rotated Gaussian | `arcsinh_nuts` | 0.84× [0.81, 0.84] | 0.85× | 5 of 5 | 1.002 | 0 | 0.0014 (0.0017) |
+| rotated Gaussian | `nutpie_diag` | 1.29× [1.26, 1.32] | 1.32× | 5 of 5 | 1.003 | 0 | 0.0013 (0.0018) |
+| rotated Gaussian | `nutpie_flow` | 2.50× [2.43, 2.64] | 0.05× | 5 of 5 | 1.005 | 0 | 0.0013 (0.0018) |
+| rotated Gaussian | `nutpie_flow_tune1500` | 1.83× [1.78, 1.87] | 0.02× | 5 of 5 | 1.007 | 0 | 0.0015 (0.0017) |
+| Task 3 | `stock_nuts` | 1 (reference) | 1 | 2 of 5 | 1.091 | 0 | 0.0026 (0.0031) |
+| Task 3 | `arcsinh_nuts` | 5.99× [4.19, 6.25] | 2.05× | 5 of 5 | 1.008 | 0 | 0.0014 (0.0019) |
+| Task 3 | `nutpie_diag` | 4.45× [2.95, 5.01] | 2.01× | 0 of 5 | 1.030 | 0 | 0.0026 (0.0028) |
+| Task 3 | `nutpie_flow` | 4.50× [3.23, 4.63] | 0.06× | 3 of 5 | 1.013 | 67 | 0.0023 (0.0025) |
+| Task 3 | `nutpie_flow_tune1500` | 4.19× [2.61, 4.50] | 0.03× | 5 of 5 | 1.004 | 344 | 0.0019 (0.0019) |
+| rotated t (ν = 1) | `stock_nuts` | 1 (reference) | 1 | 0 of 5 | 1.805 | 0 | 0.0063 (0.0024) |
+| rotated t (ν = 1) | `arcsinh_nuts` | 1.83× [1.61, 13.91] | 1.57× | 1 of 5 | 1.022 | 0 | 0.0023 (0.0032) |
+| rotated t (ν = 1) | `nutpie_diag` | 1.05× [0.77, 5.78] | 1.37× | 0 of 5 | 1.650 | 0 | 0.0037 (0.0046) |
+| rotated t (ν = 1) | `nutpie_flow` | 9.02× [5.98, 36.21] | 0.23× | 4 of 5 | 1.021 | 12 | 0.0021 (0.0036) |
+| rotated t (ν = 1) | `nutpie_flow_tune1500` | 9.88× [7.25, 75.75] | 0.14× | 5 of 5 | 1.006 | 5 | 0.0020 (0.0019) |
+<!-- END GENERATED: competitor-table -->
+
+<!-- BEGIN GENERATED: competitor-findings -->
+- **Arcsinh vs nutpie's default** (gradient-based mass matrix), tail-ESS per gradient: Task 1 2.1× (better on 5 of 5 seeds); rotated Gaussian 0.6× (better on 0 of 5 seeds); Task 3 1.4× (better on 5 of 5 seeds); rotated t (ν = 1) 2.1× (better on 5 of 5 seeds).
+- **Arcsinh vs nutpie's normalizing-flow adaptation** (same warm-up length), tail-ESS per gradient: Task 1 1.9× (better on 5 of 5 seeds); rotated Gaussian 0.3× (better on 0 of 5 seeds); Task 3 1.3× (better on 5 of 5 seeds); rotated t (ν = 1) 0.3× (better on 0 of 5 seeds).
+- **Arcsinh vs the flow with nutpie's own default warm-up** (1,500 draws, all counted): Task 1 1.9× (better on 5 of 5 seeds); rotated Gaussian 0.4× (better on 0 of 5 seeds); Task 3 1.4× (better on 5 of 5 seeds); rotated t (ν = 1) 0.2× (better on 0 of 5 seeds).
+- **Seeds converged** (max R-hat at most 1.01): `arcsinh_nuts` Task 1: 4 of 5; rotated Gaussian: 5 of 5; Task 3: 5 of 5; rotated t (ν = 1): 1 of 5; `nutpie_flow` Task 1: 1 of 5; rotated Gaussian: 5 of 5; Task 3: 3 of 5; rotated t (ν = 1): 4 of 5.
+<!-- END GENERATED: competitor-findings -->
+
+### 5.3 Single-seed comparisons (Tables 1–5)
 
 **Two runners produce the tables.**
 
@@ -609,8 +659,7 @@ Seed 42 only, 4 chains × 1,000 draws after 1,000 warm-up steps, NUTS tree depth
 
 **Not yet evaluated:**
 - elliptical heavy tails with several scales, beyond the rotated *t* targets of Table A;
-- nutpie's flow adaptation;
-- diffeomorphic MCMC (Brešar & Mijatović, 2026);
+- diffeomorphic MCMC (Brešar & Mijatović, 2026), for which no public code was found;
 - posteriordb posteriors with reference draws.
 
 **Alternative transforms under exploration** (exploration branches, not part of the library):
@@ -633,7 +682,7 @@ Check R-hat and ESS as usual.
 
 **When not to expect help:**
 - **Funnels:** non-centre the model (§3.3).
-- **Heavy tails that are strongly rotated relative to the coordinates:** gains are smaller and less reliable, and a tail can be missed without warning (Table A).
+- **Heavy tails that are strongly rotated relative to the coordinates:** gains are smaller and less reliable, and a tail can be missed without warning (Table A). nutpie's normalizing-flow adaptation is worth trying there (Table B).
 - **Targets that stock NUTS already samples well:** the transform is not expected to help there.
 
 **If you use `UnifiedRobustNUTS` directly:** pass `adapt_step_size=True` and set `burn_in` to at least `warmup_steps`.

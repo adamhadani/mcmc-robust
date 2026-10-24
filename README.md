@@ -47,7 +47,16 @@ Two implementations:
 - **Runs in which some coordinate never visits a tail** (no draw beyond its exact 0.01 or 0.99 quantile, which R-hat cannot detect) with `arcsinh`: rotated product of Cauchys: 10 of 10 seeds; with `stock`: Task 1: 1 of 10 seeds; rotated product of Cauchys: 8 of 10 seeds.
 <!-- END GENERATED: readme-ablation -->
 
-**Single-seed comparisons with PyMC NUTS and other samplers** (REPORT §5.2):
+**Against nutpie** (REPORT §5.2, Table B). nutpie is the closest existing tool; it offers a gradient-based mass matrix and normalizing-flow adaptation:
+
+<!-- BEGIN GENERATED: readme-competitors -->
+- **Arcsinh vs nutpie's default** (gradient-based mass matrix), tail-ESS per gradient: Task 1 2.1× (better on 5 of 5 seeds); rotated Gaussian 0.6× (better on 0 of 5 seeds); Task 3 1.4× (better on 5 of 5 seeds); rotated t (ν = 1) 2.1× (better on 5 of 5 seeds).
+- **Arcsinh vs nutpie's normalizing-flow adaptation** (same warm-up length), tail-ESS per gradient: Task 1 1.9× (better on 5 of 5 seeds); rotated Gaussian 0.3× (better on 0 of 5 seeds); Task 3 1.3× (better on 5 of 5 seeds); rotated t (ν = 1) 0.3× (better on 0 of 5 seeds).
+- **Arcsinh vs the flow with nutpie's own default warm-up** (1,500 draws, all counted): Task 1 1.9× (better on 5 of 5 seeds); rotated Gaussian 0.4× (better on 0 of 5 seeds); Task 3 1.4× (better on 5 of 5 seeds); rotated t (ν = 1) 0.2× (better on 0 of 5 seeds).
+- **Seeds converged** (max R-hat at most 1.01): `arcsinh_nuts` Task 1: 4 of 5; rotated Gaussian: 5 of 5; Task 3: 5 of 5; rotated t (ν = 1): 1 of 5; `nutpie_flow` Task 1: 1 of 5; rotated Gaussian: 5 of 5; Task 3: 3 of 5; rotated t (ν = 1): 4 of 5.
+<!-- END GENERATED: readme-competitors -->
+
+**Single-seed comparisons with PyMC NUTS and other samplers** (REPORT §5.3):
 
 <!-- BEGIN GENERATED: readme-headline -->
 - **Heavy tails, product form (REPORT Table 1).** On a d=10 regression in which 7 of the 10 coefficients sit at their independent Cauchy prior, `UnifiedRobustNUTS` has 23.5× the tail-ESS per gradient of BlackJAX NUTS and 4.3× that of PyMC NUTS (max R-hat 1.002 vs 1.037 and 1.013); its 99% quantile error is 8.1% against 45.3% and 41.6%.
@@ -66,8 +75,10 @@ Requires Python 3.13 or newer (CI runs 3.13, 3.14 and 3.15):
 ```bash
 git clone https://github.com/adamhadani/mcmc-robust.git
 cd mcmc-robust
-uv sync --all-extras --dev
+uv sync
 ```
+
+**Optional: the nutpie competitor benchmark.** It needs `uv sync --extra competitors`. nutpie publishes wheels for CPython 3.12–3.14 only; on 3.15 uv builds it from source, which needs a Rust toolchain.
 
 ## Usage
 
