@@ -198,6 +198,34 @@ def test_run_blackjax_nuts_and_hmc():
 
 
 @pytest.mark.unit
+def test_run_blackjax_nuts_forwards_tree_depth_cap():
+    """max_num_doublings reaches warm-up and sampling: one doubling allows one leapfrog step."""
+    target = QuarticTarget(d=3)
+    n_chains, n_samples, n_warmup = 2, 20, 10
+
+    _, capped = run_blackjax_sampler(
+        target=target,
+        sampler_type="nuts",
+        n_chains=n_chains,
+        n_samples=n_samples,
+        n_warmup=n_warmup,
+        seed=10,
+        max_num_doublings=1,
+    )
+    assert capped["total_grad_evals"] == n_chains * (n_samples + n_warmup)
+
+    _, uncapped = run_blackjax_sampler(
+        target=target,
+        sampler_type="nuts",
+        n_chains=n_chains,
+        n_samples=n_samples,
+        n_warmup=n_warmup,
+        seed=10,
+    )
+    assert uncapped["total_grad_evals"] > capped["total_grad_evals"]
+
+
+@pytest.mark.unit
 def test_run_blackjax_invalid_algorithm():
     """Verify invalid algorithm raises ValueError."""
     target = QuarticTarget(d=2)
@@ -289,6 +317,23 @@ def test_evaluate_chains_with_arviz(rng):
     assert metrics["tail_ess_per_grad"] > 0.0
     assert metrics["divergence_rate"] == 0.0
     assert isinstance(metrics["q99_rel_error"], float)
+
+
+@pytest.mark.unit
+def test_evaluate_chains_with_arviz_reports_worst_coordinate_ess(rng):
+    """min_* ESS tracks the slowest-mixing coordinate, which the coordinate mean hides."""
+    n_chains, n_draws = 4, 400
+    samples = rng.normal(0.0, 1.0, size=(n_chains, n_draws, 3))
+    # Coordinate 2 is a strongly autocorrelated AR(1) chain (rho = 0.95).
+    ar = np.zeros((n_chains, n_draws))
+    for t in range(1, n_draws):
+        ar[:, t] = 0.95 * ar[:, t - 1] + rng.normal(0.0, 1.0, size=n_chains)
+    samples[:, :, 2] = ar
+
+    metrics = evaluate_chains_with_arviz(samples=samples, total_grad_evals=1000)
+
+    assert metrics["min_bulk_ess"] < 0.25 * metrics["bulk_ess"]
+    assert metrics["min_tail_ess"] < metrics["tail_ess"]
 
 
 # =============================================================================

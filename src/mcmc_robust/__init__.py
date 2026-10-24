@@ -11,6 +11,12 @@ from mcmc_robust.integrations import (
     as_blackjax_algorithm,
     sample_pymc_model,
 )
+from mcmc_robust.jax_unified_nuts import (
+    JaxUnifiedNUTSResult,
+    arviz_from_samples,
+    calibrate_jax_arcsinh_transform,
+    sample_blackjax_unified_nuts,
+)
 from mcmc_robust.samplers.automala import AutoMALA
 from mcmc_robust.samplers.novel.gentle_mala import GentleMALA
 from mcmc_robust.samplers.novel.nuts import ArcsinhTransformedNUTS, UnifiedRobustNUTS
@@ -31,12 +37,16 @@ __all__ = [
     "GentleMALA",
     "HierarchicalArcsinhTransform",
     "JaxArcsinhTransform",
+    "JaxUnifiedNUTSResult",
     "NealsFunnelTarget",
     "PyMCModelTarget",
     "UnifiedRobustHMC",
     "UnifiedRobustNUTS",
     "UnifiedRobustSampler",
+    "arviz_from_samples",
     "as_blackjax_algorithm",
+    "calibrate_jax_arcsinh_transform",
     "get_target",
+    "sample_blackjax_unified_nuts",
     "sample_pymc_model",
 ]

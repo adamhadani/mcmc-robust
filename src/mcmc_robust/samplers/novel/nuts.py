@@ -721,14 +721,12 @@ class UnifiedRobustNUTS(Sampler):
                     )
                     self.radius = self._transform.radii.copy()
                 else:
-                    med = np.median(stacked, axis=0)
-                    centered = stacked - med
-                    q75, q25 = np.quantile(centered, [0.75, 0.25], axis=0)
-                    iqr_scale = (q75 - q25) / 1.3489795
-                    mad_scale = np.median(np.abs(centered), axis=0) / 0.67448975
-                    q90_abs = np.quantile(np.abs(centered), 0.90, axis=0)
-                    base_scale = np.where(iqr_scale > self.min_radius, iqr_scale, np.maximum(mad_scale, q90_abs))
-                    self.radius = np.clip(base_scale * 1.5, self.min_radius, self.max_radius)
+                    med, self.radius = CoordinateWiseArcsinhTransform.compute_phase1_calibration(
+                        stacked,
+                        min_radius=self.min_radius,
+                        max_radius=self.max_radius,
+                        scale_multiplier=1.5,
+                    )
                     self._transform = CoordinateWiseArcsinhTransform(
                         d=d,
                         radii=self.radius,
