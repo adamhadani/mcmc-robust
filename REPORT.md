@@ -139,16 +139,12 @@ Consider a heterogeneous target distribution in $d=20$ dimensions where coordina
 1. **Local Dimensionless Stiffness Metric:**
    Given step size $h > 0$, diagonal preconditioning scale vector $s \in \mathbb{R}^d_{>0}$, and stiffness sensitivity $\gamma > 0$:
 
-   ```math
-   \kappa_h(x) = \gamma h \|s \odot \nabla \log \pi(x)\|_2 \quad \text{(global mode)}, \qquad \kappa_{h, i}(x) = \gamma h s_i |\nabla_i \log \pi(x)| \quad \text{(coordinate mode)}.
-   ```
+   $$\kappa_h(x) = \gamma h \|s \odot \nabla \log \pi(x)\|_2 \quad \text{(global mode)}, \qquad \kappa_{h, i}(x) = \gamma h s_i |\nabla_i \log \pi(x)| \quad \text{(coordinate mode)}.$$
 
 2. **Soft-Capped Gentle Attenuation Factor:**
    Given asymptotic drift cap $\kappa_{\max} > 0$ (default $\kappa_{\max} = 25.0$ in primal space; $\kappa_{\max} = \infty$ recovers pure square-root damping):
 
-   ```math
-   \rho(\kappa) = \frac{1}{\sqrt{1 + \kappa + (\kappa / \kappa_{\max})^2}}.
-   ```
+   $$\rho(\kappa) = \frac{1}{\sqrt{1 + \kappa + (\kappa / \kappa_{\max})^2}}.$$
 
    - **Smooth bulk ($\kappa \ll 1$):** $\rho(\kappa) = 1 - \frac{1}{2}\kappa + O(\kappa^2) \approx 1$, recovering classical MALA with zero bulk tax.
    - **Intermediate stiff basin ($1 \ll \kappa \ll \kappa_{\max}$):** $\rho(\kappa) \approx \kappa^{-1/2}$, preserving super-linear drift $\|b_h(x)\| \propto \|\nabla U(x)\|^{1/2}$ ($r^{3/2}$ on quartic targets).
@@ -156,9 +152,7 @@ Consider a heterogeneous target distribution in $d=20$ dimensions where coordina
 
 3. **Proposal & Exact $O(d)$ Metropolis–Hastings Correction:**
 
-   ```math
-   y = x + h (s^2 \odot b_h(x)) + \sqrt{2h} (s \odot \xi), \quad \xi \sim \mathcal{N}(0, I_d), \quad b_h(x) = \rho(\kappa_h(x)) \nabla \log \pi(x).
-   ```
+   $$y = x + h (s^2 \odot b_h(x)) + \sqrt{2h} (s \odot \xi), \quad \xi \sim \mathcal{N}(0, I_d), \quad b_h(x) = \rho(\kappa_h(x)) \nabla \log \pi(x).$$
 
    The forward-reverse log-proposal density ratio is computed exactly in $O(d)$ operations, consuming strictly **1 gradient evaluation per step**.
 
@@ -169,41 +163,33 @@ Consider a heterogeneous target distribution in $d=20$ dimensions where coordina
 1. **Forward and Inverse Coordinate Maps:**
    For each coordinate $i \in \{1, \dots, d\}$, given location center $\mu_i \in \mathbb{R}$, characteristic scale $R_i > 0$, and active mask $m_i \in \{0, 1\}$:
 
-   ```math
-   z_i = \phi_{\mu, R, i}(x_i) = \begin{cases} \mathop{\mathrm{arsinh}}\left(\frac{x_i - \mu_i}{R_i}\right) & \text{if } m_i = 1, \\ x_i & \text{if } m_i = 0, \end{cases} \qquad x_i = \psi_{\mu, R, i}(z_i) = \begin{cases} \mu_i + R_i \sinh(z_i) & \text{if } m_i = 1, \\ z_i & \text{if } m_i = 0. \end{cases}
-   ```
+   $$z_i = \phi_{\mu, R, i}(x_i) = \begin{cases} \mathop{\mathrm{arsinh}}\left(\frac{x_i - \mu_i}{R_i}\right) & \text{if } m_i = 1, \\ x_i & \text{if } m_i = 0, \end{cases} \qquad x_i = \psi_{\mu, R, i}(z_i) = \begin{cases} \mu_i + R_i \sinh(z_i) & \text{if } m_i = 1, \\ z_i & \text{if } m_i = 0. \end{cases}$$
 
 2. **Diagonal Jacobian & Numerically Stabilized Pullback:**
 
-   ```math
-   \log |\det J_\psi(z)| = \sum_{i: m_i = 1} \left[ \log R_i + \log \cosh(z_i) \right], \qquad \log \cosh(z_i) = |z_i| - \log 2 + \mathop{\mathrm{log1p}}(e^{-2|z_i|}).
-   ```
+   $$\log |\det J_\psi(z)| = \sum_{i: m_i = 1} \left[ \log R_i + \log \cosh(z_i) \right], \qquad \log \cosh(z_i) = |z_i| - \log 2 + \mathop{\mathrm{log1p}}(e^{-2|z_i|}).$$
 
    Using `scale = np.hypot(R_i, x_i - mu_i)` to prevent intermediate squaring overflow for $|x_i| > 1.34 \times 10^{154}$:
 
-   ```math
-   \nabla_{z_i} \log \pi_Z(z) = \sqrt{R_i^2 + (x_i - \mu_i)^2} \, [\nabla_x \log \pi_X(x)]_i + \frac{x_i - \mu_i}{\sqrt{R_i^2 + (x_i - \mu_i)^2}}.
-   ```
+   $$\nabla_{z_i} \log \pi_Z(z) = \sqrt{R_i^2 + (x_i - \mu_i)^2} \, [\nabla_x \log \pi_X(x)]_i + \frac{x_i - \mu_i}{\sqrt{R_i^2 + (x_i - \mu_i)^2}}.$$
 
    For a polynomial tail $\pi(x_i) \propto |x_i - \mu_i|^{-\alpha_i}$, $\nabla_{z_i} \log \pi_Z(z) \to -(\alpha_i - 1)\mathop{\mathrm{sgn}}(z_i)$, converting sub-exponential polynomial tails into Laplace-like exponential tails with constant inward restoring drift.
 
 3. **Translation-Equivariant & Normal-Consistent Calibration:**
    Given exploratory Phase 1 draws, location and scale are calibrated via:
 
-   ```math
-   \hat{\mu}_i = \mathop{\mathrm{median}}(x_i), \qquad \hat{R}_i = \frac{q_{75}(x_i - \hat{\mu}_i) - q_{25}(x_i - \hat{\mu}_i)}{2 \Phi^{-1}(0.75)} = \frac{\mathop{\mathrm{IQR}}(x_i)}{1.3489795},
-   ```
+   $$\hat{\mu}_i = \mathop{\mathrm{median}}(x_i), \qquad \hat{R}_i = \frac{q_{75}(x_i - \hat{\mu}_i) - q_{25}(x_i - \hat{\mu}_i)}{2 \Phi^{-1}(0.75)} = \frac{\mathop{\mathrm{IQR}}(x_i)}{1.3489795},$$
 
-   with MAD fallback $\mathop{\mathrm{median}}(|x_i - \hat{\mu}_i|) / 0.67448975$. For $X_i \sim \mathcal{N}(\mu_i, \sigma_i^2)$, $\hat{\mu}_i \to \mu_i$ and $\hat{R}_i \to \sigma_i$ consistently regardless of location shift $\mu_i$.
+   with MAD fallback $`\mathop{\mathrm{median}}(|x_i - \hat{\mu}_i|) / 0.67448975`$. For $X_i \sim \mathcal{N}(\mu_i, \sigma_i^2)$, $`\hat{\mu}_i \to \mu_i`$ and $`\hat{R}_i \to \sigma_i`$ consistently regardless of location shift $\mu_i$.
 
 ---
 
 ### 3.3 Three-Phase Warmup & Step-Size Freezing (`finalize_adaptation`)
 
-All samplers inherit `Sampler.sample()`, which invokes `sampler.adapt(t, result)` during $0 \le t < W$ and explicitly calls `sampler.finalize_adaptation()` at $t = W - 1$ to freeze the Polyak–Ruppert smoothed step size $\bar{h}_W$ before post-warmup sampling begins. In `UnifiedRobustSampler`, `UnifiedRobustHMC`, and `UnifiedRobustNUTS`:
-1. **Phase 1 ($0 \le t < 0.15 W$):** Collects primal states `result.state.x`, calibrates $(\hat{\mu}_i, \hat{R}_i)$ at $t = W_1 - 1$, freezes the transform, and resets the dual-averaging counter (`self.adaptation.reset()`) while preserving the initial shrinkage anchor $\mu = \log(10 h_0)$.
+All samplers inherit `Sampler.sample()`, which invokes `sampler.adapt(t, result)` during $0 \le t < W$ and explicitly calls `sampler.finalize_adaptation()` at $t = W - 1$ to freeze the Polyak–Ruppert smoothed step size $`\bar{h}_W`$ before post-warmup sampling begins. In `UnifiedRobustSampler`, `UnifiedRobustHMC`, and `UnifiedRobustNUTS`:
+1. **Phase 1 ($0 \le t < 0.15 W$):** Collects primal states `result.state.x`, calibrates $`(\hat{\mu}_i, \hat{R}_i)`$ at $t = W_1 - 1$, freezes the transform, and resets the dual-averaging counter (`self.adaptation.reset()`) while preserving the initial shrinkage anchor $\mu = \log(10 h_0)$.
 2. **Phase 2 ($0.15 W \le t < 0.80 W$):** Updates the diagonal Welford metric $S_Z$ in transformed space, freezes $S_Z$ at $t = W_2 - 1$, and resets the dual-averaging counter (`self.adaptation.reset()`).
-3. **Phase 3 ($0.80 W \le t < W$):** Converges step size $h$ against the frozen transform and metric, then freezes $h \leftarrow \bar{h}_W$ at $t = W - 1$.
+3. **Phase 3 ($0.80 W \le t < W$):** Converges step size $h$ against the frozen transform and metric, then freezes $`h \leftarrow \bar{h}_W`$ at $t = W - 1$.
 
 ---
 
@@ -217,7 +203,7 @@ The formalization in `formal/McmcRobustFormal.lean` contains **37 machine-checke
 | :--- | :--- | :--- |
 | **1. Unscaled & Scaled Bijection** | `arcsinh_inv_right`, `arcsinh_inv_left`, `scaled_invertibility_roundtrip_forward`, `scaled_invertibility_roundtrip_inverse`, `inverseMap_jacobian_factor_pos` | Global bijection $\psi_R(\phi_R(x)) = x$, $\phi_R(\psi_R(z)) = z$, and Jacobian positivity $R \cosh(z) > 0$. |
 | **2. Shift-Equivariant Bijection** | `shifted_invertibility_roundtrip_forward`, `shifted_invertibility_roundtrip_inverse`, `shiftedForwardMap_translation_invariant`, `shiftedInverseMap_jacobian_pos` | Exact round-trip $\psi_{\mu,R}(\phi_{\mu,R}(x)) = x$ and translation invariance $\phi_{\mu+c,R}(x+c) = \phi_{\mu,R}(x)$. |
-| **3. Derivatives & Metric Bounds** | `arsinh_deriv_eq`, `metric_scale_pos`, `metric_scale_le_one`, `hasDerivAt_forwardMap`, `forwardMap_deriv_eq`, `forwardMap_metric_pos`, `hasDerivAt_shiftedForwardMap`, `shiftedForwardMap_deriv_eq` | Exact Fréchet derivatives $\phi'_{\mu,R}(x) = (R\sqrt{1+((x-\mu)/R)^2})^{-1} > 0$ and metric contraction $\in (0, 1]$. |
+| **3. Derivatives & Metric Bounds** | `arsinh_deriv_eq`, `metric_scale_pos`, `metric_scale_le_one`, `hasDerivAt_forwardMap`, `forwardMap_deriv_eq`, `forwardMap_metric_pos`, `hasDerivAt_shiftedForwardMap`, `shiftedForwardMap_deriv_eq` | Exact Fréchet derivatives $`\phi'_{\mu,R}(x) = (R\sqrt{1+((x-\mu)/R)^2})^{-1} > 0`$ and metric contraction $\in (0, 1]$. |
 | **4. Pure Square-Root Damping & Basin** | `rho_pos`, `rho_le_one`, `rho_strictAntiOn`, `pureSqrtStepSq_lt_div_gamma`, `pureSqrt_quartic_discrete_basin_bound` | Monotonicity of $\rho(\kappa) = (1+\kappa)^{-1/2}$ and exact discrete non-overshoot basin $h r^2 < 4\gamma \implies \Delta(r) < 2r$. |
 | **5. Soft-Capped Global Contraction** | `softCap_dimensionless_drift_sq_lt`, `softCap_dimensionless_drift_lt`, `softCappedDriftStep_lt_bound`, `softCapped_global_contraction_no_overshoot` | Global step cap $\Delta_{\text{cap}}(r) < s \kappa_{\max}/\gamma$ and strict inward contraction $0 < r - \Delta_{\text{cap}}(r) < r$ for all $r \ge s \kappa_{\max}/\gamma$. |
 | **6. Metropolis–Hastings Reversibility** | `mhAccept_bounds`, `mh_detailed_balance` | Acceptance bounds $0 \le \alpha(x,y) \le 1$ and exact detailed balance $\pi(x)q(x,y)\alpha(x,y) = \pi(y)q(y,x)\alpha(y,x)$. |
@@ -234,18 +220,14 @@ Let $\pi_X$ be a positive differentiable density on $\mathbb{R}^d$. Post-warmup 
 
 #### Proposition 4.2 (Discrete Basin of Attraction & $O(1)$ Continuous Return for Pure Square-Root Damping):
 Consider the quartic potential $U(x) = \frac{1}{4}\|x\|^4$ ($\nabla U(x) = \|x\|^2 x$) under pure square-root damping $\rho(\kappa) = (1 + \kappa)^{-1/2}$ ($\kappa_{\max} = \infty$) with step size $h > 0$, unit metric $s = I_d$, and stiffness parameter $\gamma > 0$.
-1. **(Exact Discrete Non-Overshoot Basin — Lean 4 `pureSqrt_quartic_discrete_basin_bound`):** Along the radial direction $r = \|x\|_2 > 0$, the deterministic Euler step $x_{\text{det}}(x) = x - \Delta(r)\frac{x}{r}$ with $\Delta(r) = \frac{h r^3}{\sqrt{1 + \gamma h r^3}}$ strictly contracts toward the origin ($\|x_{\text{det}}(x)\|_2 < r$) if and only if $\Delta(r) < 2r$, which holds for all initial radii satisfying:
+1. **(Exact Discrete Non-Overshoot Basin — Lean 4 `pureSqrt_quartic_discrete_basin_bound`):** Along the radial direction $`r = \|x\|_2 > 0`$, the deterministic Euler step $x_{\text{det}}(x) = x - \Delta(r)\frac{x}{r}$ with $\Delta(r) = \frac{h r^3}{\sqrt{1 + \gamma h r^3}}$ strictly contracts toward the origin ($`\|x_{\text{det}}(x)\|_2 < r`$) if and only if $\Delta(r) < 2r$, which holds for all initial radii satisfying:
 
-   ```math
-   h r^2 < 4\gamma \quad \Longleftrightarrow \quad r < R_{\max}(h, \gamma) := \left(\frac{4\gamma}{h}\right)^{1/2}.
-   ```
+   $$h r^2 < 4\gamma \quad \Longleftrightarrow \quad r < R_{\max}(h, \gamma) := \left(\frac{4\gamma}{h}\right)^{1/2}.$$
 
    Conversely, for $h r^3 \gg 1$, $\Delta(r) \sim \sqrt{h/\gamma} \, r^{3/2}$ grows faster than $2r$, so outside the basin $r \gtrsim (4\gamma/h)^{1/2}$ an un-capped discrete step overshoots the origin ($|r - \Delta(r)| > r$).
 2. **(Uniform $O(1)$ Continuous ODE Return Time Inside the Basin):** Within the basin, the continuous radial ODE $\dot{r} = -\Delta(r) \approx -\sqrt{h/\gamma} \, r^{3/2}$ contracts from $R_0$ to $R_{\text{bulk}}$ in pseudo-time:
 
-   ```math
-   T = \int_{R_{\text{bulk}}}^{R_0} \sqrt{\frac{\gamma}{h}} r^{-3/2} \, dr = 2\sqrt{\frac{\gamma}{h}} \left(\frac{1}{\sqrt{R_{\text{bulk}}}} - \frac{1}{\sqrt{R_0}}\right) < \frac{2}{\sqrt{R_{\text{bulk}}}} \sqrt{\frac{\gamma}{h}} = O(1). \quad \blacksquare
-   ```
+   $$T = \int_{R_{\text{bulk}}}^{R_0} \sqrt{\frac{\gamma}{h}} r^{-3/2} \, dr = 2\sqrt{\frac{\gamma}{h}} \left(\frac{1}{\sqrt{R_{\text{bulk}}}} - \frac{1}{\sqrt{R_0}}\right) < \frac{2}{\sqrt{R_{\text{bulk}}}} \sqrt{\frac{\gamma}{h}} = O(1). \quad \blacksquare$$
 
 #### Theorem 4.3 (Global Non-Overshoot Contraction for Soft-Capped GentleMALA):
 Consider Soft-Capped `GentleMALA` with attenuation factor:
@@ -254,17 +236,13 @@ Consider Soft-Capped `GentleMALA` with attenuation factor:
 \rho(\kappa) = \frac{1}{\sqrt{1 + \kappa + (\kappa / \kappa_{\max})^2}}, \quad \kappa = \gamma u, \quad u = h s \|\nabla U(x)\|_2 \ge 0, \quad \kappa_{\max} > 0.
 ```
 
-1. **(Global Step Cap — Lean 4 `softCappedDriftStep_lt_bound`):** For all $x \in \mathbb{R}^d$ and all step sizes $h > 0$, the deterministic drift step norm $\Delta_{\text{cap}}(x) = \|h s^2 \rho(\kappa_h(x)) \nabla U(x)\|_2$ satisfies the strict global upper bound:
+1. **(Global Step Cap — Lean 4 `softCappedDriftStep_lt_bound`):** For all $x \in \mathbb{R}^d$ and all step sizes $h > 0$, the deterministic drift step norm $`\Delta_{\text{cap}}(x) = \|h s^2 \rho(\kappa_h(x)) \nabla U(x)\|_2`$ satisfies the strict global upper bound:
 
-   ```math
-   0 \le \Delta_{\text{cap}}(x) = \frac{s u}{\sqrt{1 + \gamma u + (\gamma u / \kappa_{\max})^2}} < \frac{s \kappa_{\max}}{\gamma}.
-   ```
+   $$0 \le \Delta_{\text{cap}}(x) = \frac{s u}{\sqrt{1 + \gamma u + (\gamma u / \kappa_{\max})^2}} < \frac{s \kappa_{\max}}{\gamma}.$$
 
-2. **(Global Non-Overshoot Contraction — Lean 4 `softCapped_global_contraction_no_overshoot`):** For any state $x$ with $r = \|x\|_2 \ge \frac{s \kappa_{\max}}{\gamma}$ and any radially outward-pointing gradient $\nabla U(x) = g(r)\frac{x}{r}$ with $g(r) > 0$, the deterministic update $r_{\text{next}} = r - \Delta_{\text{cap}}(x)$ never overshoots the origin and strictly contracts:
+2. **(Global Non-Overshoot Contraction — Lean 4 `softCapped_global_contraction_no_overshoot`):** For any state $x$ with $`r = \|x\|_2 \ge \frac{s \kappa_{\max}}{\gamma}`$ and any radially outward-pointing gradient $\nabla U(x) = g(r)\frac{x}{r}$ with $g(r) > 0$, the deterministic update $r_{\text{next}} = r - \Delta_{\text{cap}}(x)$ never overshoots the origin and strictly contracts:
 
-   ```math
-   0 < r - \frac{s \kappa_{\max}}{\gamma} < r_{\text{next}} < r.
-   ```
+   $$0 < r - \frac{s \kappa_{\max}}{\gamma} < r_{\text{next}} < r.$$
 
    Consequently, Soft-Capped `GentleMALA` combines rapid $O(1)$ square-root contraction inside the basin ($\kappa \ll \kappa_{\max}$) with unconditional non-overshoot contraction from arbitrarily distant initializations $R_0 \to \infty$. $\blacksquare$
 
@@ -469,7 +447,7 @@ What the table shows:
 ## 7. Discussion, Limitations & Practitioner Guide
 
 1. **When to Use Non-Centered Reparameterization vs. Coordinate-Wise Diffeomorphisms:**
-   Because `CoordinateWiseArcsinhTransform` has a diagonal Jacobian, it does not algebraically remove the multiplicative cross-coordinate coupling $x_i \sim \mathcal{N}(0, e^v)$ of a centered hierarchical funnel. Whenever the generative model is explicitly known, non-centered parameterization ($x_i = e^{v/2} \tilde{x}_i$) or within-orbit adaptive step-size integrators such as WALNUTS (Bou-Rabee et al., 2025) remain ideal for funnel geometries. For black-box centered models, `UnifiedRobustNUTS` and `UnifiedRobustSampler` combine coordinate warping with local stiffness damping to substantially improve neck penetration ($\hat{\mathbb{P}}(v < -2) = 22.3\%\text{–}29.1\%$ vs. $5.0\%$ for BlackJAX NUTS on Neal's Funnel) and reduce Eight-Schools post-warmup divergences by $90\%\text{–}95\%$.
+   Because `CoordinateWiseArcsinhTransform` has a diagonal Jacobian, it does not algebraically remove the multiplicative cross-coordinate coupling $x_i \sim \mathcal{N}(0, e^v)$ of a centered hierarchical funnel. Whenever the generative model is explicitly known, non-centered parameterization ($`x_i = e^{v/2} \tilde{x}_i`$) or within-orbit adaptive step-size integrators such as WALNUTS (Bou-Rabee et al., 2025) remain ideal for funnel geometries. For black-box centered models, `UnifiedRobustNUTS` and `UnifiedRobustSampler` combine coordinate warping with local stiffness damping to substantially improve neck penetration ($\hat{\mathbb{P}}(v < -2) = 22.3\%\text{–}29.1\%$ vs. $5.0\%$ for BlackJAX NUTS on Neal's Funnel) and reduce Eight-Schools post-warmup divergences by $90\%\text{–}95\%$.
 2. **When to Use `AnisotropicTailMALA` / `UnifiedRobustNUTS`:**
    For heavy-tailed posteriors (Cauchy/Student-*t* regression, sparse horseshoe/Cauchy priors, outlier-robust models) and high-dimensional mixed heavy/light tail geometries, the shift-equivariant coordinate-wise $\mathop{\mathrm{arsinh}}$ transform converts polynomial tails into constant restoring drift without compressing orthogonal Gaussian dimensions, delivering $2.34\times\text{–}23.5\times$ higher Tail-ESS/grad than standard NUTS on the synthetic targets of §6.1 (Tables 1 and 3). The gain does not carry over to every applied model: on the simulated-data Student-*t* regression of §6.2, where all NUTS variants converge, Tail-ESS/grad is at parity with stock NUTS ($41.6$ vs. $41.1 \times 10^{-3}$); the clearer differences there are in worst-coordinate ESS and, on the horseshoe model, in divergences.
 
