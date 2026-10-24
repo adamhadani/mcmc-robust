@@ -29,6 +29,8 @@ Two implementations:
 | Component | Status | Evidence and limits |
 | :--- | :--- | :--- |
 | Calibrated arcsinh transform + NUTS | Main contribution | Gains are largest on heavy tails aligned with the coordinate axes and smaller on rotated ones. When heavy tails lie along rotated directions without being elliptical, it can miss a tail entirely with no R-hat warning. It costs a little on a rotated Gaussian. Where the model is known to be a Student-t scale mixture, rewriting it by hand is better (REPORT §5.1). |
+| Tukey h-map + NUTS (`transform_kind="tukey_h"`) | New option | It fits a per-coordinate Tukey h-map during warm-up, and leaves a coordinate affine unless a likelihood-ratio test finds a heavy tail. It pulls polynomial tails back to Gaussian ones, the case the Lean theorems cover (REPORT §2.6, §4). Table A compares it with arcsinh. Like arcsinh, it does not fix tails along rotated directions. |
+| Tail-alignment warning | New check, on by default | `TailAlignmentWarning` fires when heavy tails appear to be shared across coordinates: the regime in which coordinate-wise maps can miss a tail with no R-hat warning. It flags a risk, not a proven miss (REPORT §2.7, Table A). |
 | Funnels and hierarchical models | Not addressed | A coordinate-wise map cannot remove the coupling between a scale parameter and its children. Non-centre the model instead (REPORT §3.3, Table 2). |
 | `GentleMALA` (soft-capped drift damping for stiff targets) | Experimental | Faster burn-in on a quartic target, but a narrower stable step-size range than tamed MALA. No guarantee for the coordinate-wise mode it runs in (REPORT §3.1). |
 | First-order samplers with the transform (`UnifiedRobustSampler`, `AnisotropicTailMALA`) | Experimental | Not converged within the benchmark budgets (REPORT §3.2). |
@@ -42,9 +44,11 @@ Two implementations:
 - **Arcsinh vs stock NUTS** (paired tail-ESS per gradient, median over seeds): Task 1 7.1× (wins on 10 of 10 seeds); Task 3 3.8× (wins on 10 of 10 seeds); rotated t (ν = 1) 5.2× (wins on 10 of 10 seeds); rotated t (ν = 2) 1.7× (wins on 10 of 10 seeds); isotropic t (ν = 2) 1.6× (wins on 10 of 10 seeds); rotated product of Cauchys 1.6× (wins on 7 of 10 seeds); rotated Gaussian 0.9× (wins on 0 of 10 seeds); anisotropic Gaussian 1.5× (wins on 10 of 10 seeds).
 - **Rescaling alone** (`affine`: the same calibration without the arcsinh) vs stock: Task 1 0.9× (wins on 4 of 10 seeds); Task 3 0.9× (wins on 4 of 10 seeds); rotated t (ν = 1) 1.9× (wins on 7 of 10 seeds); rotated t (ν = 2) 1.0× (wins on 6 of 10 seeds); isotropic t (ν = 2) 1.1× (wins on 8 of 10 seeds); rotated product of Cauchys 0.8× (wins on 4 of 10 seeds); rotated Gaussian 1.0× (wins on 4 of 10 seeds); anisotropic Gaussian 1.2× (wins on 10 of 10 seeds).
 - **Reparameterising by hand** (`scale_mixture`, where the model is a Student-t scale mixture) vs `arcsinh`: Task 1 0.2× (better than arcsinh on 0 of 10 seeds); Task 3 0.9× (better than arcsinh on 1 of 10 seeds); rotated t (ν = 1) 10.8× (better than arcsinh on 10 of 10 seeds); rotated t (ν = 2) 5.3× (better than arcsinh on 10 of 10 seeds); isotropic t (ν = 2) 2.5× (better than arcsinh on 10 of 10 seeds); rotated product of Cauchys 45.6× (better than arcsinh on 10 of 10 seeds).
+- **Tukey h-map** (`tukey_h`) vs `arcsinh`: Task 1 2.3× (better than arcsinh on 10 of 10 seeds); Task 3 1.6× (better than arcsinh on 10 of 10 seeds); rotated t (ν = 1) 1.0× (better than arcsinh on 5 of 10 seeds); rotated t (ν = 2) 0.9× (better than arcsinh on 4 of 10 seeds); isotropic t (ν = 2) 0.9× (better than arcsinh on 4 of 10 seeds); rotated product of Cauchys 0.8× (better than arcsinh on 5 of 10 seeds); rotated Gaussian 1.1× (better than arcsinh on 10 of 10 seeds); anisotropic Gaussian 1.1× (better than arcsinh on 10 of 10 seeds); vs stock: Task 1 17.2× (wins on 10 of 10 seeds); Task 3 5.7× (wins on 10 of 10 seeds); rotated t (ν = 1) 4.1× (wins on 10 of 10 seeds); rotated t (ν = 2) 1.5× (wins on 9 of 10 seeds); isotropic t (ν = 2) 1.5× (wins on 9 of 10 seeds); rotated product of Cauchys 2.2× (wins on 7 of 10 seeds); rotated Gaussian 1.0× (wins on 3 of 10 seeds); anisotropic Gaussian 1.8× (wins on 10 of 10 seeds).
 - **Seeds converged** (max R-hat at most 1.01) with `arcsinh`: Task 1: 9 of 10 seeds; Task 3: 10 of 10 seeds; rotated t (ν = 1): 2 of 10 seeds; rotated t (ν = 2): 10 of 10 seeds; isotropic t (ν = 2): 9 of 10 seeds; rotated product of Cauchys: 0 of 10 seeds; rotated Gaussian: 10 of 10 seeds; anisotropic Gaussian: 10 of 10 seeds; with `stock`: Task 1: 0 of 10 seeds; Task 3: 1 of 10 seeds; rotated t (ν = 1): 0 of 10 seeds; rotated t (ν = 2): 2 of 10 seeds; isotropic t (ν = 2): 4 of 10 seeds; rotated product of Cauchys: 0 of 10 seeds; rotated Gaussian: 10 of 10 seeds; anisotropic Gaussian: 10 of 10 seeds.
 - **Seeds with any post-warm-up divergence** with `arcsinh`: Task 1: 0 of 10 seeds; Task 3: 0 of 10 seeds; rotated t (ν = 1): 0 of 10 seeds; rotated t (ν = 2): 0 of 10 seeds; isotropic t (ν = 2): 0 of 10 seeds; rotated product of Cauchys: 4 of 10 seeds; rotated Gaussian: 0 of 10 seeds; anisotropic Gaussian: 4 of 10 seeds.
-- **Runs in which some coordinate never visits a tail** (no draw beyond its exact 0.01 or 0.99 quantile, which R-hat cannot detect) with `arcsinh`: rotated product of Cauchys: 10 of 10 seeds; with `stock`: Task 1: 1 of 10 seeds; rotated product of Cauchys: 8 of 10 seeds.
+- **Runs in which some coordinate never visits a tail** (no draw beyond its exact 0.01 or 0.99 quantile, which R-hat cannot detect) with `arcsinh`: rotated product of Cauchys: 10 of 10 seeds; with `tukey_h`: rotated product of Cauchys: 10 of 10 seeds; with `stock`: Task 1: 1 of 10 seeds; rotated product of Cauchys: 8 of 10 seeds.
+- **Tail-alignment warning** (`TailAlignmentWarning`, computed on each run's own draws; it flags heavy tails shared across coordinates) with `arcsinh`: Task 1: 0 of 10 seeds; Task 3: 0 of 10 seeds; rotated t (ν = 1): 10 of 10 seeds; rotated t (ν = 2): 10 of 10 seeds; isotropic t (ν = 2): 10 of 10 seeds; rotated product of Cauchys: 10 of 10 seeds; rotated Gaussian: 0 of 10 seeds; anisotropic Gaussian: 0 of 10 seeds. Among runs of any arm in which some coordinate never visits a tail, it fired on 46 of 49.
 <!-- END GENERATED: readme-ablation -->
 
 **Against nutpie** (REPORT §5.2, Table B). nutpie is the closest existing tool; it offers a gradient-based mass matrix and normalizing-flow adaptation:
@@ -104,6 +108,13 @@ print(result.samples.shape)  # (chains, draws, d), in the original coordinates
 print("calibrated location:", result.transform.location)
 print("calibrated radii:", result.transform.radii)
 print("gradient evaluations:", result.grad_evals, "divergences:", result.divergences)
+print("tail-alignment warning:", result.tail_alignment.warn)
+
+# The Tukey h-map alternative (REPORT §2.6): h = 0 leaves a coordinate affine.
+result_h = sample_blackjax_unified_nuts(
+    logdensity_fn, d=10, draws=500, tune=500, chains=4, seed=0, transform_kind="tukey_h"
+)
+print("h per coordinate:", result_h.transform.h)
 ```
 
 ### NumPy reference sampler

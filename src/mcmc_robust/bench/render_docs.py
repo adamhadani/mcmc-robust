@@ -777,10 +777,12 @@ def render_ablation_findings(reports: Reports) -> str:
         + seeds_where("arcsinh", lambda r: r["divergences"] > 0)
         + ".",
         "- **Runs in which some coordinate never visits a tail** (no draw beyond its exact 0.01 or 0.99 quantile, "
-        "which R-hat cannot detect) with `arcsinh`: "
-        + _nonzero(seeds_where("arcsinh", _never_visits_a_tail))
-        + "; with `stock`: "
-        + _nonzero(seeds_where("stock", _never_visits_a_tail))
+        "which R-hat cannot detect) "
+        + "; ".join(
+            f"with `{arm}`: " + _nonzero(seeds_where(arm, _never_visits_a_tail))
+            for arm in ("arcsinh", "tukey_h", "stock")
+            if any(r["arm"] == arm for r in reports.ablation["rows"])
+        )
         + ".",
     ]
     rows = reports.ablation["rows"]

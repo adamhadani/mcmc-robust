@@ -159,6 +159,7 @@ def test_ablation_findings_flag_tails_that_are_never_visited(tmp_path: Path) -> 
     text = render_docs.render_ablation_findings(_synthetic_ablation(tmp_path))
     assert "never visits a tail" in text
     assert "with `arcsinh`: heavy: 1 of 3 seeds" in text
+    assert "with `tukey_h`: none" in text  # every arm that ran is listed
 
 
 # --- competitor renderers, on a small synthetic results file ---------------------------------
