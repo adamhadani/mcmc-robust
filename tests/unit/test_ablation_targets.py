@@ -20,10 +20,14 @@ from mcmc_robust.targets.ablation import (
     rotated_spd_matrix,
 )
 from mcmc_robust.targets.benign import DiagonalGaussian, FullCovarianceGaussian
-from mcmc_robust.targets.heavy_tailed import HeterogeneousHeavyTailedTarget, MultivariateStudentTTarget
+from mcmc_robust.targets.heavy_tailed import (
+    HeterogeneousHeavyTailedTarget,
+    MultivariateStudentTTarget,
+    RotatedProductCauchyTarget,
+)
 from mcmc_robust.targets.scale_mixture import ScaleMixtureModel
 
-HEAVY = ("task1", "task3", "mvt_rot_nu1", "mvt_rot_nu2", "mvt_iso_nu2")
+HEAVY = ("task1", "task3", "mvt_rot_nu1", "mvt_rot_nu2", "mvt_iso_nu2", "rot_prod_cauchy")
 BENIGN = ("gauss_rot", "gauss_aniso")
 
 
@@ -37,6 +41,7 @@ def test_registry_names_classes_and_dimensions() -> None:
         "mvt_rot_nu1": (MultivariateStudentTTarget, 10),
         "mvt_rot_nu2": (MultivariateStudentTTarget, 10),
         "mvt_iso_nu2": (MultivariateStudentTTarget, 10),
+        "rot_prod_cauchy": (RotatedProductCauchyTarget, 10),
         "gauss_rot": (FullCovarianceGaussian, 20),
         "gauss_aniso": (DiagonalGaussian, 20),
     }
@@ -283,3 +288,40 @@ def test_task1_scale_mixture_likelihood_matches_the_jax_posterior() -> None:
     )
     cauchy = jnp.sum(-jnp.log(jnp.pi * t1.prior_scale) - jnp.log1p((beta / t1.prior_scale) ** 2))
     np.testing.assert_allclose(float(sm.logdensity(theta) - mix), float(post(beta) - cauchy), rtol=1e-10)
+
+
+@pytest.mark.unit
+def test_rotated_product_cauchy_density_gradient_and_jax_agree() -> None:
+    """x = A u with u iid Cauchy: log density, its gradient and the JAX log density agree with the definition."""
+    spec = make_ablation_target("rot_prod_cauchy")
+    t = spec.target
+    assert isinstance(t, RotatedProductCauchyTarget)
+    rng = np.random.default_rng(3)
+    for x in rng.standard_cauchy(size=(5, t.d)):
+        u = np.linalg.solve(t.A, x)
+        expected = float(np.sum(stats.cauchy.logpdf(u)) - np.linalg.slogdet(t.A)[1])
+        lp, grad = t.log_prob_and_grad(x)
+        np.testing.assert_allclose(lp, expected, rtol=1e-12)
+        np.testing.assert_allclose(float(t.jax_log_prob(jnp.asarray(x))), expected, rtol=1e-12)
+        np.testing.assert_allclose(grad, np.asarray(jax.grad(t.jax_log_prob)(jnp.asarray(x))), rtol=1e-10, atol=1e-12)
+
+
+@pytest.mark.unit
+def test_rotated_product_cauchy_marginals_are_cauchy_with_l1_row_scales() -> None:
+    """Marginal i of A u (u iid Cauchy) is Cauchy with scale sum_j |A_ij| (stability of the Cauchy law)."""
+    spec = make_ablation_target("rot_prod_cauchy")
+    t = spec.target
+    for i, m in enumerate(spec.marginals):
+        np.testing.assert_allclose(m.ppf(0.75), np.sum(np.abs(t.A[i])), rtol=1e-12)
+
+
+@pytest.mark.unit
+def test_scale_mixture_accepts_a_general_invertible_scale_matrix() -> None:
+    """A non-triangular scale matrix is allowed, and init_from_x maps exactly back to x."""
+    a = np.array([[2.0, 1.0], [-0.5, 1.5]])
+    sm = ScaleMixtureModel(loc=[1.0, -1.0], chol=a, nu=[1.0, 2.0], group=[0, 1])
+    x0 = np.array([[0.3, 4.0], [-7.0, 2.5]])
+    theta = sm.init_from_x(x0)
+    np.testing.assert_allclose(np.asarray(jax.vmap(sm.to_x)(jnp.asarray(theta))), x0, rtol=1e-12)
+    with pytest.raises(ValueError, match="invertible"):
+        ScaleMixtureModel(loc=[0.0, 0.0], chol=np.ones((2, 2)), nu=[1.0], group=[0, 0])

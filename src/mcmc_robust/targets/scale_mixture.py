@@ -39,7 +39,9 @@ class ScaleMixtureModel:
 
     Parameters:
         loc: Location $\mu$, shape `(d,)`.
-        chol: Lower-triangular scale factor $L$, shape `(d, d)`.
+        chol: Scale factor $L$, shape `(d, d)`: lower-triangular, or any invertible matrix (e.g. a rotated
+            product's $Q \mathrm{diag}(s)$, which no triangular factor can replace because each column
+            carries its own mixing variable).
         nu: Degrees of freedom $\nu_k > 0$ of each mixing variable, shape `(K,)`.
         group: Mixing variable index $g(j) \in \{0, \dots, K-1\}$ of each coordinate, or $-1$ for a
             Gaussian coordinate, shape `(d,)`.
@@ -61,8 +63,11 @@ class ScaleMixtureModel:
         self.d = int(self.loc.shape[0])
         self.n_mix = int(self.nu.shape[0])
         self.d_aug = self.d + self.n_mix
-        if self.chol.shape != (self.d, self.d) or not np.allclose(self.chol, np.tril(self.chol)):
-            raise ValueError(f"chol must be lower-triangular with shape ({self.d}, {self.d})")
+        if self.chol.shape != (self.d, self.d):
+            raise ValueError(f"chol must have shape ({self.d}, {self.d})")
+        if not np.all(np.isfinite(self.chol)) or np.linalg.cond(self.chol) > 1e12:
+            raise ValueError("chol must be a finite, invertible matrix")
+        self._lower = bool(np.allclose(self.chol, np.tril(self.chol)))
         if self.group.shape != (self.d,) or np.any(self.group < -1) or np.any(self.group >= self.n_mix):
             raise ValueError(f"group must have shape ({self.d},) with entries in [-1, {self.n_mix - 1}]")
         if np.any(self.nu <= 0.0):
@@ -98,7 +103,10 @@ class ScaleMixtureModel:
     def init_from_x(self, x0: np.ndarray) -> np.ndarray:
         r"""Augmented starting points mapping exactly to `x0` (shape `(chains, d)`): $u = 0$, $\eta = L^{-1}(x_0 - \mu)$."""
         x_arr = np.atleast_2d(np.asarray(x0, dtype=np.float64))
-        eta = linalg.solve_triangular(self.chol, (x_arr - self.loc).T, lower=True).T
+        rhs = (x_arr - self.loc).T
+        eta = (
+            linalg.solve_triangular(self.chol, rhs, lower=True) if self._lower else np.linalg.solve(self.chol, rhs)
+        ).T
         return np.concatenate([eta, np.zeros((x_arr.shape[0], self.n_mix))], axis=1)
 
     def sample_prior(self, n: int, rng: np.random.Generator) -> np.ndarray:

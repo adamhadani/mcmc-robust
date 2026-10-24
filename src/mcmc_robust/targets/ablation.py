@@ -11,6 +11,7 @@ scale-mixture reparameterisation a practitioner would sample instead (`ScaleMixt
 | `mvt_rot_nu1` | multivariate t, $\nu = 1$, scale $Q \mathrm{diag}(\mathrm{geomspace}(1, 25)) Q^\top$ | 10 | one shared $\lambda$ |
 | `mvt_rot_nu2` | the same with $\nu = 2$ | 10 | one shared $\lambda$ |
 | `mvt_iso_nu2` | multivariate t, $\nu = 2$, identity scale | 10 | one shared $\lambda$ |
+| `rot_prod_cauchy` | `RotatedProductCauchyTarget(d=10)`: $x = Q \mathrm{diag}(s) u$, $u_j$ iid Cauchy, $s$ = geomspace(1, 5) | 10 | one $\lambda_j$ per $u_j$, scale matrix $Q \mathrm{diag}(s)$ |
 | `gauss_rot` | Gaussian, covariance $Q \mathrm{diag}(\mathrm{geomspace}(1, 100)) Q^\top$ (condition number 100) | 20 | none |
 | `gauss_aniso` | diagonal Gaussian, standard deviations geomspace(0.1, 10) | 20 | none |
 
@@ -35,7 +36,11 @@ from scipy import stats
 
 from mcmc_robust.core.target import TargetDistribution
 from mcmc_robust.targets.benign import DiagonalGaussian, FullCovarianceGaussian
-from mcmc_robust.targets.heavy_tailed import HeterogeneousHeavyTailedTarget, MultivariateStudentTTarget
+from mcmc_robust.targets.heavy_tailed import (
+    HeterogeneousHeavyTailedTarget,
+    MultivariateStudentTTarget,
+    RotatedProductCauchyTarget,
+)
 from mcmc_robust.targets.scale_mixture import ScaleMixtureModel
 
 #: Seed of the fixed random rotation shared by the rotated targets.
@@ -47,6 +52,7 @@ ABLATION_TARGET_NAMES: tuple[str, ...] = (
     "mvt_rot_nu1",
     "mvt_rot_nu2",
     "mvt_iso_nu2",
+    "rot_prod_cauchy",
     "gauss_rot",
     "gauss_aniso",
 )
@@ -180,6 +186,20 @@ def _mvt(name: str, nu: float, scale: np.ndarray | None, description: str) -> Ab
     return AblationTarget(name, description, t, True, marginals, sm)
 
 
+def _rot_prod_cauchy() -> AblationTarget:
+    t = RotatedProductCauchyTarget(d=10, rotation_seed=ROTATION_SEED)
+    marginals = tuple(stats.cauchy(loc=0.0, scale=s) for s in t.marginal_scales)
+    sm = ScaleMixtureModel(loc=np.zeros(t.d), chol=t.A, nu=np.ones(t.d), group=np.arange(t.d))
+    return AblationTarget(
+        "rot_prod_cauchy",
+        "Rotated product of Cauchys, x = Q diag(s) u with u iid Cauchy and s = geomspace(1, 5), d = 10",
+        t,
+        True,
+        marginals,
+        sm,
+    )
+
+
 def _gauss_rot() -> AblationTarget:
     t = FullCovarianceGaussian(d=20, cov=rotated_spd_matrix(np.geomspace(1.0, 100.0, 20)))
     sd = np.sqrt(np.diag(t.cov))
@@ -212,6 +232,7 @@ ABLATION_TARGET_FACTORIES: dict[str, Callable[[], AblationTarget]] = {
         "Multivariate t, nu = 2, d = 10, rotated scale with condition number 25",
     ),
     "mvt_iso_nu2": lambda: _mvt("mvt_iso_nu2", 2.0, None, "Isotropic multivariate t, nu = 2, d = 10"),
+    "rot_prod_cauchy": _rot_prod_cauchy,
     "gauss_rot": _gauss_rot,
     "gauss_aniso": _gauss_aniso,
 }

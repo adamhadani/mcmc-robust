@@ -109,6 +109,8 @@ def _synthetic_ablation(tmp_path: Path) -> render_docs.Reports:
         ("gauss_x", "affine"): [1.0, 1.0, 1.0],
     }
     divs = {("gauss_x", "arcsinh"): [0, 2, 0]}
+    # Cells (coordinate, p) where the chain never drew beyond the exact quantile, per seed.
+    unvisited = {("heavy", "arcsinh"): [0, 0, 3], ("heavy", "stock"): [0, 0, 0]}
     rows = [
         {
             "target": t,
@@ -120,6 +122,7 @@ def _synthetic_ablation(tmp_path: Path) -> render_docs.Reports:
             "divergences": divs.get((t, a), [0, 0, 0])[s],
             "total_grad_evals": 1000,
             "tail_prob_abs_err": 0.002,
+            "tail_prob_n_degenerate": unvisited.get((t, a), [0, 0, 0])[s],
         }
         for (t, a), vals in tpg.items()
         for s, v in enumerate(vals)
@@ -145,3 +148,9 @@ def test_ablation_findings_report_divergent_seeds_and_convergence(tmp_path: Path
     text = render_docs.render_ablation_findings(_synthetic_ablation(tmp_path))
     assert "gauss_x: 1 of 3 seeds" in text
     assert "heavy: 2 of 3 seeds" in text
+
+
+def test_ablation_findings_flag_tails_that_are_never_visited(tmp_path: Path) -> None:
+    text = render_docs.render_ablation_findings(_synthetic_ablation(tmp_path))
+    assert "never visits a tail" in text
+    assert "with `arcsinh`: heavy: 1 of 3 seeds" in text

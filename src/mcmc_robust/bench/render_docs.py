@@ -701,6 +701,17 @@ def render_ablation_table(reports: Reports) -> str:
     return "\n\n".join(parts) + "\n\n" + _table(header, body, numeric_from=2)
 
 
+def _never_visits_a_tail(row: dict[str, Any]) -> bool:
+    """Some (coordinate, p) cell of the tail metric had no draw beyond the exact quantile."""
+    return bool(row.get("tail_prob_n_degenerate") or 0)
+
+
+def _nonzero(listing: str) -> str:
+    """Keep the "target: k of n seeds" entries with k > 0; "none" if there are none."""
+    kept = [part for part in listing.split("; ") if part and not part.split(": ", 1)[1].startswith("0 of ")]
+    return "; ".join(kept) if kept else "none"
+
+
 def render_ablation_findings(reports: Reports) -> str:
     targets = _ablation_targets(reports)
 
@@ -745,6 +756,12 @@ def render_ablation_findings(reports: Reports) -> str:
         + ".",
         "- **Seeds with any post-warm-up divergence** with `arcsinh`: "
         + seeds_where("arcsinh", lambda r: r["divergences"] > 0)
+        + ".",
+        "- **Runs in which some coordinate never visits a tail** (no draw beyond its exact 0.01 or 0.99 quantile, "
+        "which R-hat cannot detect) with `arcsinh`: "
+        + _nonzero(seeds_where("arcsinh", _never_visits_a_tail))
+        + "; with `stock`: "
+        + _nonzero(seeds_where("stock", _never_visits_a_tail))
         + ".",
     ]
     return "\n".join(bullets) + "\n"
