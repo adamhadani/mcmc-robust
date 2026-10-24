@@ -112,7 +112,10 @@ uv run python -m mcmc_robust.bench.render_docs --write  # README.md / REPORT.md 
 - **`sample_blackjax_unified_nuts(..., transform_kind=...)`**:
   - Values: `"arcsinh"` (the default), `"tukey_h"` (a Tukey h-map with a likelihood-ratio-guarded MLE calibration, REPORT §2.6), `"affine"` and `"identity"`. The last two are ablation controls.
   - The tail-alignment check (`check_tail_alignment=True`) stores `result.tail_alignment` and emits `TailAlignmentWarning`.
-  - Tests run under `-W error`. A test whose target shares heavy tails across coordinates must assert the warning with `pytest.warns`, not suppress it.
+  - Tests run under `-W error`.
+    - A test whose subject is not the warning passes `check_tail_alignment=False` explicitly. Whether the check fires on a target near its threshold varies between runs and platforms.
+    - Tests of the warning itself (`tests/unit/test_tail_alignment.py`) assert it with `pytest.warns`, on cases where it fires with a wide margin.
+    - Never blanket-suppress warnings.
 - **`sample_pymc_model(model, sampler="unified_nuts", draws=1000, tune=500, ...)`**: Wraps continuous PyMC models with `DictToArrayBijection` unflattening and exact leapfrog gradient evaluation accounting. Returns an `arviz.DataTree` InferenceData object.
 - **`JaxArcsinhTransform`**: Coordinate-wise $\text{arcsinh}$ diffeomorphism with `wrap_logdensity` for JAX/BlackJAX models, compatible with `jax.jit` and `jax.lax.scan`.
 

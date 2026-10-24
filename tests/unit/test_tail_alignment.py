@@ -287,8 +287,14 @@ PIPELINE_BUDGET = {"draws": 500, "tune": 300, "chains": 4, "seed": 0}
 @pytest.mark.unit
 def test_pipeline_warns_and_attaches_the_report_on_rotated_cauchy_product() -> None:
     """The pipeline scores its primal post-warm-up draws, stores the report and emits the warning."""
+    # Stock NUTS (transform_kind="identity") reaches these rotated tails reliably: all 10 coordinates heavy and
+    # max co-exceedance 0.68 to 0.99 on seeds 0-9 of this budget. The arcsinh default under-explores them, and
+    # how many coordinates still look heavy varies between runs (as few as one). The emission path is the same
+    # for every transform kind.
     with pytest.warns(TailAlignmentWarning, match=r"REPORT\.md §5\.1"):
-        res = sample_blackjax_unified_nuts(RotatedProductCauchyTarget(d=10), **PIPELINE_BUDGET)
+        res = sample_blackjax_unified_nuts(
+            RotatedProductCauchyTarget(d=10), transform_kind="identity", **PIPELINE_BUDGET
+        )
     report = res.tail_alignment
     assert isinstance(report, TailAlignmentReport)
     assert report.warn
