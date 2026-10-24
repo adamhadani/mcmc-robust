@@ -221,7 +221,7 @@ class CoordinateWiseArcsinhTransform(SpaceTransformation):
 
         Shared calibration kernel used by `UnifiedRobustNUTS.adapt`, `UnifiedRobustHMC.adapt`,
         `UnifiedRobustSampler.adapt`, and `calibrate_jax_arcsinh_transform` (`jax_unified_nuts.py`),
-        implementing the formally verified calibration map (`formal/McmcRobustFormal.lean` §7):
+        implementing the formally verified calibration map (`formal/McmcRobustFormal.lean` §8):
             $$\mu_i = \operatorname{median}(x_{\cdot, i}), \qquad
               R_i = \min\!\left(R_{\max},\, \max\!\left(R_{\min},\, c \cdot \hat{\sigma}_i\right)\right)$$
         where $\hat{\sigma}_i = \operatorname{IQR}(x_{\cdot, i} - \mu_i) / 1.3489795$ when

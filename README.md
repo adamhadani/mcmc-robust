@@ -32,7 +32,7 @@ Gradient-based Markov Chain Monte Carlo algorithms (MALA, HMC, NUTS) power moder
 │ • Quartic Potential Burn-In: 121.2x wider stable step-size window than standard MALA and 2.85x–6.50x   │
 │   faster median burn-in across step-size grids (5 steps vs. 17 for Globally Tamed MALA at h=0.15).     │
 │ • Benign Parity: 103.5% overall ESS/grad efficiency parity with tuned MALA on 50D Gaussians (0 tax).   │
-│ • Lean 4 Formal Verification: 32 machine-checked theorems (0 sorries, 0 warnings) covering shifted     │
+│ • Lean 4 Formal Verification: 37 machine-checked theorems (0 sorries, 0 warnings) covering shifted     │
 │   diffeomorphism invertibility, 3-phase scale calibration, basin bounds, and MH detailed balance.      │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -233,6 +233,57 @@ uv run python -m mcmc_robust.bench.plot
 | **UnifiedRobustSampler** | `mcmc-robust` | 6,004 | 403.7 | 765.0 | 1.019 | **0.12741 (1.85x)** | **10 (1.7x vs Tamed)** | **0 (0 warmup)** |
 | **UnifiedRobustNUTS** | `mcmc-robust` | 62,131 | 4,697.1 | **3,502.7** | **1.002** | 0.05638 | **15 (2.7x vs NUTS)** | **0 (24 warmup)** |
 
+#### Table 5: Applied Models on Simulated Data, PosteriorDB-Inspired (`reports/applied_benchmark_results.csv`)
+*Five models with the structure of standard applied posteriors, each fitted to **simulated** data, so they are not the PosteriorDB posteriors: a radon-style hierarchical regression (`RadonHierarchicalTarget`, $d=18$), sparse horseshoe logistic regression (`SparseHorseshoeLogisticTarget`, $d=21$), robust Student-$t$ regression with outliers (`RobustStudentTRegressionTarget`, $d=12$), a hierarchical 2PL IRT model (`HierarchicalItemResponse2PLTarget`, $d=22$) and AR(1) stochastic volatility (`StochasticVolatilityLogReturnTarget`, $d=22$). Every sampler runs $4 \times 1,000$ draws after $1,000$ warm-up steps with seed 42, and all NUTS variants share a maximum tree depth of 10. Generated with `uv run python -m mcmc_robust.bench.applied_runner`.*
+
+| Model | Sampler | Max $\widehat{R}$ | Converged | Min Bulk-ESS | Min Tail-ESS | Tail-ESS/grad ($\times 10^{-3}$) | Divergences | Grads | Wall time (s) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| Radon-style hierarchical ($d=18$) | MALA | 1.385 | no | 9 | 10 | 21.40 | 0 | 8,004 | 0.6 |
+| Radon-style hierarchical ($d=18$) | AutoMALA | 1.096 | no | 34 | 63 | 14.34 | 0 | 16,604 | 1.1 |
+| Radon-style hierarchical ($d=18$) | UnifiedRobustSampler | 1.304 | no | 11 | 11 | 11.52 | 0 | 8,004 | 1.1 |
+| Radon-style hierarchical ($d=18$) | BlackJAX NUTS (stock) | 1.019 | no | 295 | 250 | 12.14 | 10 | 151,503 | 12.5 |
+| Radon-style hierarchical ($d=18$) | BlackJAX NUTS + Arcsinh | 1.022 | no | 227 | 154 | 16.61 | 30 | 106,174 | 12.3 |
+| Radon-style hierarchical ($d=18$) | UnifiedRobustNUTS | 1.011 | no | 475 | 417 | 21.05 | 3 | 114,269 | 15.0 |
+| Horseshoe logistic ($d=21$) | MALA | 2.108 | no | 5 | 6 | 3.77 | 0 | 8,004 | 0.8 |
+| Horseshoe logistic ($d=21$) | AutoMALA | 1.584 | no | 7 | 6 | 1.40 | 0 | 21,012 | 2.0 |
+| Horseshoe logistic ($d=21$) | UnifiedRobustSampler | 1.412 | no | 8 | 11 | 3.39 | 0 | 8,004 | 1.5 |
+| Horseshoe logistic ($d=21$) | BlackJAX NUTS (stock) | 1.029 | no | 179 | 119 | 1.64 | 559 | 361,983 | 13.3 |
+| Horseshoe logistic ($d=21$) | BlackJAX NUTS + Arcsinh | 1.088 | no | 38 | 17 | 1.47 | 851 | 375,654 | 14.2 |
+| Horseshoe logistic ($d=21$) | UnifiedRobustNUTS | 1.011 | no | 365 | 306 | 2.59 | 122 | 455,219 | 73.5 |
+| Student-$t$ regression ($d=12$) | MALA | 1.045 | no | 151 | 211 | 43.06 | 0 | 8,004 | 0.6 |
+| Student-$t$ regression ($d=12$) | AutoMALA | 1.038 | no | 161 | 182 | 23.07 | 0 | 15,281 | 1.2 |
+| Student-$t$ regression ($d=12$) | UnifiedRobustSampler | 1.024 | no | 199 | 306 | 49.19 | 0 | 8,004 | 1.3 |
+| Student-$t$ regression ($d=12$) | BlackJAX NUTS (stock) | 1.002 | yes | 1,744 | 2,497 | 41.14 | 0 | 67,334 | 11.2 |
+| Student-$t$ regression ($d=12$) | BlackJAX NUTS + Arcsinh | 1.004 | yes | 1,637 | 2,300 | 37.35 | 0 | 70,234 | 11.2 |
+| Student-$t$ regression ($d=12$) | UnifiedRobustNUTS | 1.001 | yes | 2,267 | 2,793 | 41.61 | 0 | 71,254 | 11.0 |
+| IRT-2PL ($d=22$) | MALA | 1.259 | no | 13 | 14 | 7.20 | 0 | 8,004 | 0.8 |
+| IRT-2PL ($d=22$) | AutoMALA | 1.113 | no | 30 | 41 | 8.68 | 0 | 17,127 | 1.7 |
+| IRT-2PL ($d=22$) | UnifiedRobustSampler | 1.412 | no | 9 | 12 | 10.23 | 0 | 8,004 | 1.5 |
+| IRT-2PL ($d=22$) | BlackJAX NUTS (stock) | 1.013 | no | 337 | 460 | 9.54 | 38 | 185,666 | 12.7 |
+| IRT-2PL ($d=22$) | BlackJAX NUTS + Arcsinh | 1.124 | no | 22 | 8 | 7.21 | 106 | 211,194 | 13.9 |
+| IRT-2PL ($d=22$) | UnifiedRobustNUTS | 1.008 | yes | 397 | 556 | 11.84 | 38 | 175,595 | 28.6 |
+| Stochastic volatility ($d=22$) | MALA | 1.893 | no | 6 | 7 | 3.49 | 0 | 8,004 | 0.6 |
+| Stochastic volatility ($d=22$) | AutoMALA | 1.580 | no | 7 | 9 | 2.03 | 0 | 17,953 | 1.2 |
+| Stochastic volatility ($d=22$) | UnifiedRobustSampler | 1.551 | no | 7 | 7 | 2.07 | 0 | 8,004 | 1.6 |
+| Stochastic volatility ($d=22$) | BlackJAX NUTS (stock) | 1.018 | no | 137 | 225 | 3.65 | 0 | 263,446 | 11.5 |
+| Stochastic volatility ($d=22$) | BlackJAX NUTS + Arcsinh | 1.019 | no | 114 | 194 | 3.40 | 1 | 207,953 | 11.6 |
+| Stochastic volatility ($d=22$) | UnifiedRobustNUTS | 1.022 | no | 134 | 200 | 3.93 | 0 | 232,745 | 31.0 |
+
+How to read this table:
+- **Converged** means the largest rank-normalized split $\widehat{R}$ over all coordinates is at most 1.01 (Vehtari et al., 2021). Only 4 of the 30 runs meet it, so efficiency differences between unconverged runs are not evidence of an advantage.
+- **Min Bulk-ESS** and **Min Tail-ESS** are for the worst-mixing coordinate, usually a hierarchical scale. **Tail-ESS/grad** is the coordinate-mean Tail-ESS divided by all gradient evaluations, warm-up included.
+- **Divergences** counts post-warm-up divergent transitions only.
+- **Wall time** includes JAX JIT compilation for the two BlackJAX rows, while `UnifiedRobustNUTS` runs in NumPy, so it is not a like-for-like speed comparison.
+- `BlackJAX NUTS + Arcsinh` uses a fixed transform ($R = 2.5$, centred at the origin); `UnifiedRobustNUTS` learns its location and radii during warm-up.
+- Each cell is a single seed, so the table has no error bars.
+
+What the table shows:
+- The three first-order samplers (MALA, AutoMALA, `UnifiedRobustSampler`) do not converge on any of the five models within $2,000$ iterations per chain.
+- On the Student-$t$ regression, the only model where all three NUTS variants converge, their Tail-ESS/grad is similar ($37$–$42 \times 10^{-3}$) and `UnifiedRobustNUTS` has the highest worst-coordinate ESS.
+- `UnifiedRobustNUTS` has the highest worst-coordinate Bulk-ESS on four of the five models, the fewest divergences of the three NUTS variants on the horseshoe model ($122$ vs. $559$ for stock NUTS), and is the only sampler that converges on IRT-2PL. These are single-seed results with $\widehat{R}$ values close to the threshold.
+- The fixed-radius arcsinh wrapper is worse than stock NUTS on the horseshoe and IRT models (lower worst-coordinate ESS and more divergences), so a static transform is not a safe default for hierarchical models.
+- In wall time, `UnifiedRobustNUTS` ranges from parity to $5.5\times$ slower than BlackJAX NUTS, even though the BlackJAX times include compilation.
+
 ---
 
 ### Publication Figure 5: Head-to-Head External SOTA Comparison
@@ -246,7 +297,7 @@ uv run python -m mcmc_robust.bench.plot
 
 ### Lean 4 Mathematical Foundations (`formal/McmcRobustFormal.lean`)
 
-All 32 core mathematical theorems and lemmas are formally verified sorry-free in Lean 4 with 0 linter warnings under `#lint`:
+All 37 core mathematical theorems and lemmas are formally verified sorry-free in Lean 4 with 0 linter warnings under `#lint`:
 
 ```bash
 cd formal && lake build
@@ -268,6 +319,9 @@ cd formal && lake build
 | `softCappedDriftStep_lt_bound` | Global step cap $\Delta_{\text{cap}}(r) < s \kappa_{\max} / \gamma$ for all $r \ge 0, h > 0$ | **Proved (0 sorries)** |
 | `softCapped_global_contraction_no_overshoot` | Global contraction $0 < r - \Delta_{\text{cap}}(r) < r$ for all $r \ge s \kappa_{\max} / \gamma$ | **Proved (0 sorries)** |
 | `mhAccept_bounds` / `mh_detailed_balance` | $0 \le \alpha(x,y) \le 1$ and exact reversibility $\pi(x)q(x,y)\alpha(x,y) = \pi(y)q(y,x)\alpha(y,x)$ | **Proved (0 sorries)** |
+| `studentTNegLogKernel_nonneg` / `cauchyShrinkagePenalty_nonneg` | Non-negativity of Student-$t$ negative log-kernel and Cauchy/Horseshoe shrinkage penalty | **Proved (0 sorries)** |
+| `hasDerivAt_studentTNegLogKernel` / `studentTScore_zero` | Exact Student-$t$ score derivative $\frac{d}{dr}\frac{\nu+1}{2}\log(1+r^2/\nu) = \frac{(\nu+1)r}{\nu+r^2}$ | **Proved (0 sorries)** |
+| `studentTScore_mul_le` | Global virial bound $\|r \cdot s_\nu(r)\| \le \nu + 1$ for outlier-robust Student-$t$ likelihoods | **Proved (0 sorries)** |
 | `calibratedRadius_ge_min` / `calibratedRadius_pos` / `calibratedRadius_le_max` | $0 < R_{\min} \le \min(R_{\max}, \max(R_{\min}, c\sigma)) \le R_{\max}$ for all $\sigma \in \mathbb{R}$ | **Proved (0 sorries)** |
 | `calibratedRadius_mono` | $c \ge 0 \land \sigma_1 \le \sigma_2 \implies R_{\text{cal}}(\sigma_1) \le R_{\text{cal}}(\sigma_2)$ | **Proved (0 sorries)** |
 | `calibrated_shifted_roundtrip_forward` / `_inverse` | Exact invertibility $\psi_{\mu, R_{\text{cal}}}(\phi_{\mu, R_{\text{cal}}}(x)) = x$ and $\phi_{\mu, R_{\text{cal}}}(\psi_{\mu, R_{\text{cal}}}(z)) = z$ for all $\mu, \sigma \in \mathbb{R}$ | **Proved (0 sorries)** |
@@ -300,16 +354,16 @@ To ensure scientific integrity, every baseline algorithm is cross-validated agai
 mcmc-robust/
 ├── src/mcmc_robust/
 │   ├── core/                  # Base samplers, state, target interface
-│   ├── targets/               # Analytic benchmarks (funnels, mixed tails, quartic)
+│   ├── targets/               # Analytic benchmarks + applied models on simulated data
 │   ├── samplers/novel/        # GentleMALA, AnisotropicTailMALA, UnifiedRobustNUTS
 │   ├── transforms/            # Coordinate-wise Arcsinh, Stereographic, Radial
 │   ├── diagnostics/           # ArviZ 1.3 metrics, folded R-hat, ESS/grad, mcse_q99
 │   ├── jax_unified_nuts.py    # Pure-JAX 3-phase adaptive UnifiedRobustNUTS (sample_blackjax_unified_nuts)
 │   ├── integrations.py        # PyMCModelTarget, sample_pymc_model, JaxArcsinhTransform
 │   └── bench/                 # Unified 5-benchmark CLI, SOTA runner, publication plot
-├── formal/                    # Lean 4 formal verification proofs (32 theorems, lake build)
+├── formal/                    # Lean 4 formal verification proofs (37 theorems, lake build)
 ├── benchmarks/                # Unified CLI runner (run_benchmarks.py)
-├── tests/unit/                # 815 unit & integration tests passing with -W error
+├── tests/unit/                # 846 unit & integration tests passing with -W error
 ├── reports/                   # Grounded CSV/JSON benchmark data & publication figures
 ├── example.py                 # Standalone 10-second comparison script
 └── pyproject.toml             # Python >= 3.13 configuration (ruff, mypy, pre-commit)
@@ -353,6 +407,9 @@ cd formal && lake build
 15. **Bell, J., Łatuszyński, K., & Roberts, G. O. (2024).** *Adaptive heavy-tailed diffeomorphisms for geometrically ergodic Markov chain Monte Carlo.* Technical Report / Preprint.
 16. **Brešar, M., & Mijatović, A. (2026).** *Diffeomorphic coordinate transformation for heavy-tailed Markov Chain Monte Carlo (DCS).* Preprint.
 17. **The Mathlib Community (2020–2026).** *The Lean 4 mathematical library (`mathlib4`).* Proceedings of the 9th ACM SIGPLAN International Conference on Certified Programs and Proofs (CPP 2020), 367–381. [github.com/leanprover-community/mathlib4](https://github.com/leanprover-community/mathlib4).
+18. **Gelman, A., & Hill, J. (2006).** *Data Analysis Using Regression and Multilevel/Hierarchical Models.* Cambridge University Press. [doi:10.1017/CBO9780511790942](https://doi.org/10.1017/CBO9780511790942).
+19. **Piironen, J., & Vehtari, A. (2017).** *Sparsity information and regularization in the horseshoe and other shrinkage priors.* Electronic Journal of Statistics, 11(2), 5018–5051. [doi:10.1214/17-EJS1337SI](https://doi.org/10.1214/17-EJS1337SI).
+20. **Kim, S., Shephard, N., & Chib, S. (1998).** *Stochastic volatility: Likelihood inference and comparison with ARCH models.* The Review of Economic Studies, 65(3), 361–393. [doi:10.1111/1467-937X.00050](https://doi.org/10.1111/1467-937X.00050).
 
 ---
 

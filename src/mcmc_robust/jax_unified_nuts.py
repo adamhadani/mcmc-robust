@@ -19,7 +19,7 @@ MCMC pipeline that mirrors the native `UnifiedRobustNUTS` (`samplers/novel/nuts.
      where $\hat{\sigma}_i = \operatorname{IQR}(x_{\cdot, i} - \mu_i) / 1.3489795$ when
      $\hat{\sigma}_{\text{IQR}, i} > R_{\min}$, falling back to
      $\max(\operatorname{MAD}(x_{\cdot, i} - \mu_i) / 0.67448975,\, q_{0.90}(|x_{\cdot, i} - \mu_i|))$.
-   - Formally verified in `formal/McmcRobustFormal.lean` §7 (`calibratedRadius_ge_min`,
+   - Formally verified in `formal/McmcRobustFormal.lean` §8 (`calibratedRadius_ge_min`,
      `calibratedRadius_pos`, `calibratedRadius_le_max`, `calibratedRadius_mono`,
      `calibrated_shifted_roundtrip_forward`, `calibrated_shifted_roundtrip_inverse`).
 
@@ -131,7 +131,7 @@ def calibrate_jax_arcsinh_transform(
     Implements the exact pure-JAX counterpart of
     `CoordinateWiseArcsinhTransform.compute_phase1_calibration` (`transforms/coordinate_arcsinh.py`)
     and `UnifiedRobustNUTS.adapt` (`samplers/novel/nuts.py`), matching the formally verified
-    Phase 1 calibration map (`formal/McmcRobustFormal.lean` §7):
+    Phase 1 calibration map (`formal/McmcRobustFormal.lean` §8):
         $$\mu_i = \operatorname{median}(x_{\cdot, i}), \qquad
           R_i = \min\!\left(R_{\max},\, \max\!\left(R_{\min},\, c \cdot \hat{\sigma}_i\right)\right)$$
     where $\hat{\sigma}_i = \operatorname{IQR}(x_{\cdot, i} - \mu_i) / 1.3489795$ when

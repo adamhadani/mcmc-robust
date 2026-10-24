@@ -1,6 +1,9 @@
 import Mathlib.Analysis.SpecialFunctions.Arsinh
+import Mathlib.Analysis.SpecialFunctions.Log.Deriv
 import Mathlib.Analysis.Calculus.Deriv.Basic
 import Mathlib.Analysis.Calculus.Deriv.Comp
+import Mathlib.Analysis.Calculus.Deriv.Add
+import Mathlib.Analysis.Calculus.Deriv.Mul
 import Mathlib.Tactic.Linter.Lint
 
 
@@ -49,7 +52,13 @@ gradient-based MCMC samplers resolving roughness and flatness pathologies.
      satisfies $0 \le \alpha(x, y) \le 1$ and exact detailed balance:
      $$\pi(x) q(x, y) \alpha(x, y) = \pi(y) q(y, x) \alpha(y, x).$$
 
-6. **Pure-JAX 3-Phase Scale & Location Calibration Bounds (§7)**:
+6. **Applied Heavy-Tailed & Shrinkage Posterior Score Bounds (§7)**:
+   - Student-$t$ negative log-kernel $U_t(\nu, r) = \frac{\nu + 1}{2} \log(1 + r^2 / \nu) \ge 0$ for $\nu > 0$.
+   - Exact score identity $\frac{d}{dr} U_t(\nu, r) = \frac{(\nu + 1) r}{\nu + r^2}$ and zero at $r = 0$.
+   - Global virial score bound $|r \cdot s_t(\nu, r)| \le \nu + 1$ for all $r \in \mathbb{R}$, proving outlier robustness.
+   - Non-negativity of the Cauchy / Horseshoe local log-prior penalty $\log(1 + (\lambda / \tau)^2) \ge 0$.
+
+7. **Pure-JAX 3-Phase Scale & Location Calibration Bounds (§8)**:
    - Clipped normal-consistent coordinate scale calibration map:
      $$R_{\text{cal}}(\sigma, R_{\min}, R_{\max}, c) = \min(R_{\max}, \max(R_{\min}, c \cdot \sigma))$$
    - Strict interval bounds $0 < R_{\min} \le R_{\text{cal}}(\sigma, R_{\min}, R_{\max}, c) \le R_{\max}$,
@@ -448,7 +457,105 @@ theorem mh_detailed_balance {pi_x pi_y q_xy q_yx : ℝ}
 
 
 /-! ============================================================================
-    §7. Pure-JAX 3-Phase Scale & Location Calibration Bounds
+    §7. Applied Heavy-Tailed & Shrinkage Posterior Score Bounds
+    ============================================================================ -/
+
+/-- Student-t negative log-kernel for residual r ∈ ℝ and degrees of freedom ν > 0:
+    U_t(ν, r) = ((ν + 1) / 2) * log(1 + r^2 / ν). -/
+def studentTNegLogKernel (ν r : ℝ) : ℝ :=
+  ((ν + 1) / 2) * Real.log (1 + r ^ 2 / ν)
+
+/-- Analytical score (derivative of studentTNegLogKernel with respect to residual r):
+    s_t(ν, r) = ((ν + 1) * r) / (ν + r^2). -/
+def studentTScore (ν r : ℝ) : ℝ :=
+  ((ν + 1) * r) / (ν + r ^ 2)
+
+/-- Cauchy / Horseshoe local log-prior shrinkage penalty:
+    P_C(τ, λ) = log(1 + (λ / τ)^2). -/
+def cauchyShrinkagePenalty (τ lam : ℝ) : ℝ :=
+  Real.log (1 + (lam / τ) ^ 2)
+
+/-- The Student-t negative log-kernel is globally non-negative for all ν > 0 and r ∈ ℝ. -/
+theorem studentTNegLogKernel_nonneg {ν : ℝ} (hν : 0 < ν) (r : ℝ) :
+    0 ≤ studentTNegLogKernel ν r := by
+  dsimp [studentTNegLogKernel]
+  have h1 : 0 ≤ (ν + 1) / 2 := by linarith
+  have h_div : 0 ≤ r ^ 2 / ν := div_nonneg (sq_nonneg r) (le_of_lt hν)
+  have h_arg : 1 ≤ 1 + r ^ 2 / ν := by linarith
+  have h_log : 0 ≤ Real.log (1 + r ^ 2 / ν) := Real.log_nonneg h_arg
+  exact mul_nonneg h1 h_log
+
+/-- Exact derivative identity: the derivative of studentTNegLogKernel ν at r is studentTScore ν r. -/
+theorem hasDerivAt_studentTNegLogKernel {ν : ℝ} (hν : 0 < ν) (r : ℝ) :
+    HasDerivAt (studentTNegLogKernel ν) (studentTScore ν r) r := by
+  have h_sq : HasDerivAt (fun x : ℝ => x ^ 2) (2 * r) r := by
+    have h_mul : HasDerivAt (fun x : ℝ => x * x) (1 * r + r * 1) r :=
+      (hasDerivAt_id' r).mul (hasDerivAt_id' r)
+    have h_fn : (fun x : ℝ => x * x) = (fun x : ℝ => x ^ 2) := by
+      funext x
+      ring
+    have h_der : 1 * r + r * 1 = 2 * r := by ring
+    rwa [h_fn, h_der] at h_mul
+  have h_div : HasDerivAt (fun x : ℝ => x ^ 2 / ν) ((2 * r) / ν) r :=
+    h_sq.div_const ν
+  have h_inner : HasDerivAt (fun x : ℝ => 1 + x ^ 2 / ν) ((2 * r) / ν) r :=
+    h_div.const_add 1
+  have h_arg_pos : 0 < 1 + r ^ 2 / ν := by
+    have h_nonneg : 0 ≤ r ^ 2 / ν := div_nonneg (sq_nonneg r) (le_of_lt hν)
+    linarith
+  have h_log : HasDerivAt (fun x : ℝ => Real.log (1 + x ^ 2 / ν))
+      (((2 * r) / ν) / (1 + r ^ 2 / ν)) r :=
+    h_inner.log (ne_of_gt h_arg_pos)
+  have h_scaled : HasDerivAt (studentTNegLogKernel ν)
+      (((ν + 1) / 2) * (((2 * r) / ν) / (1 + r ^ 2 / ν))) r :=
+    h_log.const_mul ((ν + 1) / 2)
+  have h_denom_pos : 0 < ν + r ^ 2 := by linarith [sq_nonneg r]
+  have h_simp : ((ν + 1) / 2) * (((2 * r) / ν) / (1 + r ^ 2 / ν)) = studentTScore ν r := by
+    dsimp [studentTScore]
+    have hν_ne : ν ≠ 0 := ne_of_gt hν
+    have h_denom_ne : ν + r ^ 2 ≠ 0 := ne_of_gt h_denom_pos
+    have h_arg_ne : 1 + r ^ 2 / ν ≠ 0 := ne_of_gt h_arg_pos
+    field_simp [hν_ne, h_denom_ne, h_arg_ne]
+  rwa [h_simp] at h_scaled
+
+/-- Global virial score bound: |studentTScore ν r * r| ≤ ν + 1 for all r ∈ ℝ and ν > 0,
+    proving outlier robustness even as |r| → ∞. -/
+theorem studentTScore_mul_le {ν : ℝ} (hν : 0 < ν) (r : ℝ) :
+    |studentTScore ν r * r| ≤ ν + 1 := by
+  dsimp [studentTScore]
+  have h_denom_pos : 0 < ν + r ^ 2 := by linarith [sq_nonneg r]
+  have h_num_nonneg : 0 ≤ (ν + 1) * r * r := by
+    have h1 : 0 ≤ ν + 1 := by linarith
+    have h2 : (ν + 1) * r * r = (ν + 1) * r ^ 2 := by ring
+    rw [h2]
+    exact mul_nonneg h1 (sq_nonneg r)
+  have h_prod_nonneg : 0 ≤ (ν + 1) * r / (ν + r ^ 2) * r := by
+    have h_eq : (ν + 1) * r / (ν + r ^ 2) * r = ((ν + 1) * r * r) / (ν + r ^ 2) := by ring
+    rw [h_eq]
+    exact div_nonneg h_num_nonneg (le_of_lt h_denom_pos)
+  rw [abs_of_nonneg h_prod_nonneg]
+  have h_eq : (ν + 1) * r / (ν + r ^ 2) * r = ((ν + 1) * r ^ 2) / (ν + r ^ 2) := by ring
+  rw [h_eq, div_le_iff₀ h_denom_pos]
+  have h_pos_term : 0 < (ν + 1) * ν := mul_pos (by linarith) hν
+  nlinarith
+
+/-- The Cauchy / Horseshoe local log-prior shrinkage penalty is globally non-negative. -/
+theorem cauchyShrinkagePenalty_nonneg (τ lam : ℝ) :
+    0 ≤ cauchyShrinkagePenalty τ lam := by
+  dsimp [cauchyShrinkagePenalty]
+  have h_sq : 0 ≤ (lam / τ) ^ 2 := sq_nonneg (lam / τ)
+  have h_arg : 1 ≤ 1 + (lam / τ) ^ 2 := by linarith
+  exact Real.log_nonneg h_arg
+
+/-- The Student-t score vanishes at zero residual r = 0. -/
+theorem studentTScore_zero (ν : ℝ) :
+    studentTScore ν 0 = 0 := by
+  dsimp [studentTScore]
+  ring
+
+
+/-! ============================================================================
+    §8. Pure-JAX 3-Phase Scale & Location Calibration Bounds
     ============================================================================ -/
 
 /-- Clipped normal-consistent coordinate scale calibration map used in Phase 1 warmup:
@@ -537,6 +644,21 @@ theorem calibrated_shifted_roundtrip_inverse (μ σ Rmin Rmax c z : ℝ)
 #print axioms softCapped_global_contraction_no_overshoot
 #print axioms mhAccept_bounds
 #print axioms mh_detailed_balance
+/-- info: 'McmcRobust.studentTNegLogKernel_nonneg' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms studentTNegLogKernel_nonneg
+/-- info: 'McmcRobust.hasDerivAt_studentTNegLogKernel' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hasDerivAt_studentTNegLogKernel
+/-- info: 'McmcRobust.studentTScore_mul_le' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms studentTScore_mul_le
+/-- info: 'McmcRobust.cauchyShrinkagePenalty_nonneg' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms cauchyShrinkagePenalty_nonneg
+/-- info: 'McmcRobust.studentTScore_zero' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms studentTScore_zero
 
 /-- info: 'McmcRobust.calibratedRadius_ge_min' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
