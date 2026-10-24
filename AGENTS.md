@@ -109,6 +109,13 @@ uv run python -m mcmc_robust.bench.render_docs --write  # README.md / REPORT.md 
 - **`UnifiedRobustNUTS`**: No-U-Turn Sampler in calibrated coordinate-wise $\text{arcsinh}$ coordinates with a 3-phase warm-up (Phase 1 location and scale calibration $\to$ Phase 2 diagonal metric $\to$ Phase 3 dual-averaging step size). Stiffness damping is off by default (`gamma=0.0`); pass `gamma > 0` to enable it. `UnifiedRobustHMC` and `UnifiedRobustSampler` follow the same schedule.
 - **Warm-up contract**: `Sampler.sample(x0, target, n_steps, burn_in, adapt=True)` calls `adapt()` only while `t < burn_in` and freezes the step size at `t = burn_in - 1`. Pass `burn_in >= warmup_steps`, or the 3-phase schedule is cut short and Phase 1 calibration may never run. After warm-up the kernel is fixed, so the retained draws come from a π-invariant chain.
 - **`sample_blackjax_unified_nuts(logdensity_fn, d, draws=1000, tune=500, chains=4, seed=42, ...)`**: Pure-JAX pipeline. Phase 1 calibrates a `JaxArcsinhTransform` from pooled draws, BlackJAX window adaptation then runs per chain in $z$-space, and sampling uses `jax.jit` + `jax.vmap` + `jax.lax.scan`. It returns `JaxUnifiedNUTSResult`, whose `step_size` has shape `(chains,)` and `inverse_mass_matrix` shape `(chains, d)`, because every chain samples with its own adapted parameters.
+- **`sample_blackjax_unified_nuts(..., transform_kind=...)`**:
+  - Values: `"arcsinh"` (the default), `"tukey_h"` (a Tukey h-map with a likelihood-ratio-guarded MLE calibration, REPORT §2.6), `"affine"` and `"identity"`. The last two are ablation controls.
+  - The tail-alignment check (`check_tail_alignment=True`) stores `result.tail_alignment` and emits `TailAlignmentWarning`.
+  - Tests run under `-W error`.
+    - A test whose subject is not the warning passes `check_tail_alignment=False` explicitly. Whether the check fires on a target near its threshold varies between runs and platforms.
+    - Tests of the warning itself (`tests/unit/test_tail_alignment.py`) assert it with `pytest.warns`, on cases where it fires with a wide margin.
+    - Never blanket-suppress warnings.
 - **`sample_pymc_model(model, sampler="unified_nuts", draws=1000, tune=500, ...)`**: Wraps continuous PyMC models with `DictToArrayBijection` unflattening and exact leapfrog gradient evaluation accounting. Returns an `arviz.DataTree` InferenceData object.
 - **`JaxArcsinhTransform`**: Coordinate-wise $\text{arcsinh}$ diffeomorphism with `wrap_logdensity` for JAX/BlackJAX models, compatible with `jax.jit` and `jax.lax.scan`.
 

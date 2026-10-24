@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ import numpy as np
 import pytest
 
 from mcmc_robust.bench import ablation_runner as ar
+from mcmc_robust.diagnostics.tail_alignment import TailAlignmentWarning, tail_alignment_diagnostic
 from mcmc_robust.targets.ablation import make_ablation_target
 
 QUICK_TARGETS = ("mvt_iso_nu2", "gauss_aniso")
@@ -43,12 +45,17 @@ def test_quick_config_is_small_and_full_config_matches_the_protocol() -> None:
     assert full.seeds == tuple(range(10))
     assert (full.tune, full.draws, full.chains, full.max_num_doublings) == (500, 1000, 4, 10)
     assert full.targets == ar.ABLATION_TARGET_NAMES
-    assert set(full.arms) == {"stock", "stock_ta95", "arcsinh", "affine", "scale_mixture"}
+    assert set(full.arms) == {"stock", "stock_ta95", "arcsinh", "affine", "scale_mixture", "tukey_h"}
     assert full.tail_probs == (0.01, 0.99)
     assert ar.ARMS["stock"].target_accept == 0.80
     assert ar.ARMS["stock_ta95"].target_accept == 0.95
     assert ar.ARMS["arcsinh"].transform_kind == "arcsinh"
     assert ar.ARMS["affine"].transform_kind == "affine"
+    assert ar.ARMS["tukey_h"].transform_kind == "tukey_h"
+    assert ar.ARMS["tukey_h"].target_accept == 0.80
+    assert not ar.ARMS["tukey_h"].augmented
+    # The Tukey h-map arm runs on every target.
+    assert all(full.applies(make_ablation_target(t), "tukey_h") for t in ar.ABLATION_TARGET_NAMES)
     assert ar.ARMS["stock"].transform_kind == ar.ARMS["scale_mixture"].transform_kind == "identity"
 
 
@@ -72,6 +79,9 @@ def test_quick_mode_schema(quick_run: tuple[dict[str, Any], Path]) -> None:
         for key in ("tail_ess_per_grad", "ess_per_grad", "max_rhat", "tail_prob_abs_err", "tail_prob_abs_z"):
             assert isinstance(r[key], float) and np.isfinite(r[key]), (key, r)
         assert r["converged"] == (r["max_rhat"] <= ar.RHAT_CONVERGED)
+        assert isinstance(r["tail_alignment_warning"], bool)
+        assert isinstance(r["tail_alignment_n_heavy"], int)
+        assert r["tail_alignment_max_chi"] is None or isinstance(r["tail_alignment_max_chi"], float)
         assert r["d"] == make_ablation_target(r["target"]).d
         assert r["d_sampled"] == (r["d"] + 1 if r["arm"] == "scale_mixture" else r["d"])
 
@@ -107,6 +117,21 @@ def test_provenance_fields(quick_run: tuple[dict[str, Any], Path]) -> None:
     assert cfg["arm_settings"]["stock_ta95"]["target_accept"] == 0.95
     for key in ("tune", "draws", "chains", "max_num_doublings", "tail_probs", "rhat_converged", "init"):
         assert key in cfg, key
+    # The tail-alignment settings recorded are the ones the rows were scored with.
+    rec = cfg["tail_alignment"]
+    assert set(rec) == {"level", "chi_threshold", "max_tail_index", "min_exceedances"}
+    m = rec["min_exceedances"]
+    cauchy = np.random.default_rng(0).standard_cauchy(size=(40 * m, 2))
+    used = tail_alignment_diagnostic(cauchy)
+    assert (rec["level"], rec["chi_threshold"], rec["max_tail_index"]) == (
+        used.level,
+        used.chi_threshold,
+        used.max_tail_index,
+    )
+    # Exactly m exceedances per coordinate give a verdict; one fewer gives none.
+    draws_per_exceedance = round(1.0 / (1.0 - used.level))
+    assert np.isfinite(tail_alignment_diagnostic(cauchy[: m * draws_per_exceedance]).max_chi)
+    assert np.isnan(tail_alignment_diagnostic(cauchy[: (m - 1) * draws_per_exceedance]).max_chi)
 
 
 def _iqr_stats(values: list[float]) -> dict[str, float]:
@@ -219,6 +244,52 @@ def test_arms_share_paired_initial_positions(monkeypatch: pytest.MonkeyPatch) ->
             np.testing.assert_allclose(np.asarray(jax.vmap(sm.to_x)(jnp.asarray(start))), x0, atol=1e-12)
         else:
             np.testing.assert_array_equal(start, x0)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("seed", [0, 2])
+@pytest.mark.parametrize("arm", ["stock", "arcsinh", "scale_mixture"])
+def test_rows_carry_the_tail_alignment_check_of_their_own_x_draws(
+    monkeypatch: pytest.MonkeyPatch, arm: str, seed: int
+) -> None:
+    """Each row scores the run's x-space draws (mapped back for the scale mixture) with the tail-alignment check.
+
+    On the rotated product of Cauchys the check fires for stock NUTS (4 chains x 500 draws; REPORT.md §5.1).
+    Seeds 0 and 2 cover both a verdict and, for the arcsinh arm on some platforms, no verdict. The pipeline's
+    own warning must not turn the run into an error row when warnings are errors.
+    """
+    results: list[Any] = []
+    real = ar.sample_blackjax_unified_nuts
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        results.append(real(*args, **kwargs))
+        return results[-1]
+
+    monkeypatch.setattr(ar, "sample_blackjax_unified_nuts", spy)
+    spec = make_ablation_target("rot_prod_cauchy")
+    config = ar.AblationConfig.quick(targets=("rot_prod_cauchy",), seeds=(seed,), tune=300, draws=500)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", TailAlignmentWarning)
+        row = ar.run_single(spec, arm, seed, config)
+    assert row["error"] is None, row["error"]
+
+    (res,) = results
+    x = res.samples
+    if arm == "scale_mixture":
+        sm = spec.scale_mixture
+        assert sm is not None
+        x = np.asarray(jax.vmap(jax.vmap(sm.to_x))(jnp.asarray(res.samples)))
+    expected = tail_alignment_diagnostic(x)
+    # Rows store a non-finite statistic (no verdict: fewer than two heavy coordinates) as None.
+    assert row["tail_alignment_max_chi"] == (expected.max_chi if np.isfinite(expected.max_chi) else None)
+    assert row["tail_alignment_n_heavy"] == len(expected.heavy_coordinates)
+    assert row["tail_alignment_warning"] is expected.warn
+    if arm == "stock":
+        # Stock NUTS reaches these rotated tails often enough for the check to fire: chi was 0.75-0.99 on
+        # each of 12 seeds of this configuration. The arcsinh arm can under-explore them so badly that too
+        # few coordinates look heavy for a verdict (2 of those 12 seeds), the blind spot REPORT.md §2.7
+        # documents, so firing is asserted for stock only.
+        assert row["tail_alignment_warning"] is True
 
 
 @pytest.mark.unit

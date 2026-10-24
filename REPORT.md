@@ -80,6 +80,8 @@ This is the technical record for the code in this repository. Every result numbe
   - No single coordinate map can bring both a Gaussian and a Cauchy coordinate into the potential class that published ergodicity results for HMC and NUTS assume.
   - Choosing the map per coordinate (a Tukey h-map for Student-*t* coordinates, an affine map for Gaussian ones) brings every coordinate into that class.
   - So the per-coordinate choice is both necessary and sufficient.
+- **A matched-map option (§2.6):** `transform_kind="tukey_h"` fits that map per coordinate during warm-up, and keeps it affine unless a test finds a heavy tail.
+- **A risk warning (§2.7)** for the regime in which coordinate-wise maps can miss tails silently.
 
 **Not yet done:** a comparison with diffeomorphic MCMC. No public code for it was found (§5.2, §6).
 
@@ -195,6 +197,56 @@ The benchmarked `UnifiedRobustNUTS` is not a single configuration.
 **Own implementations, not the published methods:**
 - `AutoMALA` differs from the published method in its step-selection rule and tuning.
 - "Stereographic MALA" is a MALA in stereographic coordinates. It is not the published stereographic random-walk or bouncy-particle samplers.
+
+### 2.6 The Tukey h-map option (`transform_kind="tukey_h"`)
+
+**The map.** For coordinate i, with $h_i \ge 0$:
+
+```math
+x_i = \mu_i + R_i\, z_i \exp\left(\tfrac{1}{2} h_i z_i^2\right), \qquad
+\log \frac{dx_i}{dz_i} = \log R_i + \tfrac{1}{2} h_i z_i^2 + \log\left(1 + h_i z_i^2\right).
+```
+
+- With $h_i = 0$ the map is affine.
+- Its inverse is $`z = u \exp(-\tfrac{1}{2} W(h u^2))`$, with $`u = (x - \mu)/R`$ and $W$ the principal Lambert W function. W is computed from $\log y$, so it stays exact for very large arguments.
+- Where the forward map overflows, the wrapped log density is $-\infty$ rather than NaN.
+
+**What it does to tails.**
+- A polynomial tail of index α pulls back to a Gaussian tail with variance $`1/(\alpha h)`$, whatever the true α. Misspecifying α only rescales that variance.
+- §4 machine-checks that the pullback potential then lies in the window that published HMC/NUTS ergodicity results assume (`hMapStudentT_inTailWindow`).
+- With $h = 0$, a Gaussian coordinate stays inside the window (`affineGauss_inTailWindow`).
+
+**Calibration**, from the Phase 1 draws:
+- **Location:** $\mu_i$ is the median.
+- **Shape and scale:** $(R_i, h_i)$ are fitted by maximum likelihood of the Tukey h-transformed Gaussian, i.e. Lambert W × Gaussian (Goerg, 2015), with $h_i$ capped at `TUKEY_H_MAX_H`.
+- **The guard:** a coordinate keeps $h_i = 0$, with the Gaussian scale estimate, unless a likelihood-ratio test rejects $h_i = 0$ at level `tukey_h_level`.
+  - The p-value uses the boundary null mixture $`\tfrac12\chi^2_0 + \tfrac12\chi^2_1`$ (Self & Liang, 1987).
+  - The guard makes the map's choice per coordinate. That is what the impossibility theorem of §4 says is necessary.
+- **The R clip:** R is clipped to `[min_radius, max_radius]`, and h is rescaled to keep $h/R^2$ fixed, so the clip does not change the map's shape.
+
+**Limits of the guard.**
+- It separates Gaussian tails from Tukey-h tails, not polynomial tails from exponential ones. A Laplace-tailed coordinate is often warped, which makes its pullback lighter than Gaussian.
+- The test assumes independent draws, while Phase 1 draws are autocorrelated.
+
+**Default.** arcsinh remains the default `transform_kind`. Table A (§5.1) compares the two maps.
+
+### 2.7 Tail-alignment warning
+
+**What it does.** `sample_blackjax_unified_nuts` checks its post-warm-up draws with `tail_alignment_diagnostic`. It stores the report as `result.tail_alignment`, and emits `TailAlignmentWarning` when heavy tails appear to be shared across coordinates. Pass `check_tail_alignment=False` to skip the check.
+
+**How it works:**
+1. A coordinate is *heavy* when its Hill tail index, estimated from the draws above the 0.95 quantile of $`\lvert x_i - \mathop{\mathrm{median}}\rvert`$, is below 4.
+2. For each pair of heavy coordinates it computes the co-exceedance $`\chi_{ij}`$: the fraction of a coordinate's top exceedances during which the other coordinate also exceeds its own 0.95 quantile. Under independence this is about $1 - u$ at level $u$, and it equals 1 for identical coordinates.
+3. It warns when the largest $`\chi_{ij}`$ exceeds 0.3.
+4. Below 50 exceedances per coordinate, i.e. fewer than 1,000 draws at this level, it gives no verdict.
+5. The thresholds were chosen on pilot seeds that are not among the seeds of Table A.
+
+**What it does not do:**
+- **A risk flag, not a detector.** It flags the condition under which coordinate-wise maps can miss tails without any R-hat warning (§5.1): heavy tails along directions that are not coordinate axes. It is not a detector of missed tails.
+- **Fires on elliptical targets too.** It also fires on elliptical targets, where the arcsinh pipeline may still converge.
+- **Silent when the bulk is never left.** It stays silent if a sampler never leaves the bulk.
+
+Table A reports, for each target and arm, the seeds on which it fired. The findings also report how often it fired on runs that never visited a tail.
 
 ## 3. Experimental components
 
@@ -378,63 +430,73 @@ d = 50, budget 3,000 gradients per chain, 4 chains, seed 42; "tail" starts at �
 - Tail accuracy is the error in the probability below the exact 0.01 and 0.99 marginal quantiles.
 
 <!-- BEGIN GENERATED: ablation-table -->
-10 seeds per cell; each run has 4 chains × 1,000 draws after 500 warm-up steps. Every arm runs BlackJAX NUTS with window adaptation through `sample_blackjax_unified_nuts`; arms differ only in the coordinate transform (or, for `scale_mixture`, in the model's parameterisation), and share each seed's initial positions and random key, so ratios are paired by seed. Source: `reports/ablation_results.json` (run 2026-10-24, commit cb94d6b).
+10 seeds per cell; each run has 4 chains × 1,000 draws after 500 warm-up steps. Every arm runs BlackJAX NUTS with window adaptation through `sample_blackjax_unified_nuts`; arms differ only in the coordinate transform (or, for `scale_mixture`, in the model's parameterisation), and share each seed's initial positions and random key, so ratios are paired by seed. Source: `reports/ablation_results.json` (run 2026-10-24, commit afa01da).
 
 Tail-probability error is the mean over coordinates and p ∈ {0.01, 0.99} of |P̂(x_i < q_p) − p| at the exact marginal quantile q_p; it is less noisy than a relative error on the 0.99 quantile.
 
 Targets: **Task 1**: Sparse regression, Cauchy(0, 1) priors, 3 active of 10 coefficients (SOTA Task 1); **Task 3**: Product form: t(nu) on 10 coordinates (nu = 1.2 to 2.5), N(0, 1) on 10 (SOTA Task 3); **rotated t (ν = 1)**: Multivariate Cauchy (t, nu = 1), d = 10, rotated scale with condition number 25; **rotated t (ν = 2)**: Multivariate t, nu = 2, d = 10, rotated scale with condition number 25; **isotropic t (ν = 2)**: Isotropic multivariate t, nu = 2, d = 10; **rotated product of Cauchys**: Rotated product of Cauchys, x = Q diag(s) u with u iid Cauchy and s = geomspace(1, 5), d = 10; **rotated Gaussian**: Rotated Gaussian, d = 20, covariance condition number 100; **anisotropic Gaussian**: Axis-aligned Gaussian, d = 20, standard deviations 0.1 to 10.
 
-Arms: `stock`: BlackJAX NUTS, window adaptation, target acceptance 0.8; `stock_ta95`: The same with target acceptance 0.95; `arcsinh`: NUTS on the calibrated coordinate-wise arcsinh pullback; `affine`: Same pipeline and Phase 1 calibration, z = (x - mu) / R, no arcsinh; `scale_mixture`: Stock NUTS on the non-centred Gaussian scale-mixture reparameterisation.
+Arms: `stock`: BlackJAX NUTS, window adaptation, target acceptance 0.8; `stock_ta95`: The same with target acceptance 0.95; `arcsinh`: NUTS on the calibrated coordinate-wise arcsinh pullback; `affine`: Same pipeline and Phase 1 calibration, z = (x - mu) / R, no arcsinh; `scale_mixture`: Stock NUTS on the non-centred Gaussian scale-mixture reparameterisation; `tukey_h`: Same pipeline and Phase 1, Tukey h-map x = mu + R z exp(h z^2 / 2); (R, h) by Tukey-h maximum likelihood, h = 0 unless a likelihood-ratio test rejects it.
 
-| Target | Arm | Tail-ESS/grad vs stock, median [IQR] | Seeds better than stock | Seeds converged | Median gradients | Median divergences | Median tail-probability error |
-| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Task 1 | `stock` | 1 (reference) | – | 0 of 10 | 635,440 | 0 | 0.0034 |
-| Task 1 | `stock_ta95` | 0.55× [0.45, 1.06] | 3 of 10 | 1 of 10 | 1,124,198 | 0 | 0.0044 |
-| Task 1 | `arcsinh` | 7.14× [6.61, 13.13] | 10 of 10 | 9 of 10 | 148,826 | 0 | 0.0018 |
-| Task 1 | `affine` | 0.89× [0.61, 1.24] | 4 of 10 | 0 of 10 | 683,634 | 0 | 0.0049 |
-| Task 1 | `scale_mixture` | 1.09× [0.94, 1.89] | 7 of 10 | 8 of 10 | 1,061,258 | 205.5 | 0.0015 |
-| Task 3 | `stock` | 1 (reference) | – | 1 of 10 | 197,496 | 0 | 0.0030 |
-| Task 3 | `stock_ta95` | 0.55× [0.52, 0.96] | 2 of 10 | 3 of 10 | 297,914 | 0 | 0.0026 |
-| Task 3 | `arcsinh` | 3.80× [3.12, 4.07] | 10 of 10 | 10 of 10 | 74,596 | 0 | 0.0015 |
-| Task 3 | `affine` | 0.92× [0.63, 1.17] | 4 of 10 | 3 of 10 | 242,389 | 0 | 0.0030 |
-| Task 3 | `scale_mixture` | 3.45× [2.81, 3.94] | 10 of 10 | 10 of 10 | 82,176 | 0 | 0.0014 |
-| rotated t (ν = 1) | `stock` | 1 (reference) | – | 0 of 10 | 195,961 | 0 | 0.0043 |
-| rotated t (ν = 1) | `stock_ta95` | 0.75× [0.55, 1.47] | 4 of 10 | 0 of 10 | 314,761 | 0 | 0.0035 |
-| rotated t (ν = 1) | `arcsinh` | 5.24× [2.16, 8.88] | 10 of 10 | 2 of 10 | 121,078 | 0 | 0.0046 |
-| rotated t (ν = 1) | `affine` | 1.92× [0.97, 2.88] | 7 of 10 | 0 of 10 | 178,581 | 0 | 0.0044 |
-| rotated t (ν = 1) | `scale_mixture` | 44.71× [30.11, 75.54] | 10 of 10 | 10 of 10 | 51,242 | 0 | 0.0015 |
-| rotated t (ν = 2) | `stock` | 1 (reference) | – | 2 of 10 | 117,246 | 0 | 0.0030 |
-| rotated t (ν = 2) | `stock_ta95` | 0.63× [0.53, 0.76] | 0 of 10 | 4 of 10 | 178,166 | 0 | 0.0024 |
-| rotated t (ν = 2) | `arcsinh` | 1.73× [1.44, 1.86] | 10 of 10 | 10 of 10 | 99,168 | 0 | 0.0019 |
-| rotated t (ν = 2) | `affine` | 1.03× [0.95, 1.22] | 6 of 10 | 3 of 10 | 114,478 | 0 | 0.0031 |
-| rotated t (ν = 2) | `scale_mixture` | 8.99× [7.62, 10.17] | 10 of 10 | 10 of 10 | 43,884 | 0 | 0.0013 |
-| isotropic t (ν = 2) | `stock` | 1 (reference) | – | 4 of 10 | 64,814 | 0 | 0.0028 |
-| isotropic t (ν = 2) | `stock_ta95` | 0.77× [0.68, 0.79] | 1 of 10 | 4 of 10 | 104,074 | 0 | 0.0017 |
-| isotropic t (ν = 2) | `arcsinh` | 1.59× [1.46, 1.78] | 10 of 10 | 9 of 10 | 58,962 | 0 | 0.0019 |
-| isotropic t (ν = 2) | `affine` | 1.13× [1.03, 1.19] | 8 of 10 | 4 of 10 | 65,280 | 0 | 0.0018 |
-| isotropic t (ν = 2) | `scale_mixture` | 4.24× [3.87, 4.50] | 10 of 10 | 10 of 10 | 43,618 | 0 | 0.0012 |
-| rotated product of Cauchys | `stock` | 1 (reference) | – | 0 of 10 | 520,939 | 0 | 0.0068 |
-| rotated product of Cauchys | `stock_ta95` | 0.69× [0.49, 1.02] | 3 of 10 | 0 of 10 | 739,482 | 0 | 0.0074 |
-| rotated product of Cauchys | `arcsinh` | 1.58× [0.93, 3.24] | 7 of 10 | 0 of 10 | 342,392 | 0 | 0.0100 |
-| rotated product of Cauchys | `affine` | 0.82× [0.62, 1.61] | 4 of 10 | 0 of 10 | 532,026 | 0 | 0.0068 |
-| rotated product of Cauchys | `scale_mixture` | 72.59× [56.99, 87.81] | 10 of 10 | 10 of 10 | 92,334 | 0 | 0.0017 |
-| rotated Gaussian | `stock` | 1 (reference) | – | 10 of 10 | 155,246 | 0 | 0.0013 |
-| rotated Gaussian | `stock_ta95` | 0.71× [0.69, 0.73] | 0 of 10 | 10 of 10 | 209,912 | 0 | 0.0013 |
-| rotated Gaussian | `arcsinh` | 0.85× [0.84, 0.90] | 0 of 10 | 10 of 10 | 177,917 | 0 | 0.0013 |
-| rotated Gaussian | `affine` | 1.00× [0.95, 1.02] | 4 of 10 | 10 of 10 | 156,798 | 0 | 0.0015 |
-| anisotropic Gaussian | `stock` | 1 (reference) | – | 10 of 10 | 121,870 | 0 | 0.0014 |
-| anisotropic Gaussian | `stock_ta95` | 0.72× [0.72, 0.74] | 0 of 10 | 10 of 10 | 164,086 | 0 | 0.0015 |
-| anisotropic Gaussian | `arcsinh` | 1.55× [1.52, 1.58] | 10 of 10 | 10 of 10 | 90,602 | 0 | 0.0014 |
-| anisotropic Gaussian | `affine` | 1.23× [1.20, 1.24] | 10 of 10 | 10 of 10 | 99,100 | 0 | 0.0013 |
+| Target | Arm | Tail-ESS/grad vs stock, median [IQR] | Seeds better than stock | Seeds converged | Median gradients | Median divergences | Median tail-probability error | Seeds with tail-alignment warning |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Task 1 | `stock` | 1 (reference) | – | 0 of 10 | 635,440 | 0 | 0.0034 | 0 of 10 |
+| Task 1 | `stock_ta95` | 0.55× [0.45, 1.06] | 3 of 10 | 1 of 10 | 1,124,198 | 0 | 0.0044 | 0 of 10 |
+| Task 1 | `arcsinh` | 7.14× [6.61, 13.13] | 10 of 10 | 9 of 10 | 148,826 | 0 | 0.0018 | 0 of 10 |
+| Task 1 | `affine` | 0.89× [0.61, 1.24] | 4 of 10 | 0 of 10 | 683,634 | 0 | 0.0049 | 0 of 10 |
+| Task 1 | `scale_mixture` | 1.09× [0.94, 1.89] | 7 of 10 | 8 of 10 | 1,061,258 | 205.5 | 0.0015 | 0 of 10 |
+| Task 1 | `tukey_h` | 17.21× [14.78, 32.84] | 10 of 10 | 10 of 10 | 91,530 | 0 | 0.0014 | 0 of 10 |
+| Task 3 | `stock` | 1 (reference) | – | 1 of 10 | 197,496 | 0 | 0.0030 | 0 of 10 |
+| Task 3 | `stock_ta95` | 0.55× [0.52, 0.96] | 2 of 10 | 3 of 10 | 297,914 | 0 | 0.0026 | 0 of 10 |
+| Task 3 | `arcsinh` | 3.80× [3.12, 4.07] | 10 of 10 | 10 of 10 | 74,596 | 0 | 0.0015 | 0 of 10 |
+| Task 3 | `affine` | 0.92× [0.63, 1.17] | 4 of 10 | 3 of 10 | 242,389 | 0 | 0.0030 | 0 of 10 |
+| Task 3 | `scale_mixture` | 3.45× [2.81, 3.94] | 10 of 10 | 10 of 10 | 82,176 | 0 | 0.0014 | 0 of 10 |
+| Task 3 | `tukey_h` | 5.66× [4.96, 6.62] | 10 of 10 | 10 of 10 | 47,338 | 0 | 0.0014 | 0 of 10 |
+| rotated t (ν = 1) | `stock` | 1 (reference) | – | 0 of 10 | 195,961 | 0 | 0.0043 | 10 of 10 |
+| rotated t (ν = 1) | `stock_ta95` | 0.75× [0.55, 1.47] | 4 of 10 | 0 of 10 | 314,761 | 0 | 0.0035 | 10 of 10 |
+| rotated t (ν = 1) | `arcsinh` | 5.24× [2.16, 8.88] | 10 of 10 | 2 of 10 | 121,078 | 0 | 0.0046 | 10 of 10 |
+| rotated t (ν = 1) | `affine` | 1.92× [0.97, 2.88] | 7 of 10 | 0 of 10 | 178,581 | 0 | 0.0044 | 10 of 10 |
+| rotated t (ν = 1) | `scale_mixture` | 44.71× [30.11, 75.54] | 10 of 10 | 10 of 10 | 51,242 | 0 | 0.0015 | 10 of 10 |
+| rotated t (ν = 1) | `tukey_h` | 4.10× [1.96, 5.30] | 10 of 10 | 4 of 10 | 133,994 | 0 | 0.0033 | 10 of 10 |
+| rotated t (ν = 2) | `stock` | 1 (reference) | – | 2 of 10 | 117,246 | 0 | 0.0030 | 10 of 10 |
+| rotated t (ν = 2) | `stock_ta95` | 0.63× [0.53, 0.76] | 0 of 10 | 4 of 10 | 178,166 | 0 | 0.0024 | 10 of 10 |
+| rotated t (ν = 2) | `arcsinh` | 1.73× [1.44, 1.86] | 10 of 10 | 10 of 10 | 99,168 | 0 | 0.0019 | 10 of 10 |
+| rotated t (ν = 2) | `affine` | 1.03× [0.95, 1.22] | 6 of 10 | 3 of 10 | 114,478 | 0 | 0.0031 | 10 of 10 |
+| rotated t (ν = 2) | `scale_mixture` | 8.99× [7.62, 10.17] | 10 of 10 | 10 of 10 | 43,884 | 0 | 0.0013 | 10 of 10 |
+| rotated t (ν = 2) | `tukey_h` | 1.55× [1.33, 1.69] | 9 of 10 | 10 of 10 | 106,958 | 0 | 0.0017 | 10 of 10 |
+| isotropic t (ν = 2) | `stock` | 1 (reference) | – | 4 of 10 | 64,814 | 0 | 0.0028 | 10 of 10 |
+| isotropic t (ν = 2) | `stock_ta95` | 0.77× [0.68, 0.79] | 1 of 10 | 4 of 10 | 104,074 | 0 | 0.0017 | 10 of 10 |
+| isotropic t (ν = 2) | `arcsinh` | 1.59× [1.46, 1.78] | 10 of 10 | 9 of 10 | 58,962 | 0 | 0.0019 | 10 of 10 |
+| isotropic t (ν = 2) | `affine` | 1.13× [1.03, 1.19] | 8 of 10 | 4 of 10 | 65,280 | 0 | 0.0018 | 10 of 10 |
+| isotropic t (ν = 2) | `scale_mixture` | 4.24× [3.87, 4.50] | 10 of 10 | 10 of 10 | 43,618 | 0 | 0.0012 | 10 of 10 |
+| isotropic t (ν = 2) | `tukey_h` | 1.48× [1.25, 1.57] | 9 of 10 | 10 of 10 | 69,900 | 0 | 0.0018 | 10 of 10 |
+| rotated product of Cauchys | `stock` | 1 (reference) | – | 0 of 10 | 520,939 | 0 | 0.0068 | 10 of 10 |
+| rotated product of Cauchys | `stock_ta95` | 0.69× [0.49, 1.02] | 3 of 10 | 0 of 10 | 739,482 | 0 | 0.0074 | 10 of 10 |
+| rotated product of Cauchys | `arcsinh` | 1.58× [0.93, 3.24] | 7 of 10 | 0 of 10 | 342,392 | 0 | 0.0100 | 10 of 10 |
+| rotated product of Cauchys | `affine` | 0.82× [0.62, 1.61] | 4 of 10 | 0 of 10 | 532,026 | 0 | 0.0068 | 10 of 10 |
+| rotated product of Cauchys | `scale_mixture` | 72.59× [56.99, 87.81] | 10 of 10 | 10 of 10 | 92,334 | 0 | 0.0017 | 10 of 10 |
+| rotated product of Cauchys | `tukey_h` | 2.24× [0.85, 3.53] | 7 of 10 | 1 of 10 | 372,285 | 0.5 | 0.0100 | 10 of 10 |
+| rotated Gaussian | `stock` | 1 (reference) | – | 10 of 10 | 155,246 | 0 | 0.0013 | 0 of 10 |
+| rotated Gaussian | `stock_ta95` | 0.71× [0.69, 0.73] | 0 of 10 | 10 of 10 | 209,912 | 0 | 0.0013 | 0 of 10 |
+| rotated Gaussian | `arcsinh` | 0.85× [0.84, 0.90] | 0 of 10 | 10 of 10 | 177,917 | 0 | 0.0013 | 0 of 10 |
+| rotated Gaussian | `affine` | 1.00× [0.95, 1.02] | 4 of 10 | 10 of 10 | 156,798 | 0 | 0.0015 | 0 of 10 |
+| rotated Gaussian | `tukey_h` | 0.98× [0.96, 1.00] | 3 of 10 | 10 of 10 | 159,620 | 0 | 0.0013 | 0 of 10 |
+| anisotropic Gaussian | `stock` | 1 (reference) | – | 10 of 10 | 121,870 | 0 | 0.0014 | 0 of 10 |
+| anisotropic Gaussian | `stock_ta95` | 0.72× [0.72, 0.74] | 0 of 10 | 10 of 10 | 164,086 | 0 | 0.0015 | 0 of 10 |
+| anisotropic Gaussian | `arcsinh` | 1.55× [1.52, 1.58] | 10 of 10 | 10 of 10 | 90,602 | 0 | 0.0014 | 0 of 10 |
+| anisotropic Gaussian | `affine` | 1.23× [1.20, 1.24] | 10 of 10 | 10 of 10 | 99,100 | 0 | 0.0013 | 0 of 10 |
+| anisotropic Gaussian | `tukey_h` | 1.76× [1.73, 1.80] | 10 of 10 | 10 of 10 | 69,772 | 0 | 0.0014 | 0 of 10 |
 <!-- END GENERATED: ablation-table -->
 
 <!-- BEGIN GENERATED: ablation-findings -->
 - **Arcsinh vs stock NUTS** (paired tail-ESS per gradient, median over seeds): Task 1 7.1× (wins on 10 of 10 seeds); Task 3 3.8× (wins on 10 of 10 seeds); rotated t (ν = 1) 5.2× (wins on 10 of 10 seeds); rotated t (ν = 2) 1.7× (wins on 10 of 10 seeds); isotropic t (ν = 2) 1.6× (wins on 10 of 10 seeds); rotated product of Cauchys 1.6× (wins on 7 of 10 seeds); rotated Gaussian 0.9× (wins on 0 of 10 seeds); anisotropic Gaussian 1.5× (wins on 10 of 10 seeds).
 - **Rescaling alone** (`affine`: the same calibration without the arcsinh) vs stock: Task 1 0.9× (wins on 4 of 10 seeds); Task 3 0.9× (wins on 4 of 10 seeds); rotated t (ν = 1) 1.9× (wins on 7 of 10 seeds); rotated t (ν = 2) 1.0× (wins on 6 of 10 seeds); isotropic t (ν = 2) 1.1× (wins on 8 of 10 seeds); rotated product of Cauchys 0.8× (wins on 4 of 10 seeds); rotated Gaussian 1.0× (wins on 4 of 10 seeds); anisotropic Gaussian 1.2× (wins on 10 of 10 seeds).
 - **Reparameterising by hand** (`scale_mixture`, where the model is a Student-t scale mixture) vs `arcsinh`: Task 1 0.2× (better than arcsinh on 0 of 10 seeds); Task 3 0.9× (better than arcsinh on 1 of 10 seeds); rotated t (ν = 1) 10.8× (better than arcsinh on 10 of 10 seeds); rotated t (ν = 2) 5.3× (better than arcsinh on 10 of 10 seeds); isotropic t (ν = 2) 2.5× (better than arcsinh on 10 of 10 seeds); rotated product of Cauchys 45.6× (better than arcsinh on 10 of 10 seeds).
+- **Tukey h-map** (`tukey_h`) vs `arcsinh`: Task 1 2.3× (better than arcsinh on 10 of 10 seeds); Task 3 1.6× (better than arcsinh on 10 of 10 seeds); rotated t (ν = 1) 1.0× (better than arcsinh on 5 of 10 seeds); rotated t (ν = 2) 0.9× (better than arcsinh on 4 of 10 seeds); isotropic t (ν = 2) 0.9× (better than arcsinh on 4 of 10 seeds); rotated product of Cauchys 0.8× (better than arcsinh on 5 of 10 seeds); rotated Gaussian 1.1× (better than arcsinh on 10 of 10 seeds); anisotropic Gaussian 1.1× (better than arcsinh on 10 of 10 seeds); vs stock: Task 1 17.2× (wins on 10 of 10 seeds); Task 3 5.7× (wins on 10 of 10 seeds); rotated t (ν = 1) 4.1× (wins on 10 of 10 seeds); rotated t (ν = 2) 1.5× (wins on 9 of 10 seeds); isotropic t (ν = 2) 1.5× (wins on 9 of 10 seeds); rotated product of Cauchys 2.2× (wins on 7 of 10 seeds); rotated Gaussian 1.0× (wins on 3 of 10 seeds); anisotropic Gaussian 1.8× (wins on 10 of 10 seeds).
 - **Seeds converged** (max R-hat at most 1.01) with `arcsinh`: Task 1: 9 of 10 seeds; Task 3: 10 of 10 seeds; rotated t (ν = 1): 2 of 10 seeds; rotated t (ν = 2): 10 of 10 seeds; isotropic t (ν = 2): 9 of 10 seeds; rotated product of Cauchys: 0 of 10 seeds; rotated Gaussian: 10 of 10 seeds; anisotropic Gaussian: 10 of 10 seeds; with `stock`: Task 1: 0 of 10 seeds; Task 3: 1 of 10 seeds; rotated t (ν = 1): 0 of 10 seeds; rotated t (ν = 2): 2 of 10 seeds; isotropic t (ν = 2): 4 of 10 seeds; rotated product of Cauchys: 0 of 10 seeds; rotated Gaussian: 10 of 10 seeds; anisotropic Gaussian: 10 of 10 seeds.
 - **Seeds with any post-warm-up divergence** with `arcsinh`: Task 1: 0 of 10 seeds; Task 3: 0 of 10 seeds; rotated t (ν = 1): 0 of 10 seeds; rotated t (ν = 2): 0 of 10 seeds; isotropic t (ν = 2): 0 of 10 seeds; rotated product of Cauchys: 4 of 10 seeds; rotated Gaussian: 0 of 10 seeds; anisotropic Gaussian: 4 of 10 seeds.
-- **Runs in which some coordinate never visits a tail** (no draw beyond its exact 0.01 or 0.99 quantile, which R-hat cannot detect) with `arcsinh`: rotated product of Cauchys: 10 of 10 seeds; with `stock`: Task 1: 1 of 10 seeds; rotated product of Cauchys: 8 of 10 seeds.
+- **Runs in which some coordinate never visits a tail** (no draw beyond its exact 0.01 or 0.99 quantile, which R-hat cannot detect) with `arcsinh`: rotated product of Cauchys: 10 of 10 seeds; with `tukey_h`: rotated product of Cauchys: 10 of 10 seeds; with `stock`: Task 1: 1 of 10 seeds; rotated product of Cauchys: 8 of 10 seeds.
+- **Tail-alignment warning** (`TailAlignmentWarning`, computed on each run's own draws; it flags heavy tails shared across coordinates) with `arcsinh`: Task 1: 0 of 10 seeds; Task 3: 0 of 10 seeds; rotated t (ν = 1): 10 of 10 seeds; rotated t (ν = 2): 10 of 10 seeds; isotropic t (ν = 2): 10 of 10 seeds; rotated product of Cauchys: 10 of 10 seeds; rotated Gaussian: 0 of 10 seeds; anisotropic Gaussian: 0 of 10 seeds. Among runs of any arm in which some coordinate never visits a tail, it fired on 46 of 49.
 <!-- END GENERATED: ablation-findings -->
 
 **How to read Table A.**
@@ -677,6 +739,11 @@ Seed 42 only, 4 chains × 1,000 draws after 1,000 warm-up steps, NUTS tree depth
 - a Tukey h-map, whose pullback of polynomial tails is Gaussian (§4);
 - whitened radial and block-structured maps for elliptical heavy tails.
 
+**The new options:**
+- The `tukey_h` guard and the tail-alignment warning are calibrated on synthetic targets only.
+- Both can be wrong in the ways described in §2.6 and §2.7.
+- Neither has been evaluated on posteriors from real data.
+
 **Engineering:**
 - **Speed.** `UnifiedRobustNUTS` is a NumPy implementation and is slower per gradient than BlackJAX; the JAX pipeline is the faster path.
 - **Figures.** `bench/plot.py` writes figures to `reports/figures/`. They are not embedded here until their annotations are revised to match the tables.
@@ -696,6 +763,10 @@ Check R-hat and ESS as usual.
 - **Heavy tails that are strongly rotated relative to the coordinates:** gains are smaller and less reliable, and a tail can be missed without warning (Table A). nutpie's normalizing-flow adaptation is worth trying there (Table B).
 - **Targets that stock NUTS already samples well:** the transform is not expected to help there.
 
+**Try the Tukey h-map.** On axis-aligned heavy tails, try `transform_kind="tukey_h"` (Table A compares it with arcsinh). Check `result.transform.h` to see which coordinates were warped.
+
+**Heed the warning.** If `TailAlignmentWarning` fires, treat tail estimates with caution. Reparameterise the model, or try a method that follows tail directions, such as nutpie's flow (Table B).
+
 **If you use `UnifiedRobustNUTS` directly:** pass `adapt_step_size=True` and set `burn_in` to at least `warmup_steps`.
 
 ## 8. References
@@ -705,32 +776,34 @@ Check R-hat and ESS as usual.
 3. Betancourt, M. (2017). A conceptual introduction to Hamiltonian Monte Carlo. arXiv:1701.02434.
 4. Betancourt, M. (2018). Fitting the Cauchy. Stan case study.
 5. Biron-Lattes, M., Surjanovic, N., Syed, S., Campbell, T., & Bouchard-Côté, A. (2024). autoMALA: Locally adaptive Metropolis-adjusted Langevin algorithm. *AISTATS*, PMLR 238. arXiv:2310.16782.
-6. Bou-Rabee, N., Carpenter, B., Kleppe, T. S., & Liu, S. (2025). The within-orbit adaptive leapfrog no-U-turn sampler (WALNUTS). arXiv:2506.18746.
-7. Bou-Rabee, N., Carpenter, B., & Marsden, M. (2024). GIST: Gibbs self-tuning for locally adaptive Hamiltonian Monte Carlo. arXiv:2404.15253.
+6. Bou-Rabee, N., Carpenter, B., & Marsden, M. (2024). GIST: Gibbs self-tuning for locally adaptive Hamiltonian Monte Carlo. arXiv:2404.15253.
+7. Bou-Rabee, N., Carpenter, B., Kleppe, T. S., & Liu, S. (2025). The within-orbit adaptive leapfrog no-U-turn sampler (WALNUTS). arXiv:2506.18746.
 8. Brešar, M., & Mijatović, A. (2026). Diffeomorphic Markov chain Monte Carlo: fast mixing for heavy-tailed distributions. arXiv:2608.04284.
 9. Brosse, N., Durmus, A., Moulines, É., & Sabanis, S. (2019). The tamed unadjusted Langevin algorithm. *Stochastic Processes and their Applications*, 129(10), 3638–3663. doi:10.1016/j.spa.2018.10.002.
 10. Gelman, A., & Hill, J. (2006). *Data Analysis Using Regression and Multilevel/Hierarchical Models*. Cambridge University Press.
-11. Gorinova, M. I., Moore, D., & Hoffman, M. D. (2020). Automatic reparameterisation of probabilistic programs. *ICML*, PMLR 119, 3648–3657. arXiv:1906.03028.
-12. He, Y., Balasubramanian, K., & Erdogdu, M. A. (2024). An analysis of transformed unadjusted Langevin algorithm for heavy-tailed sampling. *IEEE Transactions on Information Theory*, 70(1), 571–593. arXiv:2201.08349.
-13. Hickling, T., & Prangle, D. (2025). Flexible tails for normalizing flows. *ICML*, PMLR 267, 23155–23178. arXiv:2406.16971.
-14. Hoffman, M. D., & Gelman, A. (2014). The No-U-Turn sampler: Adaptively setting path lengths in Hamiltonian Monte Carlo. *Journal of Machine Learning Research*, 15, 1593–1623.
-15. Hoffman, M., Sountsov, P., Dillon, J. V., Langmore, I., Tran, D., & Vasudevan, S. (2019). NeuTra-lizing bad geometry in Hamiltonian Monte Carlo using neural transport. arXiv:1903.03704.
-16. Jaini, P., Kobyzev, I., Yu, Y., & Brubaker, M. (2020). Tails of Lipschitz triangular flows. *ICML*. arXiv:1907.04481.
-17. Johnson, L. T., & Geyer, C. J. (2012). Variable transformation to obtain geometric ergodicity in the random-walk Metropolis algorithm. *The Annals of Statistics*, 40(6), 3050–3076. doi:10.1214/12-AOS1048.
-18. Kim, S., Shephard, N., & Chib, S. (1998). Stochastic volatility: Likelihood inference and comparison with ARCH models. *The Review of Economic Studies*, 65(3), 361–393.
-19. Laszkiewicz, M., Lederer, J., & Fischer, A. (2022). Marginal tail-adaptive normalizing flows. *ICML*, PMLR 162, 12020–12048. arXiv:2206.10311.
-20. Liang, F., Mahoney, M. W., & Hodgkinson, L. (2022). Fat-tailed variational inference with anisotropic tail adaptive flows. *ICML*, PMLR 162, 13257–13270. arXiv:2205.07918.
-21. Livingstone, S., Betancourt, M., Byrne, S., & Girolami, M. (2019). On the geometric ergodicity of Hamiltonian Monte Carlo. *Bernoulli*, 25(4A), 3109–3138. doi:10.3150/18-BEJ1083.
+11. Goerg, G. M. (2015). The Lambert way to Gaussianize heavy-tailed data with the inverse of Tukey's h transformation as a special case. *The Scientific World Journal*, 2015, 909231. arXiv:1010.2265.
+12. Gorinova, M. I., Moore, D., & Hoffman, M. D. (2020). Automatic reparameterisation of probabilistic programs. *ICML*, PMLR 119, 3648–3657. arXiv:1906.03028.
+13. He, Y., Balasubramanian, K., & Erdogdu, M. A. (2024). An analysis of transformed unadjusted Langevin algorithm for heavy-tailed sampling. *IEEE Transactions on Information Theory*, 70(1), 571–593. arXiv:2201.08349.
+14. Hickling, T., & Prangle, D. (2025). Flexible tails for normalizing flows. *ICML*, PMLR 267, 23155–23178. arXiv:2406.16971.
+15. Hoffman, M. D., & Gelman, A. (2014). The No-U-Turn sampler: Adaptively setting path lengths in Hamiltonian Monte Carlo. *Journal of Machine Learning Research*, 15, 1593–1623.
+16. Hoffman, M., Sountsov, P., Dillon, J. V., Langmore, I., Tran, D., & Vasudevan, S. (2019). NeuTra-lizing bad geometry in Hamiltonian Monte Carlo using neural transport. arXiv:1903.03704.
+17. Jaini, P., Kobyzev, I., Yu, Y., & Brubaker, M. (2020). Tails of Lipschitz triangular flows. *ICML*. arXiv:1907.04481.
+18. Johnson, L. T., & Geyer, C. J. (2012). Variable transformation to obtain geometric ergodicity in the random-walk Metropolis algorithm. *The Annals of Statistics*, 40(6), 3050–3076. doi:10.1214/12-AOS1048.
+19. Kim, S., Shephard, N., & Chib, S. (1998). Stochastic volatility: Likelihood inference and comparison with ARCH models. *The Review of Economic Studies*, 65(3), 361–393.
+20. Laszkiewicz, M., Lederer, J., & Fischer, A. (2022). Marginal tail-adaptive normalizing flows. *ICML*, PMLR 162, 12020–12048. arXiv:2206.10311.
+21. Liang, F., Mahoney, M. W., & Hodgkinson, L. (2022). Fat-tailed variational inference with anisotropic tail adaptive flows. *ICML*, PMLR 162, 13257–13270. arXiv:2205.07918.
 22. Livingstone, S., & Zanella, G. (2022). The Barker proposal: Combining robustness and efficiency in gradient-based MCMC. *Journal of the Royal Statistical Society: Series B*, 84(2), 496–523.
-23. Lytras, I., & Sabanis, S. (2025). Taming under isoperimetry. *Stochastic Processes and their Applications*, 188, 104684. arXiv:2311.09003.
-24. Modi, C., Barnett, A., & Carpenter, B. (2024). Delayed rejection Hamiltonian Monte Carlo for sampling multiscale distributions. *Bayesian Analysis*, 19(3), 815–842. doi:10.1214/23-BA1360.
-25. Neal, R. M. (2003). Slice sampling. *The Annals of Statistics*, 31(3), 705–767.
-26. nutpie: a NUTS implementation with gradient-based and normalizing-flow adaptation. https://github.com/pymc-devs/nutpie.
+23. Livingstone, S., Betancourt, M., Byrne, S., & Girolami, M. (2019). On the geometric ergodicity of Hamiltonian Monte Carlo. *Bernoulli*, 25(4A), 3109–3138. doi:10.3150/18-BEJ1083.
+24. Lytras, I., & Sabanis, S. (2025). Taming under isoperimetry. *Stochastic Processes and their Applications*, 188, 104684. arXiv:2311.09003.
+25. Modi, C., Barnett, A., & Carpenter, B. (2024). Delayed rejection Hamiltonian Monte Carlo for sampling multiscale distributions. *Bayesian Analysis*, 19(3), 815–842. doi:10.1214/23-BA1360.
+26. Neal, R. M. (2003). Slice sampling. *The Annals of Statistics*, 31(3), 705–767.
 27. Papaspiliopoulos, O., Roberts, G. O., & Sköld, M. (2007). A general framework for the parametrization of hierarchical models. *Statistical Science*, 22(1), 59–73.
 28. Piironen, J., & Vehtari, A. (2017). Sparsity information and regularization in the horseshoe and other shrinkage priors. *Electronic Journal of Statistics*, 11(2), 5018–5051.
 29. Power, S., & Vasdekis, G. (2025). Some aspects of robustness in modern Markov chain Monte Carlo. arXiv:2511.21563.
 30. Roberts, G. O., & Tweedie, R. L. (1996). Exponential convergence of Langevin distributions and their discrete approximations. *Bernoulli*, 2(4), 341–363.
 31. Rubin, D. B. (1981). Estimation in parallel randomized experiments. *Journal of Educational Statistics*, 6(4), 377–401.
-32. The Mathlib Community. The Lean 4 mathematical library (mathlib4). https://github.com/leanprover-community/mathlib4.
+32. Self, S. G., & Liang, K.-Y. (1987). Asymptotic properties of maximum likelihood estimators and likelihood ratio tests under nonstandard conditions. *Journal of the American Statistical Association*, 82(398), 605–610.
 33. Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P.-C. (2021). Rank-normalization, folding, and localization: An improved $\widehat{R}$ for assessing convergence of MCMC. *Bayesian Analysis*, 16(2), 667–718.
 34. Yang, J., Łatuszyński, K., & Roberts, G. O. (2024). Stereographic Markov chain Monte Carlo. *The Annals of Statistics*, 52(6), 2692–2713. doi:10.1214/24-AOS2426.
+35. nutpie: a NUTS implementation with gradient-based and normalizing-flow adaptation. https://github.com/pymc-devs/nutpie.
+36. The Mathlib Community. The Lean 4 mathematical library (mathlib4). https://github.com/leanprover-community/mathlib4.

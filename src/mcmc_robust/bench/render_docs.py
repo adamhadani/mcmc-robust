@@ -668,6 +668,7 @@ def render_ablation_table(reports: Reports) -> str:
                 ratio_cell = f"{med:.2f}× [{q25:.2f}, {q75:.2f}]"
                 wins = f"{sum(r > 1.0 for r in ratios)} of {len(ratios)}"
             converged = sum(bool(r["converged"]) for r in runs)
+            warned = sum(bool(r.get("tail_alignment_warning")) for r in runs)
             errs = [r["tail_prob_abs_err"] for r in runs if r.get("tail_prob_abs_err") is not None]
             body.append(
                 [
@@ -679,6 +680,7 @@ def render_ablation_table(reports: Reports) -> str:
                     _int(float(np.median([r["total_grad_evals"] for r in runs]))),
                     f"{float(np.median([r['divergences'] for r in runs])):g}",
                     f"{float(np.median(errs)):.4f}" if errs else "n/a",
+                    f"{warned} of {len(runs)}",
                 ]
             )
     header = [
@@ -690,6 +692,7 @@ def render_ablation_table(reports: Reports) -> str:
         "Median gradients",
         "Median divergences",
         "Median tail-probability error",
+        "Seeds with tail-alignment warning",
     ]
     legend = "; ".join(f"**{_ablation_label(t)}**: {desc}" for t, desc in cfg.get("target_descriptions", {}).items())
     arms = cfg.get("arm_settings", {})
@@ -754,6 +757,17 @@ def render_ablation_findings(reports: Reports) -> str:
         "- **Reparameterising by hand** (`scale_mixture`, where the model is a Student-t scale mixture) vs `arcsinh`: "
         + vs("scale_mixture", "arcsinh", "better than arcsinh")
         + ".",
+        *(
+            [
+                "- **Tukey h-map** (`tukey_h`) vs `arcsinh`: "
+                + vs("tukey_h", "arcsinh", "better than arcsinh")
+                + "; vs stock: "
+                + vs("tukey_h", "stock", "wins")
+                + "."
+            ]
+            if any(r["arm"] == "tukey_h" for r in reports.ablation["rows"])
+            else []
+        ),
         f"- **Seeds converged** (max R-hat at most {RHAT_CONVERGED}) with `arcsinh`: "
         + seeds_where("arcsinh", lambda r: bool(r["converged"]))
         + "; with `stock`: "
@@ -763,12 +777,24 @@ def render_ablation_findings(reports: Reports) -> str:
         + seeds_where("arcsinh", lambda r: r["divergences"] > 0)
         + ".",
         "- **Runs in which some coordinate never visits a tail** (no draw beyond its exact 0.01 or 0.99 quantile, "
-        "which R-hat cannot detect) with `arcsinh`: "
-        + _nonzero(seeds_where("arcsinh", _never_visits_a_tail))
-        + "; with `stock`: "
-        + _nonzero(seeds_where("stock", _never_visits_a_tail))
+        "which R-hat cannot detect) "
+        + "; ".join(
+            f"with `{arm}`: " + _nonzero(seeds_where(arm, _never_visits_a_tail))
+            for arm in ("arcsinh", "tukey_h", "stock")
+            if any(r["arm"] == arm for r in reports.ablation["rows"])
+        )
         + ".",
     ]
+    rows = reports.ablation["rows"]
+    if any("tail_alignment_warning" in r for r in rows):
+        missed = [r for r in rows if _never_visits_a_tail(r)]
+        bullets.append(
+            "- **Tail-alignment warning** (`TailAlignmentWarning`, computed on each run's own draws; it flags heavy "
+            "tails shared across coordinates) with `arcsinh`: "
+            + seeds_where("arcsinh", lambda r: bool(r.get("tail_alignment_warning")))
+            + f". Among runs of any arm in which some coordinate never visits a tail, it fired on "
+            f"{sum(bool(r.get('tail_alignment_warning')) for r in missed)} of {len(missed)}."
+        )
     return "\n".join(bullets) + "\n"
 
 

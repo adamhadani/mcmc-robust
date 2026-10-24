@@ -19,6 +19,9 @@ Key Capabilities:
   and compiled `jax.jit` / `jax.lax.scan` kernels for zero Python-loop overhead.
 - `JaxAffineTransform`: The same interface with $z = (x - \mu) / R$ and no tail warping, the
   ablation control that separates rescaling from tail warping.
+- `JaxTukeyHTransform`: Tukey's h-map $x = \mu + R z e^{h z^2 / 2}$ with a per-coordinate $h \ge 0$,
+  which pulls a polynomial tail of index $\alpha$ back to a Gaussian tail of variance $1 / (\alpha h)$;
+  $h = 0$ is the affine map. Its inverse uses `lambertw_from_log`.
 - `as_blackjax_algorithm`: Exposes a standard BlackJAX functional `(init_fn, step_fn)` API.
 """
 
@@ -469,6 +472,174 @@ class JaxAffineTransform(JaxCoordinateTransform):
         r"""Returns $\nabla_z \log \pi_Z = R \odot \nabla_x \log \pi_X$ on masked coordinates."""
         gx_arr = jnp.asarray(grad_x, dtype=jnp.float64)
         return jnp.where(self.mask, self.radius * gx_arr, gx_arr)
+
+
+#: Newton steps in each branch of `lambertw_from_log`. From its starting bound each iteration is
+#: monotone and quadratically convergent; this many steps reach a few ulps for every log y.
+LAMBERTW_NEWTON_STEPS: int = 8
+
+
+def lambertw_from_log(log_y: Any, xp: Any = jnp) -> Any:
+    r"""Principal-branch Lambert W of $y = e^{\log y} \ge 0$, computed from $\log y$ so that $y$ may exceed float64.
+
+    Two Newton iterations, selected by $\log y$, each started from a bound on the root so that it
+    converges monotonically:
+
+    - $\log y \le 1$: $w e^w = y$, i.e. $w \leftarrow w - (w - y e^{-w}) / (1 + w)$, from the upper
+      bound $\log(1 + y)$ ($w e^w$ is convex and increasing). This keeps full relative precision as
+      $y \to 0$, where $W(y) = y - y^2 + \dots$, and gives $W(0) = 0$ exactly.
+    - $\log y > 1$: $w + \log w = \log y$, i.e. $w \leftarrow (1 + \log y - \log w) \cdot w / (1 + w)$,
+      from the lower bound $\log y - \log\log y$ ($w + \log w$ is concave and increasing). No
+      intermediate exceeds $\log y$, so it works up to $\log y = 10^{300}$.
+
+    $\log y = -\infty$ gives $0$, $\log y = +\infty$ gives $+\infty$ and NaN propagates.
+
+    Parameters:
+        log_y: Array of $\log y$ values (any shape).
+        xp: Array namespace: `jax.numpy` (default; compatible with `jax.jit` and `jax.vmap`) or `numpy`.
+
+    Returns:
+        $W(y)$ with the shape of `log_y`.
+    """
+    ly = xp.asarray(log_y, dtype=xp.float64)
+    y = xp.exp(xp.minimum(ly, 1.0))
+    w_lo = xp.log1p(y)
+    ly_hi = xp.clip(ly, 1.0, 1e300)
+    w_hi = ly_hi - xp.log(ly_hi)
+    for _ in range(LAMBERTW_NEWTON_STEPS):
+        w_lo = w_lo - (w_lo - y * xp.exp(-w_lo)) / (1.0 + w_lo)
+        w_hi = (1.0 + ly_hi - xp.log(w_hi)) * (w_hi / (1.0 + w_hi))
+    w = xp.where(ly <= 1.0, w_lo, w_hi)
+    return xp.where(ly == xp.inf, xp.inf, w)
+
+
+def tukey_h_z_from_u(u: Any, h: Any, xp: Any = jnp) -> Any:
+    r"""Inverts the standardised h-map $u = z e^{h z^2 / 2}$ (with $h \ge 0$), elementwise.
+
+    $z^2 = W(h u^2) / h$, evaluated as $\mathrm{sign}(u) \sqrt{W / h}$ when $W > 1$ and as
+    $u \, e^{-W / 2}$ otherwise (exact at $h = 0$, where $W = 0$). $W$ comes from
+    $\log(h u^2) = \log h + 2 \log\lvert u\rvert$, so $u^2$ is never formed. Both branches have
+    relative error of a few ulps; the product form alone would lose $W \varepsilon / 2$ for large $W$.
+
+    Parameters:
+        u: Standardised coordinates $(x - \mu) / R$.
+        h: Tail parameters $h \ge 0$, broadcastable against `u`.
+        xp: Array namespace (`jax.numpy` or `numpy`), as in `lambertw_from_log`.
+    """
+    abs_u = xp.abs(u)
+    h_pos = h > 0.0
+    safe_h = xp.where(h_pos, h, 1.0)
+    log_y = xp.where(h_pos & (abs_u > 0.0), xp.log(safe_h) + 2.0 * xp.log(xp.where(abs_u > 0.0, abs_u, 1.0)), -xp.inf)
+    w = lambertw_from_log(log_y, xp=xp)
+    return xp.where(w > 1.0, xp.sign(u) * xp.sqrt(w / safe_h), u * xp.exp(-0.5 * w))
+
+
+class JaxTukeyHTransform(JaxCoordinateTransform):
+    r"""Pure JAX coordinate-wise Tukey h-map, a Gaussianising pullback for polynomial tails.
+
+    On masked coordinates, with $h_i \ge 0$ ($h_i = 1 / c_i$; $h_i = 0$ is the affine map):
+        $$x_i = \mu_i + R_i z_i e^{h_i z_i^2 / 2}, \qquad
+          \log \lvert dx_i / dz_i \rvert = \log R_i + h_i z_i^2 / 2 + \mathrm{log1p}(h_i z_i^2),$$
+    and $z_i = u_i e^{-W(h_i u_i^2) / 2}$ with $u_i = (x_i - \mu_i) / R_i$ and $W$ the principal
+    Lambert W (`tukey_h_z_from_u`). A marginal tail $\pi(x) \sim \lvert x\rvert^{-(\alpha + 1)}$ pulls
+    back to $\log \pi_Z(z) = -\alpha h z^2 / 2 + O(\log \lvert z\rvert)$, a Gaussian tail of variance
+    $1 / (\alpha h)$ whatever $\alpha$ is. The map is a smooth bijection of $\mathbb{R}$ for $R > 0$,
+    $h \ge 0$ (`formal/McmcRobustFormal.lean` §10: `hMap_bijective`, `log_hMapDeriv`); rescaling $z$
+    by $\lambda$ maps $(R, h)$ to $(R \lambda, h \lambda^2)$ (`hMap_rescale`), so with an adapted
+    metric only $h / R^2$ shapes the sampler's geometry.
+
+    **Overflow.** $e^{h z^2 / 2}$ overflows float64 once $h z^2 / 2 \gtrsim 709.78$. `wrap_logdensity`
+    returns $-\infty$ with a zero gradient wherever `inverse(z)` is not finite, so such a point is a
+    rejected (divergent) NUTS proposal and never a NaN. The true pullback density there is below
+    $e^{-709 \alpha}$ for a tail of index $\alpha$, so nothing representable is changed.
+
+    Parameters:
+        h: Tail parameter $h \ge 0$ per coordinate, a scalar or an array of shape `(d,)`
+            (default `0.0`, the affine map). It must be finite.
+        The other constructor parameters are those of `JaxCoordinateTransform`.
+    """
+
+    def __init__(
+        self,
+        radius: float | Sequence[float] | np.ndarray | jnp.ndarray = 3.0,
+        dim: int | None = None,
+        scales: float | Sequence[float] | np.ndarray | jnp.ndarray | None = None,
+        location: float | Sequence[float] | np.ndarray | jnp.ndarray = 0.0,
+        radii: float | Sequence[float] | np.ndarray | jnp.ndarray | None = None,
+        d: int | None = None,
+        mask: Sequence[bool] | np.ndarray | jnp.ndarray | None = None,
+        h: float | Sequence[float] | np.ndarray | jnp.ndarray = 0.0,
+    ) -> None:
+        super().__init__(radius=radius, dim=dim, scales=scales, location=location, radii=radii, d=d, mask=mask)
+        h_arr = jnp.asarray(h, dtype=jnp.float64)
+        if h_arr.ndim == 0:
+            h_arr = jnp.broadcast_to(h_arr, self.radius.shape)
+        elif h_arr.shape != self.radius.shape:
+            raise ValueError(f"h must be a scalar or have shape {self.radius.shape}, got shape {h_arr.shape}")
+        try:
+            h_np = np.asarray(h_arr)
+        except jax.errors.TracerArrayConversionError:
+            h_np = None  # constructed inside a traced function: values are not available to check
+        if h_np is not None and not np.all(np.isfinite(h_np) & (h_np >= 0.0)):
+            raise ValueError(f"h must be finite and non-negative, got {h_np}")
+        self.h = h_arr
+
+    def forward(self, x: jnp.ndarray) -> jnp.ndarray:
+        r"""Maps $x$ to $z = u e^{-W(h u^2) / 2}$, $u = (x - \mu) / R$, on masked coordinates."""
+        x_arr = jnp.asarray(x, dtype=jnp.float64)
+        z = tukey_h_z_from_u((x_arr - self.location) / self.radius, self.h)
+        return jnp.where(self.mask, z, x_arr)
+
+    def inverse(self, z: jnp.ndarray) -> jnp.ndarray:
+        r"""Maps $z$ back to $x = \mu + R z e^{h z^2 / 2}$ on masked coordinates ($\pm\infty$ on overflow)."""
+        z_arr = jnp.asarray(z, dtype=jnp.float64)
+        z_masked = jnp.where(self.mask, z_arr, 0.0)
+        x = self.location + self.radius * z_masked * jnp.exp(0.5 * self.h * z_masked * z_masked)
+        return jnp.where(self.mask, x, z_arr)
+
+    def log_jacobian_det(self, z: jnp.ndarray) -> jnp.ndarray:
+        r"""Computes $\log \lvert\det J(z)\rvert = \sum_{i: m_i = 1} \log R_i + h_i z_i^2 / 2 + \mathrm{log1p}(h_i z_i^2)$."""
+        z_arr = jnp.asarray(z, dtype=jnp.float64)
+        z_masked = jnp.where(self.mask, z_arr, 0.0)
+        hz2 = self.h * z_masked * z_masked
+        terms = jnp.where(self.mask, jnp.log(self.radius) + 0.5 * hz2 + jnp.log1p(hz2), 0.0)
+        return jnp.sum(terms, axis=-1)
+
+    def forward_grad(self, x: jnp.ndarray | np.ndarray, grad_x: jnp.ndarray | np.ndarray) -> jnp.ndarray:
+        r"""Computes the pullback gradient $\nabla_z \log \pi_Z(z)$ at $z = \phi(x)$ in closed form.
+
+        $$\nabla_{z_i} \log \pi_Z(z) = R_i e^{h_i z_i^2 / 2} (1 + h_i z_i^2) \, \nabla_{x_i} \log \pi_X(x)
+          + h_i z_i \left(1 + \frac{2}{1 + h_i z_i^2}\right)$$
+        on masked coordinates, and $\nabla_{x_i} \log \pi_X(x)$ elsewhere. It equals
+        `jax.grad(self.wrap_logdensity(logdensity_fn))(z)`.
+        """
+        x_arr = jnp.asarray(x, dtype=jnp.float64)
+        gx_arr = jnp.asarray(grad_x, dtype=jnp.float64)
+        z = jnp.where(self.mask, self.forward(x_arr), 0.0)
+        hz2 = self.h * z * z
+        dx_dz = self.radius * jnp.exp(0.5 * hz2) * (1.0 + hz2)
+        gz = dx_dz * gx_arr + self.h * z * (1.0 + 2.0 / (1.0 + hz2))
+        return jnp.where(self.mask, gz, gx_arr)
+
+    def wrap_logdensity(
+        self,
+        logdensity_fn: Callable[[jnp.ndarray], jnp.ndarray],
+    ) -> Callable[[jnp.ndarray], jnp.ndarray]:
+        r"""Wraps $\log \pi_X$ into $\log \pi_Z(z) = \log \pi_X(\psi(z)) + \log \lvert\det J_\psi(z)\rvert$.
+
+        Returns $-\infty$, with a zero gradient, where $\psi(z)$ overflows (see the class docstring).
+        The overflowing point is replaced by $z = 0$ before the density is evaluated, so no NaN
+        reaches the value or, through `jnp.where`, the gradient.
+        """
+
+        def transformed_logdensity(z: jnp.ndarray) -> jnp.ndarray:
+            z_arr = jnp.asarray(z, dtype=jnp.float64)
+            representable = jnp.all(jnp.isfinite(self.inverse(z_arr)), axis=-1)
+            z_safe = jnp.where(representable[..., jnp.newaxis], z_arr, 0.0)
+            value = logdensity_fn(self.inverse(z_safe)) + self.log_jacobian_det(z_safe)
+            return jnp.where(representable, value, -jnp.inf)
+
+        return transformed_logdensity
 
 
 class JaxArcsinhTransform(JaxCoordinateTransform):

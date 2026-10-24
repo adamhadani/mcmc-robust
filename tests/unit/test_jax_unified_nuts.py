@@ -176,6 +176,8 @@ def test_sample_blackjax_unified_nuts_multivariate_cauchy() -> None:
     def multivariate_cauchy_logdensity(x: jnp.ndarray) -> jnp.ndarray:
         return -0.5 * (nu + d) * jnp.log1p(jnp.sum(x**2) / nu)
 
+    # This test is about sampling, not the tail-alignment check, which is switched off explicitly: whether
+    # it fires on a target near its threshold varies between runs (it is tested in test_tail_alignment.py).
     res = sample_blackjax_unified_nuts(
         logdensity_fn=multivariate_cauchy_logdensity,
         d=d,
@@ -183,6 +185,7 @@ def test_sample_blackjax_unified_nuts_multivariate_cauchy() -> None:
         tune=300,
         chains=4,
         seed=101,
+        check_tail_alignment=False,
     )
 
     assert res.samples.shape == (4, 500, d)
@@ -224,6 +227,8 @@ def test_sample_blackjax_unified_nuts_centered_neals_funnel() -> None:
         lp_quad = -0.5 * jnp.exp(-jnp.clip(v, -50.0, 50.0)) * jnp.sum(rest**2)
         return lp_v + lp_det + lp_quad
 
+    # This test is about sampling, not the tail-alignment check, which is switched off explicitly: whether
+    # it fires on a target near its threshold varies between runs (it is tested in test_tail_alignment.py).
     res = sample_blackjax_unified_nuts(
         logdensity_fn=neals_funnel_logdensity,
         d=d,
@@ -231,6 +236,7 @@ def test_sample_blackjax_unified_nuts_centered_neals_funnel() -> None:
         tune=300,
         chains=4,
         seed=202,
+        check_tail_alignment=False,
     )
 
     assert res.samples.shape == (4, 500, d)
@@ -584,7 +590,11 @@ def test_sample_blackjax_unified_nuts_student_t_radial_quantiles_d20() -> None:
     def mvt_logdensity(x: jnp.ndarray) -> jnp.ndarray:
         return -0.5 * (nu + d) * jnp.log1p(jnp.sum(x**2) / nu)
 
-    res = sample_blackjax_unified_nuts(mvt_logdensity, d=d, draws=500, tune=400, chains=4, seed=1)
+    # This test is about sampling, not the tail-alignment check, which is switched off explicitly: whether
+    # it fires on a target near its threshold varies between runs (it is tested in test_tail_alignment.py).
+    res = sample_blackjax_unified_nuts(
+        mvt_logdensity, d=d, draws=500, tune=400, chains=4, seed=1, check_tail_alignment=False
+    )
     radius = np.linalg.norm(res.samples.reshape(-1, d), axis=1)
 
     # For an identity-scale multivariate t, ||x||^2 / d ~ F(d, nu). Across seeds the sampled

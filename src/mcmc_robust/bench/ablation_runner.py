@@ -13,15 +13,21 @@ Arms (every arm: BlackJAX NUTS with window adaptation, `tune` warm-up steps, `dr
 - `scale_mixture`: stock NUTS on the practitioner's non-centred Gaussian scale-mixture
   reparameterisation (`targets/scale_mixture.py`), t-family targets and Task 1 only. ESS and
   accuracy are measured on $x$; gradients are counted in the augmented space.
+- `tukey_h`: the same pipeline and Phase 1 with Tukey's h-map $x = \mu + R z e^{h z^2 / 2}$ instead
+  of arcsinh; $(R, h)$ by Tukey-h maximum likelihood, and $h = 0$ unless a likelihood-ratio test
+  rejects it (`calibrate_jax_tukey_h_transform`, default level). All targets.
 
-All arms run through `sample_blackjax_unified_nuts` (`transform_kind` "identity", "arcsinh" or
-"affine"), so they share the kernel, the vectorised chains and the gradient accounting.
+All arms run through `sample_blackjax_unified_nuts` (`transform_kind` "identity", "arcsinh",
+"affine" or "tukey_h"), so they share the kernel, the vectorised chains and the gradient accounting.
 
 Per-run metrics (one row per target x arm x seed): total gradients including warm-up;
 coordinate-mean and worst-coordinate bulk and tail ESS (ArviZ, via `evaluate_chains_with_arviz`);
 max rank-normalised R-hat; post-warm-up divergences; ESS per gradient; the legacy q99 relative
-error; and the tail-probability accuracy of `diagnostics/tail_accuracy.py` at
-$p \in \{0.01, 0.99\}$ against exact marginal quantiles.
+error; the tail-probability accuracy of `diagnostics/tail_accuracy.py` at
+$p \in \{0.01, 0.99\}$ against exact marginal quantiles; and the tail-alignment check of
+`diagnostics/tail_alignment.py` on the run's $x$-space draws (whether it warns, its maximum pairwise
+tail co-exceedance and the number of heavy coordinates). The runner computes that check itself, with
+the pipeline's own check switched off, so every arm (including `scale_mixture`) is scored on $x$.
 
 Aggregates per target x arm: median and IQR of each metric over seeds, the paired per-seed ratio
 to `stock` (median and IQR), and the fraction of seeds with max R-hat <= 1.01.
@@ -62,6 +68,13 @@ import numpy as np
 
 from mcmc_robust.bench.sota_adapters import SOTATargetAdapter, evaluate_chains_with_arviz
 from mcmc_robust.diagnostics.tail_accuracy import tail_probability_accuracy
+from mcmc_robust.diagnostics.tail_alignment import (
+    DEFAULT_CHI_THRESHOLD,
+    DEFAULT_LEVEL,
+    DEFAULT_MAX_TAIL_INDEX,
+    DEFAULT_MIN_EXCEEDANCES,
+    tail_alignment_diagnostic,
+)
 from mcmc_robust.jax_unified_nuts import JaxUnifiedNUTSResult, TransformKind, sample_blackjax_unified_nuts
 from mcmc_robust.targets.ablation import ABLATION_TARGET_NAMES, AblationTarget, make_ablation_target
 
@@ -99,6 +112,14 @@ ARMS: dict[str, ArmSpec] = {
         augmented=True,
         description="Stock NUTS on the non-centred Gaussian scale-mixture reparameterisation",
     ),
+    "tukey_h": ArmSpec(
+        "tukey_h",
+        0.80,
+        description=(
+            "Same pipeline and Phase 1, Tukey h-map x = mu + R z exp(h z^2 / 2); (R, h) by Tukey-h maximum "
+            "likelihood, h = 0 unless a likelihood-ratio test rejects it"
+        ),
+    ),
 }
 ARM_NAMES: tuple[str, ...] = tuple(ARMS)
 
@@ -134,6 +155,9 @@ ROW_FIELDS: tuple[str, ...] = (
     "tail_prob_abs_z",
     "tail_prob_max_abs_z",
     "tail_prob_n_degenerate",
+    "tail_alignment_warning",
+    "tail_alignment_max_chi",
+    "tail_alignment_n_heavy",
     "step_size_median",
     "wall_time_sec",
     "error",
@@ -244,6 +268,9 @@ def run_single(spec: AblationTarget, arm: str, seed: int, config: AblationConfig
         "target_accept": arm_spec.target_accept,
         "max_num_doublings": config.max_num_doublings,
         "transform_kind": arm_spec.transform_kind,
+        # Scored below on x for every arm (the pipeline would score scale_mixture's augmented draws), and
+        # without a warning that `-W error` would turn into an error row.
+        "check_tail_alignment": False,
     }
     t0 = time.perf_counter()
     try:
@@ -264,6 +291,7 @@ def run_single(spec: AblationTarget, arm: str, seed: int, config: AblationConfig
             x, res.grad_evals, target=spec.target, divergences=res.divergences, wall_clock_time=wall
         )
         tail = tail_probability_accuracy(x, {p: spec.marginal_ppf(p) for p in config.tail_probs}).summary()
+        alignment = tail_alignment_diagnostic(x)
         n_steps = np.asarray(res.idata.sample_stats["n_steps"].values)
         grads = int(res.grad_evals)
         min_tail_ess = _finite_or_none(m["min_tail_ess"])
@@ -289,6 +317,9 @@ def run_single(spec: AblationTarget, arm: str, seed: int, config: AblationConfig
             tail_prob_abs_z=_finite_or_none(tail["tail_prob_abs_z"]),
             tail_prob_max_abs_z=_finite_or_none(tail["tail_prob_max_abs_z"]),
             tail_prob_n_degenerate=int(tail["tail_prob_n_degenerate"]),
+            tail_alignment_warning=alignment.warn,
+            tail_alignment_max_chi=_finite_or_none(alignment.max_chi),
+            tail_alignment_n_heavy=len(alignment.heavy_coordinates),
             step_size_median=float(np.median(res.step_size)),
             wall_time_sec=float(wall),
         )
@@ -400,6 +431,12 @@ def _config_record(config: AblationConfig) -> dict[str, Any]:
     rec["arm_targets"] = {k: list(v) for k, v in config.arm_targets.items()}
     rec["arm_settings"] = {a: asdict(ARMS[a]) for a in config.arms}
     rec["rhat_converged"] = RHAT_CONVERGED
+    rec["tail_alignment"] = {
+        "level": DEFAULT_LEVEL,
+        "chi_threshold": DEFAULT_CHI_THRESHOLD,
+        "max_tail_index": DEFAULT_MAX_TAIL_INDEX,
+        "min_exceedances": DEFAULT_MIN_EXCEEDANCES,
+    }
     rec["init"] = (
         f"Uniform(-{INIT_HALF_WIDTH}, {INIT_HALF_WIDTH})^d per chain from numpy default_rng(seed), shared by all arms"
     )
@@ -418,6 +455,12 @@ NOTES: tuple[str, ...] = (
         "indicator; tail_prob_abs_* average |.| over coordinates and p."
     ),
     "q99_rel_error is the legacy |q99_hat - q99| / |q99| (coordinate mean); it is noise-dominated on Cauchy marginals.",
+    (
+        "tail_alignment_*: diagnostics/tail_alignment.py on the x draws (settings under config.tail_alignment). "
+        "max_chi is the largest pairwise tail co-exceedance among coordinates whose Hill tail index is below "
+        "max_tail_index (null with fewer than two such coordinates or too few draws); warning means "
+        "max_chi > chi_threshold, a risk of heavy tails shared across coordinates, not a proven miss."
+    ),
     "Ratios vs stock are paired by seed (same initial positions and JAX key) and summarised by median and IQR.",
     "wall_time_sec includes JAX compilation and is machine-dependent; do not quote it as an efficiency measure.",
 )
