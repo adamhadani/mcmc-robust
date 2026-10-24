@@ -430,6 +430,7 @@ class AppliedBenchmarkRunner:
 
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(result.to_dict(), f, indent=2, allow_nan=False)
+            f.write("\n")
 
         rows = [r.to_dict() for r in result.records]
         if rows:
