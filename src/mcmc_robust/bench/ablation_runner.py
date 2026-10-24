@@ -446,9 +446,15 @@ def run_ablation(config: AblationConfig, log: Callable[[str], None] | None = Non
     def record(row: dict[str, Any]) -> None:
         rows.append(row)
         if log is not None:
-            status = row["error"] or (
-                f"tail-ESS/grad={row['tail_ess_per_grad']:.3g} grads={row['total_grad_evals']} "
-                f"rhat={row['max_rhat']:.3f} |z|={row['tail_prob_abs_z']:.2f} t={row['wall_time_sec']:.1f}s"
+            status = row["error"] or " ".join(
+                f"{label}={row[key]:{spec}}" if row[key] is not None else f"{label}=null"
+                for label, key, spec in (
+                    ("tail-ESS/grad", "tail_ess_per_grad", ".3g"),
+                    ("grads", "total_grad_evals", "d"),
+                    ("rhat", "max_rhat", ".3f"),
+                    ("|z|", "tail_prob_abs_z", ".2f"),
+                    ("t", "wall_time_sec", ".1f"),
+                )
             )
             log(f"[{len(rows)}/{len(cells)}] {row['target']:<12} {row['arm']:<14} seed={row['seed']:<3} {status}")
 
