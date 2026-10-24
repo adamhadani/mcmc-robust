@@ -113,8 +113,9 @@ uv run python -m mcmc_robust.bench.render_docs --write  # README.md / REPORT.md 
   - Values: `"arcsinh"` (the default), `"tukey_h"` (a Tukey h-map with a likelihood-ratio-guarded MLE calibration, REPORT §2.6), `"affine"` and `"identity"`. The last two are ablation controls.
   - The tail-alignment check (`check_tail_alignment=True`) stores `result.tail_alignment` and emits `TailAlignmentWarning`.
   - Tests run under `-W error`.
-    - A test whose subject is not the warning passes `check_tail_alignment=False` explicitly. Whether the check fires on a target near its threshold varies between runs and platforms.
-    - Tests of the warning itself (`tests/unit/test_tail_alignment.py`) assert it with `pytest.warns`, on cases where it fires with a wide margin.
+    - A sampling test on a target whose heavy tails are shared across coordinates (elliptical, funnel, rotated) passes `check_tail_alignment=False`, because the warning is the expected outcome there. Other tests keep the default, so that a false alarm on a Gaussian or product-form target fails them.
+    - Tests of the check (`tests/unit/test_tail_alignment.py`) assert what holds on every run: the warning is emitted exactly when the attached report says to, and stored results equal the check recomputed on the same draws.
+    - A warns-or-not outcome on sampler output is asserted only with a margin measured over seeds and quoted in the test. Do not pick seeds to reach a branch.
     - Never blanket-suppress warnings.
 - **`sample_pymc_model(model, sampler="unified_nuts", draws=1000, tune=500, ...)`**: Wraps continuous PyMC models with `DictToArrayBijection` unflattening and exact leapfrog gradient evaluation accounting. Returns an `arviz.DataTree` InferenceData object.
 - **`JaxArcsinhTransform`**: Coordinate-wise $\text{arcsinh}$ diffeomorphism with `wrap_logdensity` for JAX/BlackJAX models, compatible with `jax.jit` and `jax.lax.scan`.
