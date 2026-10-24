@@ -334,6 +334,7 @@ d = 50, budget 3,000 gradients per chain, 4 chains, seed 42; "tail" starts at �
 **Targets.**
 - Tasks 1 and 3 of §5.2;
 - rotated and isotropic multivariate *t* targets, whose heavy tails are not aligned with the axes;
+- a rotated product of Cauchys, whose heavy tails lie along rotated axes without being elliptical;
 - two Gaussians, which measure the cost on targets stock NUTS already handles.
 
 **Metrics.**
@@ -341,11 +342,11 @@ d = 50, budget 3,000 gradients per chain, 4 chains, seed 42; "tail" starts at �
 - Tail accuracy is the error in the probability below the exact 0.01 and 0.99 marginal quantiles.
 
 <!-- BEGIN GENERATED: ablation-table -->
-10 seeds per cell; each run has 4 chains × 1,000 draws after 500 warm-up steps. Every arm runs BlackJAX NUTS with window adaptation through `sample_blackjax_unified_nuts`; arms differ only in the coordinate transform (or, for `scale_mixture`, in the model's parameterisation), and share each seed's initial positions and random key, so ratios are paired by seed. Source: `reports/ablation_results.json` (run 2026-10-24, commit cdde709).
+10 seeds per cell; each run has 4 chains × 1,000 draws after 500 warm-up steps. Every arm runs BlackJAX NUTS with window adaptation through `sample_blackjax_unified_nuts`; arms differ only in the coordinate transform (or, for `scale_mixture`, in the model's parameterisation), and share each seed's initial positions and random key, so ratios are paired by seed. Source: `reports/ablation_results.json` (run 2026-10-24, commit cb94d6b).
 
 Tail-probability error is the mean over coordinates and p ∈ {0.01, 0.99} of |P̂(x_i < q_p) − p| at the exact marginal quantile q_p; it is less noisy than a relative error on the 0.99 quantile.
 
-Targets: **Task 1**: Sparse regression, Cauchy(0, 1) priors, 3 active of 10 coefficients (SOTA Task 1); **Task 3**: Product form: t(nu) on 10 coordinates (nu = 1.2 to 2.5), N(0, 1) on 10 (SOTA Task 3); **rotated t (ν = 1)**: Multivariate Cauchy (t, nu = 1), d = 10, rotated scale with condition number 25; **rotated t (ν = 2)**: Multivariate t, nu = 2, d = 10, rotated scale with condition number 25; **isotropic t (ν = 2)**: Isotropic multivariate t, nu = 2, d = 10; **rotated Gaussian**: Rotated Gaussian, d = 20, covariance condition number 100; **anisotropic Gaussian**: Axis-aligned Gaussian, d = 20, standard deviations 0.1 to 10.
+Targets: **Task 1**: Sparse regression, Cauchy(0, 1) priors, 3 active of 10 coefficients (SOTA Task 1); **Task 3**: Product form: t(nu) on 10 coordinates (nu = 1.2 to 2.5), N(0, 1) on 10 (SOTA Task 3); **rotated t (ν = 1)**: Multivariate Cauchy (t, nu = 1), d = 10, rotated scale with condition number 25; **rotated t (ν = 2)**: Multivariate t, nu = 2, d = 10, rotated scale with condition number 25; **isotropic t (ν = 2)**: Isotropic multivariate t, nu = 2, d = 10; **rotated product of Cauchys**: Rotated product of Cauchys, x = Q diag(s) u with u iid Cauchy and s = geomspace(1, 5), d = 10; **rotated Gaussian**: Rotated Gaussian, d = 20, covariance condition number 100; **anisotropic Gaussian**: Axis-aligned Gaussian, d = 20, standard deviations 0.1 to 10.
 
 Arms: `stock`: BlackJAX NUTS, window adaptation, target acceptance 0.8; `stock_ta95`: The same with target acceptance 0.95; `arcsinh`: NUTS on the calibrated coordinate-wise arcsinh pullback; `affine`: Same pipeline and Phase 1 calibration, z = (x - mu) / R, no arcsinh; `scale_mixture`: Stock NUTS on the non-centred Gaussian scale-mixture reparameterisation.
 
@@ -376,6 +377,11 @@ Arms: `stock`: BlackJAX NUTS, window adaptation, target acceptance 0.8; `stock_t
 | isotropic t (ν = 2) | `arcsinh` | 1.59× [1.46, 1.78] | 10 of 10 | 9 of 10 | 58,962 | 0 | 0.0019 |
 | isotropic t (ν = 2) | `affine` | 1.13× [1.03, 1.19] | 8 of 10 | 4 of 10 | 65,280 | 0 | 0.0018 |
 | isotropic t (ν = 2) | `scale_mixture` | 4.24× [3.87, 4.50] | 10 of 10 | 10 of 10 | 43,618 | 0 | 0.0012 |
+| rotated product of Cauchys | `stock` | 1 (reference) | – | 0 of 10 | 520,939 | 0 | 0.0068 |
+| rotated product of Cauchys | `stock_ta95` | 0.69× [0.49, 1.02] | 3 of 10 | 0 of 10 | 739,482 | 0 | 0.0074 |
+| rotated product of Cauchys | `arcsinh` | 1.58× [0.93, 3.24] | 7 of 10 | 0 of 10 | 342,392 | 0 | 0.0100 |
+| rotated product of Cauchys | `affine` | 0.82× [0.62, 1.61] | 4 of 10 | 0 of 10 | 532,026 | 0 | 0.0068 |
+| rotated product of Cauchys | `scale_mixture` | 72.59× [56.99, 87.81] | 10 of 10 | 10 of 10 | 92,334 | 0 | 0.0017 |
 | rotated Gaussian | `stock` | 1 (reference) | – | 10 of 10 | 155,246 | 0 | 0.0013 |
 | rotated Gaussian | `stock_ta95` | 0.71× [0.69, 0.73] | 0 of 10 | 10 of 10 | 209,912 | 0 | 0.0013 |
 | rotated Gaussian | `arcsinh` | 0.85× [0.84, 0.90] | 0 of 10 | 10 of 10 | 177,917 | 0 | 0.0013 |
@@ -387,12 +393,12 @@ Arms: `stock`: BlackJAX NUTS, window adaptation, target acceptance 0.8; `stock_t
 <!-- END GENERATED: ablation-table -->
 
 <!-- BEGIN GENERATED: ablation-findings -->
-- **Arcsinh vs stock NUTS** (paired tail-ESS per gradient, median over seeds): Task 1 7.1× (wins on 10 of 10 seeds); Task 3 3.8× (wins on 10 of 10 seeds); rotated t (ν = 1) 5.2× (wins on 10 of 10 seeds); rotated t (ν = 2) 1.7× (wins on 10 of 10 seeds); isotropic t (ν = 2) 1.6× (wins on 10 of 10 seeds); rotated Gaussian 0.9× (wins on 0 of 10 seeds); anisotropic Gaussian 1.5× (wins on 10 of 10 seeds).
-- **Rescaling alone** (`affine`: the same calibration without the arcsinh) vs stock: Task 1 0.9× (wins on 4 of 10 seeds); Task 3 0.9× (wins on 4 of 10 seeds); rotated t (ν = 1) 1.9× (wins on 7 of 10 seeds); rotated t (ν = 2) 1.0× (wins on 6 of 10 seeds); isotropic t (ν = 2) 1.1× (wins on 8 of 10 seeds); rotated Gaussian 1.0× (wins on 4 of 10 seeds); anisotropic Gaussian 1.2× (wins on 10 of 10 seeds).
-- **Reparameterising by hand** (`scale_mixture`, where the model is a Student-t scale mixture) vs `arcsinh`: Task 1 0.2× (better than arcsinh on 0 of 10 seeds); Task 3 0.9× (better than arcsinh on 1 of 10 seeds); rotated t (ν = 1) 10.8× (better than arcsinh on 10 of 10 seeds); rotated t (ν = 2) 5.3× (better than arcsinh on 10 of 10 seeds); isotropic t (ν = 2) 2.5× (better than arcsinh on 10 of 10 seeds).
-- **Seeds converged** (max R-hat at most 1.01) with `arcsinh`: Task 1: 9 of 10 seeds; Task 3: 10 of 10 seeds; rotated t (ν = 1): 2 of 10 seeds; rotated t (ν = 2): 10 of 10 seeds; isotropic t (ν = 2): 9 of 10 seeds; rotated Gaussian: 10 of 10 seeds; anisotropic Gaussian: 10 of 10 seeds; with `stock`: Task 1: 0 of 10 seeds; Task 3: 1 of 10 seeds; rotated t (ν = 1): 0 of 10 seeds; rotated t (ν = 2): 2 of 10 seeds; isotropic t (ν = 2): 4 of 10 seeds; rotated Gaussian: 10 of 10 seeds; anisotropic Gaussian: 10 of 10 seeds.
-- **Seeds with any post-warm-up divergence** with `arcsinh`: Task 1: 0 of 10 seeds; Task 3: 0 of 10 seeds; rotated t (ν = 1): 0 of 10 seeds; rotated t (ν = 2): 0 of 10 seeds; isotropic t (ν = 2): 0 of 10 seeds; rotated Gaussian: 0 of 10 seeds; anisotropic Gaussian: 4 of 10 seeds.
-- **Runs in which some coordinate never visits a tail** (no draw beyond its exact 0.01 or 0.99 quantile, which R-hat cannot detect) with `arcsinh`: none; with `stock`: Task 1: 1 of 10 seeds.
+- **Arcsinh vs stock NUTS** (paired tail-ESS per gradient, median over seeds): Task 1 7.1× (wins on 10 of 10 seeds); Task 3 3.8× (wins on 10 of 10 seeds); rotated t (ν = 1) 5.2× (wins on 10 of 10 seeds); rotated t (ν = 2) 1.7× (wins on 10 of 10 seeds); isotropic t (ν = 2) 1.6× (wins on 10 of 10 seeds); rotated product of Cauchys 1.6× (wins on 7 of 10 seeds); rotated Gaussian 0.9× (wins on 0 of 10 seeds); anisotropic Gaussian 1.5× (wins on 10 of 10 seeds).
+- **Rescaling alone** (`affine`: the same calibration without the arcsinh) vs stock: Task 1 0.9× (wins on 4 of 10 seeds); Task 3 0.9× (wins on 4 of 10 seeds); rotated t (ν = 1) 1.9× (wins on 7 of 10 seeds); rotated t (ν = 2) 1.0× (wins on 6 of 10 seeds); isotropic t (ν = 2) 1.1× (wins on 8 of 10 seeds); rotated product of Cauchys 0.8× (wins on 4 of 10 seeds); rotated Gaussian 1.0× (wins on 4 of 10 seeds); anisotropic Gaussian 1.2× (wins on 10 of 10 seeds).
+- **Reparameterising by hand** (`scale_mixture`, where the model is a Student-t scale mixture) vs `arcsinh`: Task 1 0.2× (better than arcsinh on 0 of 10 seeds); Task 3 0.9× (better than arcsinh on 1 of 10 seeds); rotated t (ν = 1) 10.8× (better than arcsinh on 10 of 10 seeds); rotated t (ν = 2) 5.3× (better than arcsinh on 10 of 10 seeds); isotropic t (ν = 2) 2.5× (better than arcsinh on 10 of 10 seeds); rotated product of Cauchys 45.6× (better than arcsinh on 10 of 10 seeds).
+- **Seeds converged** (max R-hat at most 1.01) with `arcsinh`: Task 1: 9 of 10 seeds; Task 3: 10 of 10 seeds; rotated t (ν = 1): 2 of 10 seeds; rotated t (ν = 2): 10 of 10 seeds; isotropic t (ν = 2): 9 of 10 seeds; rotated product of Cauchys: 0 of 10 seeds; rotated Gaussian: 10 of 10 seeds; anisotropic Gaussian: 10 of 10 seeds; with `stock`: Task 1: 0 of 10 seeds; Task 3: 1 of 10 seeds; rotated t (ν = 1): 0 of 10 seeds; rotated t (ν = 2): 2 of 10 seeds; isotropic t (ν = 2): 4 of 10 seeds; rotated product of Cauchys: 0 of 10 seeds; rotated Gaussian: 10 of 10 seeds; anisotropic Gaussian: 10 of 10 seeds.
+- **Seeds with any post-warm-up divergence** with `arcsinh`: Task 1: 0 of 10 seeds; Task 3: 0 of 10 seeds; rotated t (ν = 1): 0 of 10 seeds; rotated t (ν = 2): 0 of 10 seeds; isotropic t (ν = 2): 0 of 10 seeds; rotated product of Cauchys: 4 of 10 seeds; rotated Gaussian: 0 of 10 seeds; anisotropic Gaussian: 4 of 10 seeds.
+- **Runs in which some coordinate never visits a tail** (no draw beyond its exact 0.01 or 0.99 quantile, which R-hat cannot detect) with `arcsinh`: rotated product of Cauchys: 10 of 10 seeds; with `stock`: Task 1: 1 of 10 seeds; rotated product of Cauchys: 8 of 10 seeds.
 <!-- END GENERATED: ablation-findings -->
 
 **How to read Table A.**
@@ -400,6 +406,10 @@ Arms: `stock`: BlackJAX NUTS, window adaptation, target acceptance 0.8; `stock_t
 - **Why the scale mixture is strong on pure *t* targets.** Without a likelihood, the scale-mixture rewrite of a multivariate *t* is a Gaussian in η times a one-dimensional log-inverse-gamma factor, which NUTS samples easily.
 - **Why it struggles on Task 1.** There the strongly identified coefficients make the non-centred rewrite a narrow ridge, hence its divergences.
 - **When to prefer which.** The scale mixture needs the model to be known as a scale mixture, while the arcsinh pipeline is a black box.
+- **Tails that are never visited.** On the rotated product of Cauchys, a tail excursion runs along a direction that is not a coordinate axis.
+  - Under the coordinate-wise map, that direction becomes a ridge in $z$ that narrows exponentially, so NUTS cannot follow it.
+  - R-hat stays low because every chain misses the same region.
+  - The last finding above counts the affected runs for each arm. The scale-mixture rewrite samples the independent Cauchy factors directly, so this does not happen to it.
 
 ### 5.2 Single-seed comparisons (Tables 1–5)
 
@@ -563,7 +573,10 @@ Seed 42 only, 4 chains × 1,000 draws after 1,000 warm-up steps, NUTS tree depth
 
 **About the evidence:**
 - **One seed per cell in Tables 1–5, no error bars.** JAX gradient counts for stock BlackJAX also vary across platforms, so single-seed ratios can shift between machines. Table A is the multi-seed evidence.
-- **Rotated multivariate Cauchy.** The arcsinh arm converges on few seeds (Table A), so its ratio there is not a supported gain.
+- **Heavy tails along rotated directions.**
+  - On the rotated multivariate Cauchy, the arcsinh arm converges on few seeds (Table A), so its ratio there is not a supported gain.
+  - On the rotated product of Cauchys it misses tails without any R-hat warning.
+  - Do not rely on the transform when heavy tails may lie along directions that are not coordinate axes.
 - **Unconverged denominators.** Several ratios compare against baselines that are not converged; for example, BlackJAX NUTS on Task 1. An unconverged denominator makes a ratio unreliable in either direction.
 - **The best case for the method.** Task 1 is built so that most coordinates are independent and heavy-tailed. Task 3 is also product-form.
 - **A noisy accuracy metric.** For a Cauchy marginal at an effective sample size of about a thousand, the Monte Carlo error of an estimated 0.99 quantile is comparable to the quantile errors reported in Tables 1 and 3. Single-seed differences in that column are therefore weak evidence. A tail-probability error with its MCSE would be a better metric.
@@ -590,7 +603,7 @@ Check R-hat and ESS as usual.
 
 **When not to expect help:**
 - **Funnels:** non-centre the model (§3.3).
-- **Heavy tails that are strongly rotated relative to the coordinates:** gains are smaller and less reliable (Table A).
+- **Heavy tails that are strongly rotated relative to the coordinates:** gains are smaller and less reliable, and a tail can be missed without warning (Table A).
 - **Targets that stock NUTS already samples well:** the transform is not expected to help there.
 
 **If you use `UnifiedRobustNUTS` directly:** pass `adapt_step_size=True` and set `burn_in` to at least `warmup_steps`.
