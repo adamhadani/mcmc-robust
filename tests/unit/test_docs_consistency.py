@@ -8,6 +8,7 @@ data, when a ratio or percentage is typed by hand outside a block, or when a rel
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -91,3 +92,56 @@ def test_relative_links_in_docs_resolve(doc: str) -> None:
 def test_reference_list_lives_only_in_report() -> None:
     readme = (REPO_ROOT / "README.md").read_text()
     assert not re.search(r"^#+ .*References", readme, flags=re.MULTILINE), "keep the reference list in REPORT.md only"
+
+
+# --- ablation renderers, on a small synthetic results file -----------------------------------
+
+
+def _synthetic_ablation(tmp_path: Path) -> render_docs.Reports:
+    """Two targets x three seeds. On 'heavy', arcsinh beats stock on seeds 0 and 1 only."""
+    tpg = {
+        ("heavy", "stock"): [1.0, 1.0, 1.0],
+        ("heavy", "arcsinh"): [4.0, 2.0, 0.5],
+        ("heavy", "affine"): [1.0, 1.0, 1.0],
+        ("heavy", "scale_mixture"): [8.0, 8.0, 8.0],
+        ("gauss_x", "stock"): [1.0, 1.0, 1.0],
+        ("gauss_x", "arcsinh"): [0.8, 0.9, 0.7],
+        ("gauss_x", "affine"): [1.0, 1.0, 1.0],
+    }
+    divs = {("gauss_x", "arcsinh"): [0, 2, 0]}
+    rows = [
+        {
+            "target": t,
+            "arm": a,
+            "seed": s,
+            "tail_ess_per_grad": v,
+            "max_rhat": 1.0 if a != "arcsinh" or s != 2 else 1.05,
+            "converged": a != "arcsinh" or s != 2,
+            "divergences": divs.get((t, a), [0, 0, 0])[s],
+            "total_grad_evals": 1000,
+            "tail_prob_abs_err": 0.002,
+        }
+        for (t, a), vals in tpg.items()
+        for s, v in enumerate(vals)
+    ]
+    (tmp_path / "reports").mkdir()
+    payload = {"rows": rows, "config": {"seeds": [0, 1, 2], "chains": 4, "draws": 1000, "tune": 500}}
+    (tmp_path / "reports" / "ablation_results.json").write_text(json.dumps(payload))
+    return render_docs.Reports(tmp_path)
+
+
+def test_ablation_findings_count_paired_seed_wins(tmp_path: Path) -> None:
+    text = render_docs.render_ablation_findings(_synthetic_ablation(tmp_path))
+    assert "heavy 2.0× (wins on 2 of 3 seeds)" in text
+    assert "gauss_x 0.8× (wins on 0 of 3 seeds)" in text
+
+
+def test_ablation_findings_compare_scale_mixture_with_arcsinh(tmp_path: Path) -> None:
+    text = render_docs.render_ablation_findings(_synthetic_ablation(tmp_path))
+    assert "heavy 4.0× (better than arcsinh on 3 of 3 seeds)" in text
+
+
+def test_ablation_findings_report_divergent_seeds_and_convergence(tmp_path: Path) -> None:
+    text = render_docs.render_ablation_findings(_synthetic_ablation(tmp_path))
+    assert "gauss_x: 1 of 3 seeds" in text
+    assert "heavy: 2 of 3 seeds" in text
