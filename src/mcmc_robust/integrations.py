@@ -350,6 +350,9 @@ class JaxArcsinhTransform:
         dim: Dimensionality of the target space. Optional if `radius` is an array.
         scales: Optional alias for `radius`.
         location: Coordinate centering parameter $\mu \in \mathbb{R}^d$ (default: `0.0`).
+        radii: Optional alias for `radius`.
+        d: Optional alias for `dim`.
+        mask: Optional boolean mask of shape `(d,)` indicating transformed coordinates (default: all `True`).
     """
 
     def __init__(
@@ -358,13 +361,17 @@ class JaxArcsinhTransform:
         dim: int | None = None,
         scales: float | Sequence[float] | np.ndarray | jnp.ndarray | None = None,
         location: float | Sequence[float] | np.ndarray | jnp.ndarray = 0.0,
+        radii: float | Sequence[float] | np.ndarray | jnp.ndarray | None = None,
+        d: int | None = None,
+        mask: Sequence[bool] | np.ndarray | jnp.ndarray | None = None,
     ) -> None:
-        effective_radius = scales if scales is not None else radius
+        effective_dim = d if d is not None else dim
+        effective_radius = radii if radii is not None else (scales if scales is not None else radius)
         r_arr = jnp.asarray(effective_radius, dtype=jnp.float64)
         if r_arr.ndim == 0:
-            if dim is not None:
-                self.radius = jnp.full((dim,), r_arr, dtype=jnp.float64)
-                self.d = dim
+            if effective_dim is not None:
+                self.radius = jnp.full((effective_dim,), r_arr, dtype=jnp.float64)
+                self.d = int(effective_dim)
             else:
                 self.radius = r_arr
                 self.d = 1
@@ -388,17 +395,67 @@ class JaxArcsinhTransform:
         else:
             raise ValueError(f"Location must be scalar or 1D array, got shape {loc_arr.shape}")
 
+        if mask is None:
+            if self.radius.ndim == 1:
+                self.mask = jnp.ones((self.d,), dtype=jnp.bool_)
+            else:
+                self.mask = jnp.asarray(True, dtype=jnp.bool_)
+        else:
+            m_arr = jnp.asarray(mask, dtype=jnp.bool_)
+            if m_arr.ndim == 1 and self.radius.ndim == 0:
+                self.d = int(m_arr.shape[0])
+                self.radius = jnp.full((self.d,), self.radius, dtype=jnp.float64)
+                if self.location.ndim == 0:
+                    self.location = jnp.full((self.d,), self.location, dtype=jnp.float64)
+            self.mask = m_arr
+
+    @property
+    def radii(self) -> jnp.ndarray:
+        """Coordinate scale vector R of shape (d,)."""
+        return self.radius
+
     def forward(self, x: jnp.ndarray) -> jnp.ndarray:
         r"""Maps primal coordinates $x \in \mathbb{R}^d$ to transformed coordinates $z \in \mathbb{R}^d$."""
-        return jnp.arcsinh((x - self.location) / self.radius)
+        x_arr = jnp.asarray(x, dtype=jnp.float64)
+        z_warped = jnp.arcsinh((x_arr - self.location) / self.radius)
+        return jnp.where(self.mask, z_warped, x_arr)
 
     def inverse(self, z: jnp.ndarray) -> jnp.ndarray:
         r"""Maps transformed coordinates $z \in \mathbb{R}^d$ back to primal coordinates $x \in \mathbb{R}^d$."""
-        return self.location + self.radius * jnp.sinh(z)
+        z_arr = jnp.asarray(z, dtype=jnp.float64)
+        z_masked = jnp.where(self.mask, z_arr, 0.0)
+        x_unwarped = self.location + self.radius * jnp.sinh(z_masked)
+        return jnp.where(self.mask, x_unwarped, z_arr)
 
     def log_jacobian_det(self, z: jnp.ndarray) -> jnp.ndarray:
-        r"""Computes the log-determinant of the Jacobian $\log |\det J(z)| = \sum_i \log(R_i \cosh(z_i))$."""
-        return jnp.sum(jnp.log(self.radius * jnp.cosh(z)))
+        r"""Computes the log-determinant of the Jacobian $\log |\det J(z)| = \sum_i \log(R_i \cosh(z_i))$.
+
+        Matches `CoordinateWiseArcsinhTransform.inverse()[1]` (`transforms/coordinate_arcsinh.py`)
+        using the overflow-free identity $\log \cosh(z_i) = |z_i| - \log 2 + \operatorname{log1p}(e^{-2|z_i|})$.
+        """
+        z_arr = jnp.asarray(z, dtype=jnp.float64)
+        z_masked = jnp.where(self.mask, z_arr, 0.0)
+        abs_z = jnp.abs(z_masked)
+        log_cosh = abs_z - jnp.log(2.0) + jnp.log1p(jnp.exp(-2.0 * abs_z))
+        terms = jnp.where(self.mask, jnp.log(self.radius) + log_cosh, 0.0)
+        return jnp.sum(terms, axis=-1)
+
+    def forward_grad(self, x: jnp.ndarray | np.ndarray, grad_x: jnp.ndarray | np.ndarray) -> jnp.ndarray:
+        r"""Computes the analytical pullback gradient $\nabla_z \log \pi_Z(z)$ at $z = \phi(x)$.
+
+        Matches `CoordinateWiseArcsinhTransform.forward_grad` (`transforms/coordinate_arcsinh.py`)
+        and equals `jax.grad(self.wrap_logdensity(logdensity_fn))(z)` to machine precision:
+            $$\nabla_{z_i} \log \pi_Z(z) = \sqrt{R_i^2 + (x_i - \mu_i)^2} \, \nabla_{x_i} \log \pi_X(x)
+              + \frac{x_i - \mu_i}{\sqrt{R_i^2 + (x_i - \mu_i)^2}}$$
+        where $\sqrt{R_i^2 + (x_i - \mu_i)^2} = R_i \cosh(z_i)$ is evaluated via `jnp.hypot`
+        to avoid intermediate squaring overflow in the far tails.
+        """
+        x_arr = jnp.asarray(x, dtype=jnp.float64)
+        gx_arr = jnp.asarray(grad_x, dtype=jnp.float64)
+        xm = x_arr - self.location
+        scale = jnp.hypot(self.radius, xm)
+        gz_warped = scale * gx_arr + (xm / scale)
+        return jnp.where(self.mask, gz_warped, gx_arr)
 
     def wrap_logdensity(
         self,

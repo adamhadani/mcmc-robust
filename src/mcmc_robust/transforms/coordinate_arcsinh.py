@@ -210,6 +210,58 @@ class CoordinateWiseArcsinhTransform(SpaceTransformation):
 
         return gz
 
+    @staticmethod
+    def compute_phase1_calibration(
+        samples: np.ndarray,
+        min_radius: float = 0.1,
+        max_radius: float = 1e4,
+        scale_multiplier: float = 1.5,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        r"""Computes Phase 1 coordinate location medians $\mu_i$ and clipped scales $R_i$.
+
+        Shared calibration kernel used by `UnifiedRobustNUTS.adapt`, `UnifiedRobustHMC.adapt`,
+        `UnifiedRobustSampler.adapt`, and `calibrate_jax_arcsinh_transform` (`jax_unified_nuts.py`),
+        implementing the formally verified calibration map (`formal/McmcRobustFormal.lean` §8):
+            $$\mu_i = \operatorname{median}(x_{\cdot, i}), \qquad
+              R_i = \min\!\left(R_{\max},\, \max\!\left(R_{\min},\, c \cdot \hat{\sigma}_i\right)\right)$$
+        where $\hat{\sigma}_i = \operatorname{IQR}(x_{\cdot, i} - \mu_i) / 1.3489795$ when
+        $\hat{\sigma}_{\text{IQR}, i} > R_{\min}$, falling back to
+        $\max(\operatorname{MAD}(x_{\cdot, i} - \mu_i) / 0.67448975,\, q_{0.90}(|x_{\cdot, i} - \mu_i|))$.
+
+        Args:
+            samples: Exploratory primal draws of shape `(n_samples, d)` or `(chains, draws, d)`.
+            min_radius: Minimum allowable coordinate scale $R_{\min} > 0$.
+            max_radius: Maximum allowable coordinate scale $R_{\max} \ge R_{\min}$.
+            scale_multiplier: Multiplier $c \ge 0$ applied to base scale estimate (default: `1.5`).
+
+        Returns:
+            Tuple `(location, radii)` of 1D float64 arrays of shape `(d,)`.
+        """
+        if min_radius <= 0.0:
+            raise ValueError(f"min_radius must be strictly positive, got {min_radius}")
+        if min_radius > max_radius:
+            raise ValueError(f"min_radius ({min_radius}) must be <= max_radius ({max_radius})")
+        if scale_multiplier < 0.0:
+            raise ValueError(f"scale_multiplier must be non-negative, got {scale_multiplier}")
+
+        arr = np.asarray(samples, dtype=np.float64)
+        if arr.ndim == 1:
+            arr = arr[:, np.newaxis]
+        elif arr.ndim >= 3:
+            arr = arr.reshape(-1, arr.shape[-1])
+
+        med = np.median(arr, axis=0)
+        centered = arr - med
+        q75, q25 = np.quantile(centered, [0.75, 0.25], axis=0)
+        iqr_scale = (q75 - q25) / 1.3489795
+        mad_scale = np.median(np.abs(centered), axis=0) / 0.67448975
+        q90_abs = np.quantile(np.abs(centered), 0.90, axis=0)
+        base_scale = np.where(iqr_scale > min_radius, iqr_scale, np.maximum(mad_scale, q90_abs))
+        base_scale = np.where(np.isfinite(base_scale), base_scale, 1.0)
+        med = np.where(np.isfinite(med), med, 0.0)
+        radii = np.clip(base_scale * scale_multiplier, min_radius, max_radius)
+        return np.asarray(med, dtype=np.float64), np.asarray(radii, dtype=np.float64)
+
     @classmethod
     def calibrate_from_samples(
         cls,

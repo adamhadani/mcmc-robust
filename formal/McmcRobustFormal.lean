@@ -52,11 +52,19 @@ gradient-based MCMC samplers resolving roughness and flatness pathologies.
      satisfies $0 \le \alpha(x, y) \le 1$ and exact detailed balance:
      $$\pi(x) q(x, y) \alpha(x, y) = \pi(y) q(y, x) \alpha(y, x).$$
 
-7. **Applied Heavy-Tailed & Shrinkage Posterior Score Bounds**:
+6. **Applied Heavy-Tailed & Shrinkage Posterior Score Bounds (§7)**:
    - Student-$t$ negative log-kernel $U_t(\nu, r) = \frac{\nu + 1}{2} \log(1 + r^2 / \nu) \ge 0$ for $\nu > 0$.
    - Exact score identity $\frac{d}{dr} U_t(\nu, r) = \frac{(\nu + 1) r}{\nu + r^2}$ and zero at $r = 0$.
    - Global virial score bound $|r \cdot s_t(\nu, r)| \le \nu + 1$ for all $r \in \mathbb{R}$, proving outlier robustness.
    - Non-negativity of the Cauchy / Horseshoe local log-prior penalty $\log(1 + (\lambda / \tau)^2) \ge 0$.
+
+7. **Pure-JAX 3-Phase Scale & Location Calibration Bounds (§8)**:
+   - Clipped normal-consistent coordinate scale calibration map:
+     $$R_{\text{cal}}(\sigma, R_{\min}, R_{\max}, c) = \min(R_{\max}, \max(R_{\min}, c \cdot \sigma))$$
+   - Strict interval bounds $0 < R_{\min} \le R_{\text{cal}}(\sigma, R_{\min}, R_{\max}, c) \le R_{\max}$,
+     monotonicity in $\sigma$ for $c \ge 0$, and unconditional roundtrip invertibility of
+     $\psi_{\mu, R_{\text{cal}}} \circ \phi_{\mu, R_{\text{cal}}}$ for any sample median $\mu \in \mathbb{R}$
+     and dispersion $\sigma \in \mathbb{R}$ (including zero-variance $\sigma \le 0$).
 
 Author: MCMC Robustness Research Team
 Toolchain: Lean 4 + Mathlib
@@ -547,6 +555,66 @@ theorem studentTScore_zero (ν : ℝ) :
 
 
 /-! ============================================================================
+    §8. Pure-JAX 3-Phase Scale & Location Calibration Bounds
+    ============================================================================ -/
+
+/-- Clipped normal-consistent coordinate scale calibration map used in Phase 1 warmup:
+    R_{\text{cal}}(\sigma, R_{\min}, R_{\max}, c) = \min(R_{\max}, \max(R_{\min}, c \cdot \sigma)). -/
+def calibratedRadius (σ Rmin Rmax c : ℝ) : ℝ :=
+  min Rmax (max Rmin (c * σ))
+
+/-- Lower bound of calibrated coordinate radius:
+    Assuming 0 < R_{\min} and R_{\min} \le R_{\max}, R_{\min} \le R_{\text{cal}}(\sigma, R_{\min}, R_{\max}, c). -/
+theorem calibratedRadius_ge_min (σ Rmin Rmax c : ℝ) (_hmin_pos : 0 < Rmin) (hle : Rmin ≤ Rmax) :
+    Rmin ≤ calibratedRadius σ Rmin Rmax c := by
+  dsimp [calibratedRadius]
+  exact le_min hle (le_max_left Rmin (c * σ))
+
+/-- Strict positivity of calibrated coordinate radius:
+    Assuming 0 < R_{\min} and R_{\min} \le R_{\max}, 0 < R_{\text{cal}}(\sigma, R_{\min}, R_{\max}, c)
+    for any raw dispersion estimate \sigma \in \mathbb{R} (even \sigma \le 0). -/
+theorem calibratedRadius_pos (σ Rmin Rmax c : ℝ) (hmin_pos : 0 < Rmin) (hle : Rmin ≤ Rmax) :
+    0 < calibratedRadius σ Rmin Rmax c :=
+  lt_of_lt_of_le hmin_pos (calibratedRadius_ge_min σ Rmin Rmax c hmin_pos hle)
+
+/-- Upper bound of calibrated coordinate radius:
+    Assuming R_{\min} \le R_{\max}, R_{\text{cal}}(\sigma, R_{\min}, R_{\max}, c) \le R_{\max}. -/
+theorem calibratedRadius_le_max (σ Rmin Rmax c : ℝ) (_hle : Rmin ≤ Rmax) :
+    calibratedRadius σ Rmin Rmax c ≤ Rmax := by
+  dsimp [calibratedRadius]
+  exact min_le_left Rmax (max Rmin (c * σ))
+
+/-- Monotonicity of calibrated coordinate radius with respect to raw dispersion \sigma:
+    For c \ge 0, \sigma_1 \le \sigma_2 \implies R_{\text{cal}}(\sigma_1) \le R_{\text{cal}}(\sigma_2). -/
+theorem calibratedRadius_mono {σ₁ σ₂ Rmin Rmax c : ℝ} (hc : 0 ≤ c) (hσ : σ₁ ≤ σ₂) :
+    calibratedRadius σ₁ Rmin Rmax c ≤ calibratedRadius σ₂ Rmin Rmax c := by
+  dsimp [calibratedRadius]
+  have hmul : c * σ₁ ≤ c * σ₂ := mul_le_mul_of_nonneg_left hσ hc
+  have hmax : max Rmin (c * σ₁) ≤ max Rmin (c * σ₂) := max_le_max_left Rmin hmul
+  exact min_le_min_left Rmax hmax
+
+/-- Exact roundtrip invertibility (forward then inverse) of the Phase 1 calibrated
+    shift-equivariant diffeomorphism for any median \mu \in \mathbb{R} and dispersion \sigma \in \mathbb{R}. -/
+theorem calibrated_shifted_roundtrip_forward (μ σ Rmin Rmax c x : ℝ)
+    (hmin_pos : 0 < Rmin) (hle : Rmin ≤ Rmax) :
+    shiftedInverseMap μ (calibratedRadius σ Rmin Rmax c)
+      (shiftedForwardMap μ (calibratedRadius σ Rmin Rmax c) x) = x := by
+  have hpos : 0 < calibratedRadius σ Rmin Rmax c :=
+    calibratedRadius_pos σ Rmin Rmax c hmin_pos hle
+  exact shifted_invertibility_roundtrip_forward μ (calibratedRadius σ Rmin Rmax c) x (ne_of_gt hpos)
+
+/-- Exact roundtrip invertibility (inverse then forward) of the Phase 1 calibrated
+    shift-equivariant diffeomorphism for any median \mu \in \mathbb{R} and dispersion \sigma \in \mathbb{R}. -/
+theorem calibrated_shifted_roundtrip_inverse (μ σ Rmin Rmax c z : ℝ)
+    (hmin_pos : 0 < Rmin) (hle : Rmin ≤ Rmax) :
+    shiftedForwardMap μ (calibratedRadius σ Rmin Rmax c)
+      (shiftedInverseMap μ (calibratedRadius σ Rmin Rmax c) z) = z := by
+  have hpos : 0 < calibratedRadius σ Rmin Rmax c :=
+    calibratedRadius_pos σ Rmin Rmax c hmin_pos hle
+  exact shifted_invertibility_roundtrip_inverse μ (calibratedRadius σ Rmin Rmax c) z (ne_of_gt hpos)
+
+
+/-! ============================================================================
     PROPERTY 6: Axiom Audit & Linter Verification
     ============================================================================ -/
 
@@ -591,6 +659,30 @@ theorem studentTScore_zero (ν : ℝ) :
 /-- info: 'McmcRobust.studentTScore_zero' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms studentTScore_zero
+
+/-- info: 'McmcRobust.calibratedRadius_ge_min' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms calibratedRadius_ge_min
+
+/-- info: 'McmcRobust.calibratedRadius_pos' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms calibratedRadius_pos
+
+/-- info: 'McmcRobust.calibratedRadius_le_max' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms calibratedRadius_le_max
+
+/-- info: 'McmcRobust.calibratedRadius_mono' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms calibratedRadius_mono
+
+/-- info: 'McmcRobust.calibrated_shifted_roundtrip_forward' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms calibrated_shifted_roundtrip_forward
+
+/-- info: 'McmcRobust.calibrated_shifted_roundtrip_inverse' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms calibrated_shifted_roundtrip_inverse
 
 #lint
 
