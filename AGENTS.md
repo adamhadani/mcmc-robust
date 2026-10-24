@@ -71,6 +71,13 @@ uv run python example.py
 uv run pre-commit run --all-files
 ```
 
+**Impacted-test selection.** `pytest-impacted` (configured under `[tool.pytest.ini_options]` in `pyproject.toml`) selects the tests whose imports reach a changed file and marks the rest skipped:
+
+- `uv run pytest -v -W error --impacted` covers uncommitted changes. This is what the pre-commit hook runs.
+- `--impacted-git-mode=branch --impacted-base-branch=main` covers a whole branch. CI runs this on pull requests (against `origin/main`), and the full suite on every push to `main`.
+- Changes to `uv.lock`, `pyproject.toml`, any `conftest.py` or `reports/*.json` select every test. Documentation and Lean-only changes select none.
+- Import analysis cannot see data-file or subprocess dependencies. If a test starts reading a new generated file, add its glob to `impacted_invalidate_all`.
+
 ---
 
 ## 4. Key Sampler APIs & Integration Contracts

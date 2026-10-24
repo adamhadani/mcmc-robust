@@ -368,6 +368,11 @@ mcmc-robust/
 # Run full unit and integration test suite with strict warnings-as-errors
 uv run pytest -v -W error
 
+# Fast feedback: only the tests your uncommitted changes can reach (pytest-impacted)
+uv run pytest -v -W error --impacted
+# ...or everything your branch changed since it forked from main (what CI runs on pull requests)
+uv run pytest -v -W error --impacted --impacted-git-mode=branch --impacted-base-branch=main
+
 # Verify static typing
 uv run mypy src/mcmc_robust
 
