@@ -239,3 +239,67 @@ def test_cli_arguments() -> None:
     for bad in (["--quick", "--full"], ["--workers", "3"], ["--targets", "nope"], ["--arms", "nope"]):
         with pytest.raises(SystemExit):
             ar.config_from_args(ar.build_parser().parse_args(bad))
+
+
+# =============================================================================
+# The committed results (reports/ablation_*), the source of every quoted ablation number
+# =============================================================================
+
+REPORTS = Path(__file__).resolve().parents[2] / "reports"
+
+
+@pytest.mark.unit
+def test_committed_results_follow_the_full_protocol() -> None:
+    """The committed run is the clean-tree, 10-seed --full grid with every applicable cell and no errors."""
+    data = json.loads((REPORTS / "ablation_results.json").read_text())
+    assert data["schema_version"] == ar.SCHEMA_VERSION
+    prov = data["provenance"]
+    assert re.fullmatch(r"[0-9a-f]{40}", prov["git_sha"])
+    assert prov["git_dirty"] is False
+    cfg = data["config"]
+    full = ar.AblationConfig.full()
+    assert cfg["mode"] == "full"
+    assert cfg["seeds"] == list(full.seeds)
+    assert (cfg["tune"], cfg["draws"], cfg["chains"], cfg["max_num_doublings"]) == (500, 1000, 4, 10)
+    assert cfg["targets"] == list(ar.ABLATION_TARGET_NAMES)
+    assert cfg["arms"] == list(ar.ARM_NAMES)
+    expected = {
+        (t, a, s)
+        for t in ar.ABLATION_TARGET_NAMES
+        for a in ar.ARM_NAMES
+        for s in full.seeds
+        if full.applies(make_ablation_target(t), a)
+    }
+    rows = data["rows"]
+    assert {(r["target"], r["arm"], r["seed"]) for r in rows} == expected
+    assert len(rows) == len(expected)
+    assert all(r["error"] is None for r in rows)
+
+
+@pytest.mark.unit
+def test_committed_aggregates_are_recomputable_from_rows() -> None:
+    """Every committed aggregate follows from the committed per-seed rows, and the CSVs mirror the JSON."""
+    data = json.loads((REPORTS / "ablation_results.json").read_text())
+    _recompute_aggregates(data)
+    assert ar.aggregate_rows(data["rows"]) == data["aggregates"]
+
+    with (REPORTS / "ablation_results.csv").open() as fh:
+        csv_rows = list(csv.DictReader(fh))
+    assert len(csv_rows) == len(data["rows"])
+    for c, r in zip(csv_rows, data["rows"]):
+        assert (c["target"], c["arm"], int(c["seed"])) == (r["target"], r["arm"], r["seed"])
+        for key in ("total_grad_evals", "tail_ess_per_grad", "max_rhat", "tail_prob_abs_z"):
+            assert float(c[key]) == pytest.approx(r[key], rel=1e-12)
+
+    with (REPORTS / "ablation_summary.csv").open() as fh:
+        summary = list(csv.DictReader(fh))
+    assert len(summary) == len(data["aggregates"])
+    for s, agg in zip(summary, data["aggregates"]):
+        assert (s["target"], s["arm"]) == (agg["target"], agg["arm"])
+        assert float(s["frac_converged"]) == pytest.approx(agg["frac_converged"])
+        assert float(s["tail_ess_per_grad_median"]) == pytest.approx(agg["metrics"]["tail_ess_per_grad"]["median"])
+        if agg["arm"] != "stock":
+            ratio = agg["ratio_vs_stock"]["tail_ess_per_grad"]
+            assert float(s["ratio_tail_ess_per_grad_median"]) == pytest.approx(ratio["median"])
+            assert float(s["ratio_tail_ess_per_grad_q25"]) == pytest.approx(ratio["q25"])
+            assert float(s["ratio_tail_ess_per_grad_q75"]) == pytest.approx(ratio["q75"])
