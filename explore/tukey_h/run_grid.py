@@ -12,6 +12,7 @@ Arms:
   hmap_tmle_c0.125, hmap_tmle_c0.5   extra kappa values for the held-out kappa sweep (not in the main grid).
   hmap_lwmle       heavy test as hmap_tmle; (R, c) fitted jointly by Tukey-h MLE (run after the main grid,
                    results/grid_lwmle.json and the held-out kappa sweep).
+  hmap_lwmle_all   Tukey-h MLE (R, c) on every coordinate, no heavy/light test.
 All Tukey-h arms reuse the arcsinh arm's Phase 1 (identical draws: same seed and key splits), and pay for it in
 their gradient count.
 
@@ -53,6 +54,8 @@ HMAP_ARMS = {
     "hmap_tmle_c0.5": CalibrationRule(kind="tmle", nu_thr=5.0, c_mult=0.5),
     # joint (R, c) by Tukey-h / Lambert W x Gaussian MLE on heavy coordinates (added after the main grid)
     "hmap_lwmle": CalibrationRule(kind="lw_mle", nu_thr=5.0),
+    # threshold-free: Tukey-h MLE on every coordinate (light coordinates should get h -> 0, i.e. c -> large)
+    "hmap_lwmle_all": CalibrationRule(kind="lw_mle", force_all=True),
 }
 # Arms of the main grid (results/grid_A.json, grid_B.json); the kappa sweep passes its arms explicitly.
 ALL_ARMS = ["stock", "arcsinh", "hmap_tmle", "hmap_qr", "hmap_tmle_c0.25", "hmap_tmle_c4", "hmap_forced"]

@@ -1,6 +1,8 @@
 """Turn the committed grid results into the tables quoted in FINDINGS.md.
 
-Reads results/grid_A.json and results/grid_B.json, writes results/summary.json and results/tables.md.
+Reads results/grid_A.json and grid_B.json (the pre-registered main grid, seeds 0-4), results/grid_lwmle.json
+(the Tukey-h MLE arms, added after the main grid, same seeds) and results/kappa_sweep.json (held-out seeds
+10-14), and writes results/summary.json and results/tables.md.
 Every number in FINDINGS.md's tables comes from tables.md (or summary.json, calib_results.json,
 cost_scaling.json, verify_results.json).
 
@@ -19,13 +21,24 @@ sys.path.insert(0, str(Path(__file__).parent))
 from common import TARGETS
 
 HERE = Path(__file__).parent / "results"
-ARMS = ["stock", "arcsinh", "hmap_tmle", "hmap_qr", "hmap_tmle_c0.25", "hmap_tmle_c4", "hmap_forced"]
+ARMS = [
+    "stock",
+    "arcsinh",
+    "hmap_tmle",
+    "hmap_qr",
+    "hmap_tmle_c0.25",
+    "hmap_tmle_c4",
+    "hmap_forced",
+    "hmap_lwmle",
+    "hmap_lwmle_all",
+]
 
 
 def load_rows() -> list[dict]:
     rows = []
-    for name in ("grid_A.json", "grid_B.json"):
-        rows += json.loads((HERE / name).read_text())["rows"]
+    for name in ("grid_A.json", "grid_B.json", "grid_lwmle.json"):
+        if (HERE / name).exists():
+            rows += json.loads((HERE / name).read_text())["rows"]
     return rows
 
 
@@ -120,8 +133,8 @@ def main() -> None:
         "## Table 2: paired tail-ESS/grad ratios, median [min, max] over seeds",
         "",
         (
-            "| Target | arcsinh / stock | hmap_tmle / stock | hmap_tmle / arcsinh | hmap_qr / arcsinh | "
-            "c×1/4 / arcsinh | c×4 / arcsinh | forced / arcsinh |"
+            "| Target | arcsinh / stock | hmap_tmle / stock | hmap_lwmle / stock | hmap_tmle / arcsinh | "
+            "hmap_qr / arcsinh | hmap_lwmle / arcsinh | hmap_lwmle_all / arcsinh |"
         ),
         "|---|---|---|---|---|---|---|---|",
     ]
@@ -132,9 +145,9 @@ def main() -> None:
             return fmt_ratio(s[arm][f"ratio_vs_{ref}"]) if arm in s and f"ratio_vs_{ref}" in s[arm] else "n/a"
 
         lines.append(
-            f"| {t} | {g('arcsinh', 'stock')} | {g('hmap_tmle', 'stock')} | {g('hmap_tmle', 'arcsinh')} | "
-            f"{g('hmap_qr', 'arcsinh')} | {g('hmap_tmle_c0.25', 'arcsinh')} | {g('hmap_tmle_c4', 'arcsinh')} | "
-            f"{g('hmap_forced', 'arcsinh')} |"
+            f"| {t} | {g('arcsinh', 'stock')} | {g('hmap_tmle', 'stock')} | {g('hmap_lwmle', 'stock')} | "
+            f"{g('hmap_tmle', 'arcsinh')} | {g('hmap_qr', 'arcsinh')} | {g('hmap_lwmle', 'arcsinh')} | "
+            f"{g('hmap_lwmle_all', 'arcsinh')} |"
         )
     lines += [
         "",
@@ -168,8 +181,11 @@ def main() -> None:
         "",
         "## Table 4: misspecified c, paired against hmap_tmle (same Phase 1, same c up to the factor)",
         "",
-        "| Target | c×1/4 / tmle | c×4 / tmle | Max R-hat (c×1/4, tmle, c×4) | Max divergences (c×1/4, tmle, c×4) |",
-        "|---|---|---|---|---|",
+        (
+            "| Target | c×1/4 / tmle | c×4 / tmle | c×1/4 / arcsinh | c×4 / arcsinh | Max R-hat (c×1/4, tmle, c×4) | "
+            "Max divergences (c×1/4, tmle, c×4) |"
+        ),
+        "|---|---|---|---|---|---|---|",
     ]
     mis = {}
     for t in TARGETS:
@@ -178,7 +194,11 @@ def main() -> None:
         mis[t] = {"c0.25_vs_tmle": lo, "c4_vs_tmle": hi}
         rh = ", ".join(f"{s[a]['max_rhat']:.3f}" for a in ("hmap_tmle_c0.25", "hmap_tmle", "hmap_tmle_c4"))
         dv = ", ".join(f"{s[a]['divergences']['max']:.0f}" for a in ("hmap_tmle_c0.25", "hmap_tmle", "hmap_tmle_c4"))
-        lines.append(f"| {t} | {fmt_ratio(lo)} | {fmt_ratio(hi)} | {rh} | {dv} |")
+        lo_a = s["hmap_tmle_c0.25"]["ratio_vs_arcsinh"]
+        hi_a = s["hmap_tmle_c4"]["ratio_vs_arcsinh"]
+        lines.append(
+            f"| {t} | {fmt_ratio(lo)} | {fmt_ratio(hi)} | {fmt_ratio(lo_a)} | {fmt_ratio(hi_a)} | {rh} | {dv} |"
+        )
     summary["misspecification"] = mis
 
     # Table 5: light-tail cost of forcing the map onto every coordinate
@@ -188,9 +208,9 @@ def main() -> None:
         "",
         (
             "| Target | Light coords | Median forced c on light coords [min, max] | forced / tmle (mean tail-ESS/grad) | "
-            "forced / tmle (worst coord) | forced / stock | Max divergences (forced, tmle) |"
+            "forced / tmle (worst coord) | forced / stock | Max divergences (forced, tmle) | lwmle_all / stock |"
         ),
-        "|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|",
     ]
     light_cost = {}
     for t in ("iso_gauss", "corr_gauss", "task3", "task1", "prod_t5"):
@@ -214,7 +234,12 @@ def main() -> None:
         }
         cs = f"{cstat['median']:.2f} [{cstat['min']:.2f}, {cstat['max']:.2f}]" if cstat else "n/a"
         dv = f"{summary['targets'][t]['hmap_forced']['divergences']['max']:.0f}, {summary['targets'][t]['hmap_tmle']['divergences']['max']:.0f}"
-        lines.append(f"| {t} | {n_light} | {cs} | {fmt_ratio(a)} | {fmt_ratio(w)} | {fmt_ratio(st)} | {dv} |")
+        la = paired(t, "hmap_lwmle_all", "stock")
+        light_cost[t]["lwmle_all_vs_stock"] = la
+        lines.append(
+            f"| {t} | {n_light} | {cs} | {fmt_ratio(a)} | {fmt_ratio(w)} | {fmt_ratio(st)} | {dv} | "
+            f"{fmt_ratio(la) if la else 'n/a'} |"
+        )
     summary["light_tail_cost"] = light_cost
 
     # Table 6: tail-probability calibration (error / MCSE ~ |N(0,1)| has median 0.67 if unbiased)
@@ -274,6 +299,54 @@ def main() -> None:
             ksum[t] = kt
             lines.append(f"| {t} | " + " | ".join(cells) + f" | {mr:.3f} |")
         summary["kappa_sweep"] = {"seeds": kseeds, "targets": ksum}
+
+        lines += [
+            "",
+            f"## Table 8: held-out seeds {kseeds}, calibration rules against the arcsinh arm",
+            "",
+            (
+                "Paired tail-ESS/grad ratio and worst-coordinate tail-ESS/grad ratio against arcsinh, median "
+                "[min, max]; max R-hat and max divergences per run over seeds."
+            ),
+            "",
+            (
+                "| Target | hmap_tmle / arcsinh | hmap_lwmle / arcsinh | hmap_lwmle_all / arcsinh | "
+                "lwmle worst-coord / arcsinh | lwmle_all worst-coord / arcsinh | "
+                "Max R-hat (arcsinh, tmle, lwmle, lwmle_all) | Max divergences (same order) |"
+            ),
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        held = {}
+        for t in TARGETS:
+
+            def kr(arm: str, key: str = "tail_ess_per_grad", t: str = t) -> dict | None:
+                v = [
+                    kby[(t, arm, sd)][key] / kby[(t, "arcsinh", sd)][key]
+                    for sd in kseeds
+                    if (t, arm, sd) in kby and (t, "arcsinh", sd) in kby
+                ]
+                return med_rng(v) if v else None
+
+            arms4 = ("arcsinh", "hmap_tmle", "hmap_lwmle", "hmap_lwmle_all")
+            if not all((t, a, sd) in kby for a in arms4 for sd in kseeds):
+                continue
+            ht = {
+                "tmle": kr("hmap_tmle"),
+                "lwmle": kr("hmap_lwmle"),
+                "lwmle_all": kr("hmap_lwmle_all"),
+                "lwmle_worst": kr("hmap_lwmle", "min_tail_ess_per_grad"),
+                "lwmle_all_worst": kr("hmap_lwmle_all", "min_tail_ess_per_grad"),
+            }
+            rh = ", ".join(f"{max(kby[(t, a, sd)]['split_rhat'] for sd in kseeds):.3f}" for a in arms4)
+            dv = ", ".join(f"{max(kby[(t, a, sd)]['divergences'] for sd in kseeds):.0f}" for a in arms4)
+            ht["max_rhat"] = {a: float(max(kby[(t, a, sd)]["split_rhat"] for sd in kseeds)) for a in arms4}
+            ht["max_div"] = {a: float(max(kby[(t, a, sd)]["divergences"] for sd in kseeds)) for a in arms4}
+            held[t] = ht
+            lines.append(
+                f"| {t} | {fmt_ratio(ht['tmle'])} | {fmt_ratio(ht['lwmle'])} | {fmt_ratio(ht['lwmle_all'])} | "
+                f"{fmt_ratio(ht['lwmle_worst'])} | {fmt_ratio(ht['lwmle_all_worst'])} | {rh} | {dv} |"
+            )
+        summary["heldout_rules"] = {"seeds": kseeds, "targets": held}
 
     (HERE / "summary.json").write_text(json.dumps(summary, indent=1))
     (HERE / "tables.md").write_text("\n".join(lines) + "\n")
