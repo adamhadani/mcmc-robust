@@ -260,6 +260,8 @@ def test_run_benchmark_writes_results_with_provenance(tmp_path: Path) -> None:
     assert data["config"]["reference_probs"] == list(pr.REFERENCE_PROBS)
     with (tmp_path / "posteriordb_results.csv").open() as fh:
         assert list(csv.DictReader(fh).fieldnames or []) == list(pr.ROW_FIELDS)
+    # LF line endings, like the other runners' CSVs (the mixed-line-ending hook rewrites CRLF).
+    assert b"\r" not in (tmp_path / "posteriordb_results.csv").read_bytes()
 
 
 @pytest.mark.unit

@@ -567,9 +567,9 @@ def run_benchmark(
 
     out = Path(config.output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "posteriordb_results.json").write_text(json.dumps(result, indent=2) + "\n")
-    with (out / "posteriordb_results.csv").open("w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(ROW_FIELDS))
+    (out / "posteriordb_results.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    with (out / "posteriordb_results.csv").open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(ROW_FIELDS), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
     return result
