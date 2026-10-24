@@ -16,7 +16,7 @@ Gradient-based Markov Chain Monte Carlo algorithms (MALA, HMC, NUTS) power moder
 2. **Target Flatness (§4.3):** Sub-exponential, polynomial tails ($\|\nabla \log \pi(x)\| \to 0$) leave the gradient almost no pull, so chains diffuse like random walks. Prior remedies (**stereographic MCMC**, **radial transformations**) warp space through the Euclidean radius $r = \|x\|$, so one coordinate far in its tail can compress well-behaved coordinates.
 
 `mcmc-robust` addresses each regime with a separate component and evaluates both against stock NUTS and published baselines:
-- **Heavy tails:** a shift-equivariant, coordinate-wise $\operatorname{arsinh}$ diffeomorphism (`CoordinateWiseArcsinhTransform`) whose location and radii are calibrated during warm-up, used inside NUTS (`UnifiedRobustNUTS`, and the pure-JAX `sample_blackjax_unified_nuts`).
+- **Heavy tails:** a shift-equivariant, coordinate-wise $\mathop{\mathrm{arsinh}}$ diffeomorphism (`CoordinateWiseArcsinhTransform`) whose location and radii are calibrated during warm-up, used inside NUTS (`UnifiedRobustNUTS`, and the pure-JAX `sample_blackjax_unified_nuts`).
 - **Roughness:** soft-capped square-root damping of the Langevin drift (`GentleMALA`), combined with the transform in `UnifiedRobustSampler`.
 
 The evidence is strongest for the first component: on product-form heavy tails, the calibrated transform gives NUTS 2.3–23.5× the tail-ESS per gradient of stock NUTS. The roughness component and the funnel results are mixed, as the highlights below show.
