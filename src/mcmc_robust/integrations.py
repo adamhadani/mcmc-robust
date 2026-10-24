@@ -350,6 +350,9 @@ class JaxArcsinhTransform:
         dim: Dimensionality of the target space. Optional if `radius` is an array.
         scales: Optional alias for `radius`.
         location: Coordinate centering parameter $\mu \in \mathbb{R}^d$ (default: `0.0`).
+        radii: Optional alias for `radius`.
+        d: Optional alias for `dim`.
+        mask: Optional boolean mask of shape `(d,)` indicating transformed coordinates (default: all `True`).
     """
 
     def __init__(
@@ -358,13 +361,17 @@ class JaxArcsinhTransform:
         dim: int | None = None,
         scales: float | Sequence[float] | np.ndarray | jnp.ndarray | None = None,
         location: float | Sequence[float] | np.ndarray | jnp.ndarray = 0.0,
+        radii: float | Sequence[float] | np.ndarray | jnp.ndarray | None = None,
+        d: int | None = None,
+        mask: Sequence[bool] | np.ndarray | jnp.ndarray | None = None,
     ) -> None:
-        effective_radius = scales if scales is not None else radius
+        effective_dim = d if d is not None else dim
+        effective_radius = radii if radii is not None else (scales if scales is not None else radius)
         r_arr = jnp.asarray(effective_radius, dtype=jnp.float64)
         if r_arr.ndim == 0:
-            if dim is not None:
-                self.radius = jnp.full((dim,), r_arr, dtype=jnp.float64)
-                self.d = dim
+            if effective_dim is not None:
+                self.radius = jnp.full((effective_dim,), r_arr, dtype=jnp.float64)
+                self.d = int(effective_dim)
             else:
                 self.radius = r_arr
                 self.d = 1
@@ -388,17 +395,44 @@ class JaxArcsinhTransform:
         else:
             raise ValueError(f"Location must be scalar or 1D array, got shape {loc_arr.shape}")
 
+        if mask is None:
+            if self.radius.ndim == 1:
+                self.mask = jnp.ones((self.d,), dtype=jnp.bool_)
+            else:
+                self.mask = jnp.asarray(True, dtype=jnp.bool_)
+        else:
+            m_arr = jnp.asarray(mask, dtype=jnp.bool_)
+            if m_arr.ndim == 1 and self.radius.ndim == 0:
+                self.d = int(m_arr.shape[0])
+                self.radius = jnp.full((self.d,), self.radius, dtype=jnp.float64)
+                if self.location.ndim == 0:
+                    self.location = jnp.full((self.d,), self.location, dtype=jnp.float64)
+            self.mask = m_arr
+
+    @property
+    def radii(self) -> jnp.ndarray:
+        """Coordinate scale vector R of shape (d,)."""
+        return self.radius
+
     def forward(self, x: jnp.ndarray) -> jnp.ndarray:
         r"""Maps primal coordinates $x \in \mathbb{R}^d$ to transformed coordinates $z \in \mathbb{R}^d$."""
-        return jnp.arcsinh((x - self.location) / self.radius)
+        x_arr = jnp.asarray(x, dtype=jnp.float64)
+        z_warped = jnp.arcsinh((x_arr - self.location) / self.radius)
+        return jnp.where(self.mask, z_warped, x_arr)
 
     def inverse(self, z: jnp.ndarray) -> jnp.ndarray:
         r"""Maps transformed coordinates $z \in \mathbb{R}^d$ back to primal coordinates $x \in \mathbb{R}^d$."""
-        return self.location + self.radius * jnp.sinh(z)
+        z_arr = jnp.asarray(z, dtype=jnp.float64)
+        x_unwarped = self.location + self.radius * jnp.sinh(z_arr)
+        return jnp.where(self.mask, x_unwarped, z_arr)
 
     def log_jacobian_det(self, z: jnp.ndarray) -> jnp.ndarray:
         r"""Computes the log-determinant of the Jacobian $\log |\det J(z)| = \sum_i \log(R_i \cosh(z_i))$."""
-        return jnp.sum(jnp.log(self.radius * jnp.cosh(z)))
+        z_arr = jnp.asarray(z, dtype=jnp.float64)
+        abs_z = jnp.abs(z_arr)
+        log_cosh = abs_z - jnp.log(2.0) + jnp.log1p(jnp.exp(-2.0 * abs_z))
+        terms = jnp.where(self.mask, jnp.log(self.radius) + log_cosh, 0.0)
+        return jnp.sum(terms, axis=-1)
 
     def wrap_logdensity(
         self,
@@ -570,3 +604,24 @@ def as_blackjax_algorithm(
 ) -> BlackJAXAlgorithm:
     r"""Constructs a BlackJAX-compatible algorithm object with `(init, step)` methods."""
     return BlackJAXAlgorithm(sampler=sampler, target=target)
+
+
+from mcmc_robust.jax_unified_nuts import (
+    JaxUnifiedNUTSResult,
+    arviz_from_samples,
+    calibrate_jax_arcsinh_transform,
+    sample_blackjax_unified_nuts,
+)
+
+__all__ = [
+    "BlackJAXAlgorithm",
+    "BlackJAXAlgorithmState",
+    "JaxArcsinhTransform",
+    "JaxUnifiedNUTSResult",
+    "PyMCModelTarget",
+    "arviz_from_samples",
+    "as_blackjax_algorithm",
+    "calibrate_jax_arcsinh_transform",
+    "sample_blackjax_unified_nuts",
+    "sample_pymc_model",
+]

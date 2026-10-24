@@ -7,8 +7,12 @@ Novel gradient-based MCMC samplers resolving roughness and flatness pathologies
 from mcmc_robust.integrations import (
     BlackJAXAlgorithm,
     JaxArcsinhTransform,
+    JaxUnifiedNUTSResult,
     PyMCModelTarget,
+    arviz_from_samples,
     as_blackjax_algorithm,
+    calibrate_jax_arcsinh_transform,
+    sample_blackjax_unified_nuts,
     sample_pymc_model,
 )
 from mcmc_robust.samplers.automala import AutoMALA
@@ -29,12 +33,16 @@ __all__ = [
     "CoordinateWiseArcsinhTransform",
     "GentleMALA",
     "JaxArcsinhTransform",
+    "JaxUnifiedNUTSResult",
     "NealsFunnelTarget",
     "PyMCModelTarget",
     "UnifiedRobustHMC",
     "UnifiedRobustNUTS",
     "UnifiedRobustSampler",
+    "arviz_from_samples",
     "as_blackjax_algorithm",
+    "calibrate_jax_arcsinh_transform",
     "get_target",
+    "sample_blackjax_unified_nuts",
     "sample_pymc_model",
 ]

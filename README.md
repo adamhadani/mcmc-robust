@@ -32,8 +32,8 @@ Gradient-based Markov Chain Monte Carlo algorithms (MALA, HMC, NUTS) power moder
 │ • Quartic Potential Burn-In: 121.2x wider stable step-size window than standard MALA and 2.85x–6.50x   │
 │   faster median burn-in across step-size grids (5 steps vs. 17 for Globally Tamed MALA at h=0.15).     │
 │ • Benign Parity: 103.5% overall ESS/grad efficiency parity with tuned MALA on 50D Gaussians (0 tax).   │
-│ • Lean 4 Formal Verification: 26 machine-checked theorems (0 sorries, 0 warnings) covering shifted     │
-│   diffeomorphism invertibility, discrete basin bounds, global contraction, and MH detailed balance.    │
+│ • Lean 4 Formal Verification: 32 machine-checked theorems (0 sorries, 0 warnings) covering shifted     │
+│   diffeomorphism invertibility, 3-phase scale calibration, basin bounds, and MH detailed balance.      │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -103,15 +103,15 @@ idata = sample_pymc_model(
 print("ArviZ DataTree summary:\n", idata.posterior)
 ```
 
-#### 3. Plug-and-Play with Pure-JAX / BlackJAX (`JaxArcsinhTransform`)
-Wrap any pure-JAX log-density function and run under `jax.jit` and `jax.lax.scan`:
+#### 3. Plug-and-Play with Pure-JAX / BlackJAX (`sample_blackjax_unified_nuts` & `JaxArcsinhTransform`)
+Run the fully XLA-compiled 3-phase adaptive `sample_blackjax_unified_nuts` pipeline or wrap any pure-JAX log-density with `JaxArcsinhTransform` under `jax.jit` and `jax.lax.scan`:
 ```python
 import jax
 
 jax.config.update("jax_enable_x64", True)
 import blackjax
 import jax.numpy as jnp
-from mcmc_robust import JaxArcsinhTransform
+from mcmc_robust import JaxArcsinhTransform, sample_blackjax_unified_nuts
 
 
 # JAX log-density for a heavy-tailed or funnel target
@@ -120,11 +120,14 @@ def logdensity_fn(x):
     return -0.5 * (v / 3.0) ** 2 - 0.5 * jnp.sum(x[1:] ** 2) * jnp.exp(-v) - 0.5 * 9.0 * v
 
 
-# Automatic shift-equivariant coordinate-wise arcsinh diffeomorphism
+# Option A: Turnkey 3-phase adaptive pure-JAX NUTS (Phase 1 scale/location -> Phase 2/3 metric & step size -> scan)
+result = sample_blackjax_unified_nuts(logdensity_fn, d=10, draws=1000, tune=500, chains=4, seed=42)
+print("Calibrated radii:", result.transform.radii, "Divergences:", result.divergences)
+
+# Option B: Direct JaxArcsinhTransform wrapper with custom BlackJAX loop
 transform = JaxArcsinhTransform(radius=jnp.ones(10), location=jnp.zeros(10))
 warped_logdensity = transform.wrap_logdensity(logdensity_fn)
 
-# Run under BlackJAX NUTS with compiled JIT throughput
 sampler = blackjax.nuts(warped_logdensity, step_size=0.05, inverse_mass_matrix=jnp.ones(10))
 state = sampler.init(jnp.zeros(10))
 step_fn = jax.jit(sampler.step)
@@ -243,7 +246,7 @@ uv run python -m mcmc_robust.bench.plot
 
 ### Lean 4 Mathematical Foundations (`formal/McmcRobustFormal.lean`)
 
-All 26 core mathematical theorems and lemmas are formally verified sorry-free in Lean 4 with 0 linter warnings under `#lint`:
+All 32 core mathematical theorems and lemmas are formally verified sorry-free in Lean 4 with 0 linter warnings under `#lint`:
 
 ```bash
 cd formal && lake build
@@ -265,6 +268,9 @@ cd formal && lake build
 | `softCappedDriftStep_lt_bound` | Global step cap $\Delta_{\text{cap}}(r) < s \kappa_{\max} / \gamma$ for all $r \ge 0, h > 0$ | **Proved (0 sorries)** |
 | `softCapped_global_contraction_no_overshoot` | Global contraction $0 < r - \Delta_{\text{cap}}(r) < r$ for all $r \ge s \kappa_{\max} / \gamma$ | **Proved (0 sorries)** |
 | `mhAccept_bounds` / `mh_detailed_balance` | $0 \le \alpha(x,y) \le 1$ and exact reversibility $\pi(x)q(x,y)\alpha(x,y) = \pi(y)q(y,x)\alpha(y,x)$ | **Proved (0 sorries)** |
+| `calibratedRadius_ge_min` / `calibratedRadius_pos` / `calibratedRadius_le_max` | $0 < R_{\min} \le \min(R_{\max}, \max(R_{\min}, c\sigma)) \le R_{\max}$ for all $\sigma \in \mathbb{R}$ | **Proved (0 sorries)** |
+| `calibratedRadius_mono` | $c \ge 0 \land \sigma_1 \le \sigma_2 \implies R_{\text{cal}}(\sigma_1) \le R_{\text{cal}}(\sigma_2)$ | **Proved (0 sorries)** |
+| `calibrated_shifted_roundtrip_forward` / `_inverse` | Exact invertibility $\psi_{\mu, R_{\text{cal}}}(\phi_{\mu, R_{\text{cal}}}(x)) = x$ and $\phi_{\mu, R_{\text{cal}}}(\psi_{\mu, R_{\text{cal}}}(z)) = z$ for all $\mu, \sigma \in \mathbb{R}$ | **Proved (0 sorries)** |
 
 ### Reference Implementation Cross-Validation (`test_reference_scrutiny.py`)
 
@@ -298,11 +304,12 @@ mcmc-robust/
 │   ├── samplers/novel/        # GentleMALA, AnisotropicTailMALA, UnifiedRobustNUTS
 │   ├── transforms/            # Coordinate-wise Arcsinh, Stereographic, Radial
 │   ├── diagnostics/           # ArviZ 1.3 metrics, folded R-hat, ESS/grad, mcse_q99
+│   ├── jax_unified_nuts.py    # Pure-JAX 3-phase adaptive UnifiedRobustNUTS (sample_blackjax_unified_nuts)
 │   ├── integrations.py        # PyMCModelTarget, sample_pymc_model, JaxArcsinhTransform
 │   └── bench/                 # Unified 5-benchmark CLI, SOTA runner, publication plot
-├── formal/                    # Lean 4 formal verification proofs (26 theorems, lake build)
+├── formal/                    # Lean 4 formal verification proofs (32 theorems, lake build)
 ├── benchmarks/                # Unified CLI runner (run_benchmarks.py)
-├── tests/unit/                # 810 unit & integration tests passing with -W error
+├── tests/unit/                # 815 unit & integration tests passing with -W error
 ├── reports/                   # Grounded CSV/JSON benchmark data & publication figures
 ├── example.py                 # Standalone 10-second comparison script
 └── pyproject.toml             # Python >= 3.13 configuration (ruff, mypy, pre-commit)
