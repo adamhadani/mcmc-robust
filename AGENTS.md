@@ -85,3 +85,19 @@ uv run pre-commit run --all-files
 - **`UnifiedRobustNUTS`**: Symplectic Hamiltonian No-U-Turn Sampler operating in warped diffeomorphism coordinates with stiffness damping and 3-phase automated warmup (scale detection $\to$ metric preconditioner $\to$ dual averaging step size).
 - **`sample_pymc_model(model, sampler="unified_nuts", draws=1000, tune=500, ...)`**: Wraps continuous PyMC models with `DictToArrayBijection` unflattening and exact leapfrog gradient evaluation accounting. Returns an `arviz.DataTree` InferenceData object.
 - **`JaxArcsinhTransform`**: Coordinate-wise $\text{arcsinh}$ diffeomorphism with `wrap_logdensity` for JAX/BlackJAX models, compatible with `jax.jit` and `jax.lax.scan`.
+
+---
+
+## 5. Writing Math in Markdown (GitHub Rendering)
+
+GitHub renders math in `README.md` and `REPORT.md` with its own rules, and a formula that looks fine in a local preview or parses under MathJax can still show an error or raw TeX on github.com. These pitfalls were all observed on this repo's pages (October 2026, PR #5):
+
+1. **No `\operatorname`.** GitHub rejects it ("The following macros are not allowed: operatorname"). Write `\mathop{\mathrm{median}}(x)`. `\phantom` is reported to be blocked too.
+2. **Backslash escapes are applied inside plain `$...$`.** `\%` becomes `%`, a TeX comment, so `$7.49\%$` renders as "7.49". `\|` becomes `|`, so norms render as absolute values, and `\{ \}` become grouping braces, `\,` a comma, `\\` a single backslash. Use `\Vert` for norms. For any other backslash-punctuation command, use the ``$`...`$`` form, which GitHub parses like a code span and passes to TeX verbatim.
+3. **`_` or `*` after punctuation can become emphasis.** In plain `$...$`, `\|x\|_2` or `(a, b)_i` can pair with a later `_` in the same paragraph, and the emphasis swallows the formula. Use ``$`...`$``.
+4. **No math inside italics.** `$...$` inside `*...*` is never rendered. Do not italicise captions that contain math (this repo uses a bold label, `**Target:** ...`), and split the emphasis around a formula: `*An improved* $\widehat{R}$ *for ...*`.
+5. **No `$` straight after a hyphen or dash.** `Student-$t$` and `$37$–$42$` stay as raw text. Write `Student-*t*`, and put a range in one span: `$37\text{–}42$`.
+6. **Display math.** A `$$...$$` line inside a paragraph is not recognised, and its subscripts turn into italics. At the top level, use a fenced block (three backticks followed by `math`) with blank lines around it. Inside a list item GitHub shows that fence as a code block, so use ``$`\displaystyle ...`$`` there.
+7. **Tables.** `|` ends a cell even inside math or code spans, so write `\vert` or `\Vert`, never a bare `|`.
+
+To verify, open the file on its branch on github.com and look for red error text, leftover `$` or `\command` text, and `|x|` where `‖x‖` was meant. A local MathJax parse catches TeX errors, but none of the GitHub-specific behaviour above.
