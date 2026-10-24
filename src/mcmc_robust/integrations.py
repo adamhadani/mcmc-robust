@@ -627,24 +627,3 @@ def as_blackjax_algorithm(
 ) -> BlackJAXAlgorithm:
     r"""Constructs a BlackJAX-compatible algorithm object with `(init, step)` methods."""
     return BlackJAXAlgorithm(sampler=sampler, target=target)
-
-
-from mcmc_robust.jax_unified_nuts import (
-    JaxUnifiedNUTSResult,
-    arviz_from_samples,
-    calibrate_jax_arcsinh_transform,
-    sample_blackjax_unified_nuts,
-)
-
-__all__ = [
-    "BlackJAXAlgorithm",
-    "BlackJAXAlgorithmState",
-    "JaxArcsinhTransform",
-    "JaxUnifiedNUTSResult",
-    "PyMCModelTarget",
-    "arviz_from_samples",
-    "as_blackjax_algorithm",
-    "calibrate_jax_arcsinh_transform",
-    "sample_blackjax_unified_nuts",
-    "sample_pymc_model",
-]

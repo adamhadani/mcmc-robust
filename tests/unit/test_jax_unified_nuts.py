@@ -9,18 +9,19 @@ import blackjax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy import stats
 from xarray import DataTree
 
 from mcmc_robust.core.state import ChainState, StepResult
 from mcmc_robust.diagnostics.convergence import compute_split_rhat
 from mcmc_robust.diagnostics.ess import compute_bulk_ess
-from mcmc_robust.integrations import (
-    JaxArcsinhTransform,
+from mcmc_robust.integrations import JaxArcsinhTransform
+from mcmc_robust.jax_unified_nuts import (
     JaxUnifiedNUTSResult,
+    arviz_from_samples,
     calibrate_jax_arcsinh_transform,
     sample_blackjax_unified_nuts,
 )
-from mcmc_robust.jax_unified_nuts import arviz_from_samples
 from mcmc_robust.samplers.novel.nuts import UnifiedRobustNUTS
 from mcmc_robust.targets.benign import DiagonalGaussian
 from mcmc_robust.targets.heavy_tailed import MultivariateStudentTTarget
@@ -156,7 +157,8 @@ def test_sample_blackjax_unified_nuts_shifted_anisotropic_gaussian() -> None:
 
     # Phase 1 calibration must center transform.location near mu_true
     np.testing.assert_allclose(np.asarray(res.transform.location), np.asarray(mu_true), atol=3.5)
-    assert res.divergences == 0
+    # Arcsinh warping stiffens light (Gaussian) tails in z-space, so rare divergences can occur.
+    assert res.divergences <= 0.01 * res.samples.shape[0] * res.samples.shape[1]
     assert 0.50 <= res.acceptance_rate <= 0.99
 
 
@@ -207,7 +209,10 @@ def test_sample_blackjax_unified_nuts_multivariate_cauchy() -> None:
 
 @pytest.mark.unit
 def test_sample_blackjax_unified_nuts_centered_neals_funnel() -> None:
-    """Verify zero post-warmup divergences and deep funnel neck exploration on Neal's Funnel (d=6)."""
+    """Verify funnel neck exploration and honest divergence reporting on Neal's Funnel (d=6).
+
+    NUTS on the centered funnel diverges in the neck; the count must be reported, not suppressed.
+    """
     d = 6
     sigma_v = 3.0
 
@@ -231,8 +236,8 @@ def test_sample_blackjax_unified_nuts_centered_neals_funnel() -> None:
     assert res.samples.shape == (4, 500, d)
     assert np.all(np.isfinite(res.samples))
 
-    # Zero post-warmup divergences
-    assert res.divergences == 0, f"Expected 0 divergences on Neal's Funnel, got {res.divergences}"
+    # The reported count must equal the per-draw divergence flags.
+    assert res.divergences == int(np.sum(res.idata.sample_stats["diverging"].values))
 
     # Verify funnel neck exploration (v = x[..., 0] ~ N(0, 9), so min(v) < -3.5 and q05(v) < -2.5)
     v_draws = res.samples[:, :, 0]
@@ -270,9 +275,14 @@ def test_sample_blackjax_unified_nuts_grad_accounting_and_arviz_datatree() -> No
     assert res.phase2_grad_evals > 0
     assert res.sampling_grad_evals > 0
     assert res.grad_evals == res.phase1_grad_evals + res.phase2_grad_evals + res.sampling_grad_evals
-    assert res.step_size > 0.0
-    assert res.inverse_mass_matrix.shape == (d,)
+
+    # Each chain samples with, and reports, its own adapted parameters.
+    assert res.step_size.shape == (2,)
+    assert np.all(res.step_size > 0.0)
+    assert res.inverse_mass_matrix.shape == (2, d)
     assert np.all(res.inverse_mass_matrix > 0.0)
+    np.testing.assert_array_equal(res.idata.sample_stats["step_size"].values[:, 0], res.step_size)
+    assert np.all(res.idata.sample_stats["step_size"].values == res.step_size[:, np.newaxis])
 
     # Verify ArviZ DataTree output
     assert isinstance(res.idata, DataTree)
@@ -538,3 +548,48 @@ def test_vanilla_vs_jax_posterior_agreement() -> None:
     np.testing.assert_allclose(jax_mean, shift, atol=0.6)
     np.testing.assert_allclose(vanilla_mean, jax_mean, atol=0.7)
     np.testing.assert_allclose(vanilla_std, jax_std, rtol=0.25)
+
+
+# =============================================================================
+# 7. Exact-Reference Distribution Tests in Moderate Dimension
+# =============================================================================
+#
+# Low-dimensional checks cannot tell whether the kernel targets the posterior itself: a modified
+# density that only differs far below the posterior's typical log-density level is invisible at
+# d <= 6. These tests compare against closed-form references where that difference shows up.
+
+
+@pytest.mark.unit
+def test_sample_blackjax_unified_nuts_standard_gaussian_second_moment_d50() -> None:
+    """E[x_i^2] = 1 on a 50-d standard Gaussian; any inflated or flattened tail breaks it."""
+    d = 50
+
+    def std_gauss_logdensity(x: jnp.ndarray) -> jnp.ndarray:
+        return -0.5 * jnp.sum(x**2)
+
+    res = sample_blackjax_unified_nuts(std_gauss_logdensity, d=d, draws=500, tune=400, chains=4, seed=0)
+    draws = res.samples.reshape(-1, d)
+
+    # Across seeds the coordinate-averaged second moment stays within 0.011 of 1 at this budget.
+    second_moment = float(np.mean(draws**2))
+    assert abs(second_moment - 1.0) < 0.05, f"E[x^2] = {second_moment:.3f}, expected 1"
+    assert float(np.max(np.abs(np.mean(draws, axis=0)))) < 0.2
+
+
+@pytest.mark.unit
+def test_sample_blackjax_unified_nuts_student_t_radial_quantiles_d20() -> None:
+    """Radius quantiles of a 20-d multivariate Student-t (nu = 3) match the exact F law."""
+    d, nu = 20, 3.0
+
+    def mvt_logdensity(x: jnp.ndarray) -> jnp.ndarray:
+        return -0.5 * (nu + d) * jnp.log1p(jnp.sum(x**2) / nu)
+
+    res = sample_blackjax_unified_nuts(mvt_logdensity, d=d, draws=500, tune=400, chains=4, seed=1)
+    radius = np.linalg.norm(res.samples.reshape(-1, d), axis=1)
+
+    # For an identity-scale multivariate t, ||x||^2 / d ~ F(d, nu). Across seeds the sampled
+    # median and 90th percentile stay within 8% and 12% of the exact values at this budget.
+    for prob, rel_tol in ((0.5, 0.15), (0.9, 0.25)):
+        exact = float(np.sqrt(d * stats.f.ppf(prob, d, nu)))
+        sampled = float(np.quantile(radius, prob))
+        assert abs(sampled / exact - 1.0) < rel_tol, f"q{prob:.2f}(|x|) = {sampled:.2f}, exact {exact:.2f}"
