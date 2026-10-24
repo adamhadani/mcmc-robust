@@ -139,12 +139,12 @@ Consider a heterogeneous target distribution in $d=20$ dimensions where coordina
 1. **Local Dimensionless Stiffness Metric:**
    Given step size $h > 0$, diagonal preconditioning scale vector $s \in \mathbb{R}^d_{>0}$, and stiffness sensitivity $\gamma > 0$:
 
-   $$\kappa_h(x) = \gamma h \|s \odot \nabla \log \pi(x)\|_2 \quad \text{(global mode)}, \qquad \kappa_{h, i}(x) = \gamma h s_i |\nabla_i \log \pi(x)| \quad \text{(coordinate mode)}.$$
+   $`\displaystyle \kappa_h(x) = \gamma h \|s \odot \nabla \log \pi(x)\|_2 \quad \text{(global mode)}, \qquad \kappa_{h, i}(x) = \gamma h s_i |\nabla_i \log \pi(x)| \quad \text{(coordinate mode)}.`$
 
 2. **Soft-Capped Gentle Attenuation Factor:**
    Given asymptotic drift cap $\kappa_{\max} > 0$ (default $\kappa_{\max} = 25.0$ in primal space; $\kappa_{\max} = \infty$ recovers pure square-root damping):
 
-   $$\rho(\kappa) = \frac{1}{\sqrt{1 + \kappa + (\kappa / \kappa_{\max})^2}}.$$
+   $`\displaystyle \rho(\kappa) = \frac{1}{\sqrt{1 + \kappa + (\kappa / \kappa_{\max})^2}}.`$
 
    - **Smooth bulk ($\kappa \ll 1$):** $\rho(\kappa) = 1 - \frac{1}{2}\kappa + O(\kappa^2) \approx 1$, recovering classical MALA with zero bulk tax.
    - **Intermediate stiff basin ($1 \ll \kappa \ll \kappa_{\max}$):** $\rho(\kappa) \approx \kappa^{-1/2}$, preserving super-linear drift $\|b_h(x)\| \propto \|\nabla U(x)\|^{1/2}$ ($r^{3/2}$ on quartic targets).
@@ -152,7 +152,7 @@ Consider a heterogeneous target distribution in $d=20$ dimensions where coordina
 
 3. **Proposal & Exact $O(d)$ Metropolis–Hastings Correction:**
 
-   $$y = x + h (s^2 \odot b_h(x)) + \sqrt{2h} (s \odot \xi), \quad \xi \sim \mathcal{N}(0, I_d), \quad b_h(x) = \rho(\kappa_h(x)) \nabla \log \pi(x).$$
+   $`\displaystyle y = x + h (s^2 \odot b_h(x)) + \sqrt{2h} (s \odot \xi), \quad \xi \sim \mathcal{N}(0, I_d), \quad b_h(x) = \rho(\kappa_h(x)) \nabla \log \pi(x).`$
 
    The forward-reverse log-proposal density ratio is computed exactly in $O(d)$ operations, consuming strictly **1 gradient evaluation per step**.
 
@@ -163,22 +163,22 @@ Consider a heterogeneous target distribution in $d=20$ dimensions where coordina
 1. **Forward and Inverse Coordinate Maps:**
    For each coordinate $i \in \{1, \dots, d\}$, given location center $\mu_i \in \mathbb{R}$, characteristic scale $R_i > 0$, and active mask $m_i \in \{0, 1\}$:
 
-   $$z_i = \phi_{\mu, R, i}(x_i) = \begin{cases} \mathop{\mathrm{arsinh}}\left(\frac{x_i - \mu_i}{R_i}\right) & \text{if } m_i = 1, \\ x_i & \text{if } m_i = 0, \end{cases} \qquad x_i = \psi_{\mu, R, i}(z_i) = \begin{cases} \mu_i + R_i \sinh(z_i) & \text{if } m_i = 1, \\ z_i & \text{if } m_i = 0. \end{cases}$$
+   $`\displaystyle z_i = \phi_{\mu, R, i}(x_i) = \begin{cases} \mathop{\mathrm{arsinh}}\left(\frac{x_i - \mu_i}{R_i}\right) & \text{if } m_i = 1, \\ x_i & \text{if } m_i = 0, \end{cases} \qquad x_i = \psi_{\mu, R, i}(z_i) = \begin{cases} \mu_i + R_i \sinh(z_i) & \text{if } m_i = 1, \\ z_i & \text{if } m_i = 0. \end{cases}`$
 
 2. **Diagonal Jacobian & Numerically Stabilized Pullback:**
 
-   $$\log |\det J_\psi(z)| = \sum_{i: m_i = 1} \left[ \log R_i + \log \cosh(z_i) \right], \qquad \log \cosh(z_i) = |z_i| - \log 2 + \mathop{\mathrm{log1p}}(e^{-2|z_i|}).$$
+   $`\displaystyle \log |\det J_\psi(z)| = \sum_{i: m_i = 1} \left[ \log R_i + \log \cosh(z_i) \right], \qquad \log \cosh(z_i) = |z_i| - \log 2 + \mathop{\mathrm{log1p}}(e^{-2|z_i|}).`$
 
    Using `scale = np.hypot(R_i, x_i - mu_i)` to prevent intermediate squaring overflow for $|x_i| > 1.34 \times 10^{154}$:
 
-   $$\nabla_{z_i} \log \pi_Z(z) = \sqrt{R_i^2 + (x_i - \mu_i)^2} \, [\nabla_x \log \pi_X(x)]_i + \frac{x_i - \mu_i}{\sqrt{R_i^2 + (x_i - \mu_i)^2}}.$$
+   $`\displaystyle \nabla_{z_i} \log \pi_Z(z) = \sqrt{R_i^2 + (x_i - \mu_i)^2} \, [\nabla_x \log \pi_X(x)]_i + \frac{x_i - \mu_i}{\sqrt{R_i^2 + (x_i - \mu_i)^2}}.`$
 
    For a polynomial tail $\pi(x_i) \propto |x_i - \mu_i|^{-\alpha_i}$, $\nabla_{z_i} \log \pi_Z(z) \to -(\alpha_i - 1)\mathop{\mathrm{sgn}}(z_i)$, converting sub-exponential polynomial tails into Laplace-like exponential tails with constant inward restoring drift.
 
 3. **Translation-Equivariant & Normal-Consistent Calibration:**
    Given exploratory Phase 1 draws, location and scale are calibrated via:
 
-   $$\hat{\mu}_i = \mathop{\mathrm{median}}(x_i), \qquad \hat{R}_i = \frac{q_{75}(x_i - \hat{\mu}_i) - q_{25}(x_i - \hat{\mu}_i)}{2 \Phi^{-1}(0.75)} = \frac{\mathop{\mathrm{IQR}}(x_i)}{1.3489795},$$
+   $`\displaystyle \hat{\mu}_i = \mathop{\mathrm{median}}(x_i), \qquad \hat{R}_i = \frac{q_{75}(x_i - \hat{\mu}_i) - q_{25}(x_i - \hat{\mu}_i)}{2 \Phi^{-1}(0.75)} = \frac{\mathop{\mathrm{IQR}}(x_i)}{1.3489795},`$
 
    with MAD fallback $`\mathop{\mathrm{median}}(|x_i - \hat{\mu}_i|) / 0.67448975`$. For $X_i \sim \mathcal{N}(\mu_i, \sigma_i^2)$, $`\hat{\mu}_i \to \mu_i`$ and $`\hat{R}_i \to \sigma_i`$ consistently regardless of location shift $\mu_i$.
 
@@ -222,12 +222,12 @@ Let $\pi_X$ be a positive differentiable density on $\mathbb{R}^d$. Post-warmup 
 Consider the quartic potential $U(x) = \frac{1}{4}\|x\|^4$ ($\nabla U(x) = \|x\|^2 x$) under pure square-root damping $\rho(\kappa) = (1 + \kappa)^{-1/2}$ ($\kappa_{\max} = \infty$) with step size $h > 0$, unit metric $s = I_d$, and stiffness parameter $\gamma > 0$.
 1. **(Exact Discrete Non-Overshoot Basin — Lean 4 `pureSqrt_quartic_discrete_basin_bound`):** Along the radial direction $`r = \|x\|_2 > 0`$, the deterministic Euler step $x_{\text{det}}(x) = x - \Delta(r)\frac{x}{r}$ with $\Delta(r) = \frac{h r^3}{\sqrt{1 + \gamma h r^3}}$ strictly contracts toward the origin ($`\|x_{\text{det}}(x)\|_2 < r`$) if and only if $\Delta(r) < 2r$, which holds for all initial radii satisfying:
 
-   $$h r^2 < 4\gamma \quad \Longleftrightarrow \quad r < R_{\max}(h, \gamma) := \left(\frac{4\gamma}{h}\right)^{1/2}.$$
+   $`\displaystyle h r^2 < 4\gamma \quad \Longleftrightarrow \quad r < R_{\max}(h, \gamma) := \left(\frac{4\gamma}{h}\right)^{1/2}.`$
 
    Conversely, for $h r^3 \gg 1$, $\Delta(r) \sim \sqrt{h/\gamma} \, r^{3/2}$ grows faster than $2r$, so outside the basin $r \gtrsim (4\gamma/h)^{1/2}$ an un-capped discrete step overshoots the origin ($|r - \Delta(r)| > r$).
 2. **(Uniform $O(1)$ Continuous ODE Return Time Inside the Basin):** Within the basin, the continuous radial ODE $\dot{r} = -\Delta(r) \approx -\sqrt{h/\gamma} \, r^{3/2}$ contracts from $R_0$ to $R_{\text{bulk}}$ in pseudo-time:
 
-   $$T = \int_{R_{\text{bulk}}}^{R_0} \sqrt{\frac{\gamma}{h}} r^{-3/2} \, dr = 2\sqrt{\frac{\gamma}{h}} \left(\frac{1}{\sqrt{R_{\text{bulk}}}} - \frac{1}{\sqrt{R_0}}\right) < \frac{2}{\sqrt{R_{\text{bulk}}}} \sqrt{\frac{\gamma}{h}} = O(1). \quad \blacksquare$$
+   $`\displaystyle T = \int_{R_{\text{bulk}}}^{R_0} \sqrt{\frac{\gamma}{h}} r^{-3/2} \, dr = 2\sqrt{\frac{\gamma}{h}} \left(\frac{1}{\sqrt{R_{\text{bulk}}}} - \frac{1}{\sqrt{R_0}}\right) < \frac{2}{\sqrt{R_{\text{bulk}}}} \sqrt{\frac{\gamma}{h}} = O(1). \quad \blacksquare`$
 
 #### Theorem 4.3 (Global Non-Overshoot Contraction for Soft-Capped GentleMALA):
 Consider Soft-Capped `GentleMALA` with attenuation factor:
@@ -238,11 +238,11 @@ Consider Soft-Capped `GentleMALA` with attenuation factor:
 
 1. **(Global Step Cap — Lean 4 `softCappedDriftStep_lt_bound`):** For all $x \in \mathbb{R}^d$ and all step sizes $h > 0$, the deterministic drift step norm $`\Delta_{\text{cap}}(x) = \|h s^2 \rho(\kappa_h(x)) \nabla U(x)\|_2`$ satisfies the strict global upper bound:
 
-   $$0 \le \Delta_{\text{cap}}(x) = \frac{s u}{\sqrt{1 + \gamma u + (\gamma u / \kappa_{\max})^2}} < \frac{s \kappa_{\max}}{\gamma}.$$
+   $`\displaystyle 0 \le \Delta_{\text{cap}}(x) = \frac{s u}{\sqrt{1 + \gamma u + (\gamma u / \kappa_{\max})^2}} < \frac{s \kappa_{\max}}{\gamma}.`$
 
 2. **(Global Non-Overshoot Contraction — Lean 4 `softCapped_global_contraction_no_overshoot`):** For any state $x$ with $`r = \|x\|_2 \ge \frac{s \kappa_{\max}}{\gamma}`$ and any radially outward-pointing gradient $\nabla U(x) = g(r)\frac{x}{r}$ with $g(r) > 0$, the deterministic update $r_{\text{next}} = r - \Delta_{\text{cap}}(x)$ never overshoots the origin and strictly contracts:
 
-   $$0 < r - \frac{s \kappa_{\max}}{\gamma} < r_{\text{next}} < r.$$
+   $`\displaystyle 0 < r - \frac{s \kappa_{\max}}{\gamma} < r_{\text{next}} < r.`$
 
    Consequently, Soft-Capped `GentleMALA` combines rapid $O(1)$ square-root contraction inside the basin ($\kappa \ll \kappa_{\max}$) with unconditional non-overshoot contraction from arbitrarily distant initializations $R_0 \to \infty$. $\blacksquare$
 
