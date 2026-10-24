@@ -1,5 +1,12 @@
-"""Target distributions across five benchmark regimes."""
+"""Target distributions across five benchmark regimes and applied PosteriorDB models."""
 
+from mcmc_robust.targets.applied import (
+    HierarchicalItemResponse2PLTarget,
+    RadonHierarchicalTarget,
+    RobustStudentTRegressionTarget,
+    SparseHorseshoeLogisticTarget,
+    StochasticVolatilityLogReturnTarget,
+)
 from mcmc_robust.targets.benign import (
     AnisotropicGaussianTarget,
     DiagonalGaussian,
@@ -19,6 +26,11 @@ from mcmc_robust.targets.heavy_tailed import (
     MultivariateStudentTTarget,
     StudentTTarget,
 )
+from mcmc_robust.targets.registry import (
+    APPLIED_TARGET_REGISTRY,
+    CANONICAL_APPLIED_TARGETS,
+    TargetRegistry,
+)
 from mcmc_robust.targets.roughness import (
     L0L1SmoothTarget,
     NealsFunnelTarget,
@@ -35,6 +47,15 @@ from mcmc_robust.targets.suite import (
 )
 
 __all__ = [
+    # Applied PosteriorDB-style models
+    "RadonHierarchicalTarget",
+    "SparseHorseshoeLogisticTarget",
+    "RobustStudentTRegressionTarget",
+    "HierarchicalItemResponse2PLTarget",
+    "StochasticVolatilityLogReturnTarget",
+    "TargetRegistry",
+    "APPLIED_TARGET_REGISTRY",
+    "CANONICAL_APPLIED_TARGETS",
     # Benign
     "IsotropicGaussian",
     "DiagonalGaussian",

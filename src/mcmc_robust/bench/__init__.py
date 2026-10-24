@@ -12,6 +12,11 @@ __all__ = [
     "RunRecord",
     "BenchmarkResult",
     "BenchmarkRunner",
+    # Applied PosteriorDB Runner
+    "AppliedBenchmarkConfig",
+    "AppliedRunRecord",
+    "AppliedBenchmarkResult",
+    "AppliedBenchmarkRunner",
     # Sweep
     "SweepConfig",
     "SweepRecord",
@@ -32,6 +37,10 @@ def __getattr__(name: str) -> Any:
         from mcmc_robust.bench import runner
 
         return getattr(runner, name)
+    if name in ("AppliedBenchmarkConfig", "AppliedRunRecord", "AppliedBenchmarkResult", "AppliedBenchmarkRunner"):
+        from mcmc_robust.bench import applied_runner
+
+        return getattr(applied_runner, name)
     if name in ("SweepConfig", "SweepRecord", "StepSizeSweep"):
         from mcmc_robust.bench import sweep
 

@@ -509,6 +509,9 @@ class SOTATargetAdapter:
         """Returns a compiled JAX callable logdensity_fn(x) -> scalar."""
         t = self.target
 
+        if hasattr(t, "jax_log_prob") and callable(t.jax_log_prob):
+            return t.jax_log_prob
+
         # 1. Rubin's Eight-Schools ETS Meta-Analysis
         if isinstance(t, EightSchoolsTarget):
             y_jax = jnp.asarray(t.y, dtype=jnp.float64)
