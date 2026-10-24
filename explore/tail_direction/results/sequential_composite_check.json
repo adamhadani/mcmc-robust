@@ -1,0 +1,113 @@
+{
+ "nu": 1.0,
+ "d": 10,
+ "R": 0.5,
+ "c": 1.0,
+ "rows": [
+  {
+   "map": "coord",
+   "t": 1.0,
+   "log_density": -6.676008709383257,
+   "d2_log_density": -4.199743416140259
+  },
+  {
+   "map": "coord",
+   "t": 2.0,
+   "log_density": -15.588227878131626,
+   "d2_log_density": -0.706508248531648
+  },
+  {
+   "map": "coord",
+   "t": 3.0,
+   "log_density": -25.431485450330836,
+   "d2_log_density": -0.09866037165440368
+  },
+  {
+   "map": "coord",
+   "t": 4.0,
+   "log_density": -35.41008266268249,
+   "d2_log_density": -0.013409506830257722
+  },
+  {
+   "map": "coord",
+   "t": 5.0,
+   "log_density": -45.4071825879457,
+   "d2_log_density": -0.0018158323094360244
+  },
+  {
+   "map": "radial",
+   "t": 1.0,
+   "log_density": -9.014226415631208,
+   "d2_log_density": -2.288714288156207
+  },
+  {
+   "map": "radial",
+   "t": 2.0,
+   "log_density": -10.59537867866118,
+   "d2_log_density": -1.9551096999234021
+  },
+  {
+   "map": "radial",
+   "t": 3.0,
+   "log_density": -14.046936944122876,
+   "d2_log_density": 0.20658210266304522
+  },
+  {
+   "map": "radial",
+   "t": 4.0,
+   "log_density": -17.457010328499376,
+   "d2_log_density": 0.4493876097489774
+  },
+  {
+   "map": "radial",
+   "t": 5.0,
+   "log_density": -20.440705160513694,
+   "d2_log_density": 0.34458143631323024
+  },
+  {
+   "map": "sequential_radial_then_coord",
+   "t": 1.0,
+   "log_density": -8.64146214729196,
+   "d2_log_density": -7.170393270706902
+  },
+  {
+   "map": "sequential_radial_then_coord",
+   "t": 2.0,
+   "log_density": -14.908947862572042,
+   "d2_log_density": -5.785486810820671
+  },
+  {
+   "map": "sequential_radial_then_coord",
+   "t": 3.0,
+   "log_density": -29.399791545950443,
+   "d2_log_density": -9.918394927636037
+  },
+  {
+   "map": "sequential_radial_then_coord",
+   "t": 4.0,
+   "log_density": -54.693290719535696,
+   "d2_log_density": -27.276491485224934
+  },
+  {
+   "map": "sequential_radial_then_coord",
+   "t": 5.0,
+   "log_density": -109.6094851691996,
+   "d2_log_density": -74.20139444863995
+  },
+  {
+   "map": "prediction_sequential",
+   "t": 3.0,
+   "d2_log_density": -10.017874927409903
+  },
+  {
+   "map": "prediction_sequential",
+   "t": 4.0,
+   "d2_log_density": -27.289917197127753
+  },
+  {
+   "map": "prediction_sequential",
+   "t": 5.0,
+   "d2_log_density": -74.20321057778875
+  }
+ ]
+}
