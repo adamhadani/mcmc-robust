@@ -17,6 +17,8 @@ Key Capabilities:
 - `JaxArcsinhTransform`: Pure-JAX coordinate transform $z = \operatorname{arcsinh}(x / R)$
   with exact log-Jacobian determinant $\sum \log(R \cosh(z))$, usable with `blackjax.window_adaptation`
   and compiled `jax.jit` / `jax.lax.scan` kernels for zero Python-loop overhead.
+- `JaxAffineTransform`: The same interface with $z = (x - \mu) / R$ and no tail warping, the
+  ablation control that separates rescaling from tail warping.
 - `as_blackjax_algorithm`: Exposes a standard BlackJAX functional `(init_fn, step_fn)` API.
 """
 
@@ -333,17 +335,12 @@ def sample_pymc_model(
 # =============================================================================
 
 
-class JaxArcsinhTransform:
-    r"""Pure JAX Coordinate-Wise Arcsinh Diffeomorphism for BlackJAX and XLA.
+class JaxCoordinateTransform:
+    r"""Shared state and pullback for coordinate-wise JAX diffeomorphisms $x = \psi(z)$.
 
-    Defines the translation-equivariant coordinate diffeomorphism:
-        $$z_i = \operatorname{arcsinh}\!\left(\frac{x_i - \mu_i}{R_i}\right), \quad x_i = \mu_i + R_i \sinh(z_i)$$
-    with Jacobian factor $dx_i / dz_i = R_i \cosh(z_i)$ and log-determinant:
-        $$\log |\det J(z)| = \sum_{i=1}^d \log(R_i \cosh(z_i))$$
-
-    This eliminates gradient explosions and infinite-variance tail instabilities,
-    converting polynomial tails into exponentially decaying tails in $z$-space.
-    Fully compatible with `jax.jit`, `jax.grad`, `jax.lax.scan`, and `blackjax.window_adaptation`.
+    Holds the per-coordinate location $\mu$, scale $R$ and mask, resolves the constructor
+    aliases, and pulls a primal log density back to $z$-space. Subclasses define `forward`,
+    `inverse`, `log_jacobian_det` and `forward_grad`.
 
     Parameters:
         radius: Coordinate scale parameter $R > 0$. Either a scalar or 1D array of shape `(d,)`.
@@ -413,6 +410,80 @@ class JaxArcsinhTransform:
     def radii(self) -> jnp.ndarray:
         """Coordinate scale vector R of shape (d,)."""
         return self.radius
+
+    def forward(self, x: jnp.ndarray) -> jnp.ndarray:
+        r"""Maps primal coordinates $x$ to transformed coordinates $z$."""
+        raise NotImplementedError
+
+    def inverse(self, z: jnp.ndarray) -> jnp.ndarray:
+        r"""Maps transformed coordinates $z$ back to primal coordinates $x$."""
+        raise NotImplementedError
+
+    def log_jacobian_det(self, z: jnp.ndarray) -> jnp.ndarray:
+        r"""Computes $\log |\det \partial x / \partial z|$ at $z$."""
+        raise NotImplementedError
+
+    def forward_grad(self, x: jnp.ndarray | np.ndarray, grad_x: jnp.ndarray | np.ndarray) -> jnp.ndarray:
+        r"""Computes the pullback gradient $\nabla_z \log \pi_Z(z)$ at $z = \phi(x)$."""
+        raise NotImplementedError
+
+    def wrap_logdensity(
+        self,
+        logdensity_fn: Callable[[jnp.ndarray], jnp.ndarray],
+    ) -> Callable[[jnp.ndarray], jnp.ndarray]:
+        r"""Wraps a primal log density $\log \pi_X(x)$ into $\log \pi_Z(z) = \log \pi_X(\psi(z)) + \log |\det J_\psi(z)|$."""
+
+        def transformed_logdensity(z: jnp.ndarray) -> jnp.ndarray:
+            x = self.inverse(z)
+            return logdensity_fn(x) + self.log_jacobian_det(z)
+
+        return transformed_logdensity
+
+
+class JaxAffineTransform(JaxCoordinateTransform):
+    r"""Pure JAX coordinate-wise affine map $z_i = (x_i - \mu_i) / R_i$ (ablation control).
+
+    Has the same interface, constructor and Phase 1 calibration as `JaxArcsinhTransform` but no
+    tail warping: $x_i = \mu_i + R_i z_i$, $\log |\det J(z)| = \sum_{i: m_i = 1} \log R_i$ (constant)
+    and $\nabla_{z_i} \log \pi_Z(z) = R_i \nabla_{x_i} \log \pi_X(x)$. Polynomial tails stay
+    polynomial in $z$-space, so comparing the two transforms separates rescaling from tail warping.
+    """
+
+    def forward(self, x: jnp.ndarray) -> jnp.ndarray:
+        r"""Maps $x$ to $z = (x - \mu) / R$ on masked coordinates."""
+        x_arr = jnp.asarray(x, dtype=jnp.float64)
+        return jnp.where(self.mask, (x_arr - self.location) / self.radius, x_arr)
+
+    def inverse(self, z: jnp.ndarray) -> jnp.ndarray:
+        r"""Maps $z$ back to $x = \mu + R z$ on masked coordinates."""
+        z_arr = jnp.asarray(z, dtype=jnp.float64)
+        return jnp.where(self.mask, self.location + self.radius * z_arr, z_arr)
+
+    def log_jacobian_det(self, z: jnp.ndarray) -> jnp.ndarray:
+        r"""Returns the constant $\sum_{i: m_i = 1} \log R_i$."""
+        z_arr = jnp.asarray(z, dtype=jnp.float64)
+        log_r = jnp.where(self.mask, jnp.log(self.radius), 0.0)
+        return jnp.sum(jnp.broadcast_to(log_r, z_arr.shape), axis=-1)
+
+    def forward_grad(self, x: jnp.ndarray | np.ndarray, grad_x: jnp.ndarray | np.ndarray) -> jnp.ndarray:
+        r"""Returns $\nabla_z \log \pi_Z = R \odot \nabla_x \log \pi_X$ on masked coordinates."""
+        gx_arr = jnp.asarray(grad_x, dtype=jnp.float64)
+        return jnp.where(self.mask, self.radius * gx_arr, gx_arr)
+
+
+class JaxArcsinhTransform(JaxCoordinateTransform):
+    r"""Pure JAX Coordinate-Wise Arcsinh Diffeomorphism for BlackJAX and XLA.
+
+    Defines the translation-equivariant coordinate diffeomorphism:
+        $$z_i = \operatorname{arcsinh}\!\left(\frac{x_i - \mu_i}{R_i}\right), \quad x_i = \mu_i + R_i \sinh(z_i)$$
+    with Jacobian factor $dx_i / dz_i = R_i \cosh(z_i)$ and log-determinant:
+        $$\log |\det J(z)| = \sum_{i=1}^d \log(R_i \cosh(z_i))$$
+
+    This eliminates gradient explosions and infinite-variance tail instabilities,
+    converting polynomial tails into exponentially decaying tails in $z$-space.
+    Fully compatible with `jax.jit`, `jax.grad`, `jax.lax.scan`, and `blackjax.window_adaptation`.
+    Constructor parameters are those of `JaxCoordinateTransform`.
+    """
 
     def forward(self, x: jnp.ndarray) -> jnp.ndarray:
         r"""Maps primal coordinates $x \in \mathbb{R}^d$ to transformed coordinates $z \in \mathbb{R}^d$."""
