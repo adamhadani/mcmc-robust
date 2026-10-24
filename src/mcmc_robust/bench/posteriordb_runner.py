@@ -1,0 +1,591 @@
+r"""Real posteriors: stock NUTS, arcsinh and Tukey-h on every posteriordb posterior with reference draws.
+
+Question: on real models, does the transform pay, and does `tukey_h` match or beat `arcsinh`
+without losing accuracy (the evidence needed before making it the default)?
+
+Posteriors: every posterior of posteriordb (`bench/posteriordb.py`, commit `POSTERIORDB_SHA`) that
+has reference draws, none selected or excluded by results. Each Stan model is compiled with
+BridgeStan and sampled on Stan's unconstrained space through `stan_bridge.bridgestan_logdensity_fn`.
+
+Arms (`ablation_runner.ARMS`; every arm is `sample_blackjax_unified_nuts` with `tune` warm-up steps,
+`draws` draws, `chains` chains, at most `max_num_doublings` tree doublings):
+- `stock`: transform_kind "identity", target acceptance 0.8.
+- `arcsinh`: the calibrated arcsinh pullback (the library default).
+- `tukey_h`: the Tukey h-map with the likelihood-ratio guard.
+Initial positions are Stan's: Uniform(-2, 2) per unconstrained coordinate, redrawn (at most 100 times)
+until the log density is finite, from `numpy.random.default_rng(seed)` and shared by all arms.
+
+Per-run metrics (one row per posterior x arm x seed), on the constrained parameters that have reference
+draws (posteriordb names, transformed parameters included):
+- gradients including warm-up; mean and worst-parameter bulk and tail ESS (ArviZ); ESS per gradient;
+  max rank-normalised R-hat; post-warm-up divergences;
+- agreement with the reference draws (`diagnostics/tail_accuracy.reference_agreement`): tail
+  probabilities at the reference's 1%, 5%, 95% and 99% quantiles, and means, as z-scores that count
+  the Monte Carlo error of the run and of the reference;
+- the tail-alignment check on the sampled (unconstrained) draws, which the library's warning would see;
+- for `tukey_h`, how many coordinates the guard gave $h > 0$ and the largest $h$.
+
+Aggregates per posterior x arm: median and IQR over seeds, and paired per-seed ratios to `stock` and
+to `arcsinh`.
+
+Usage::
+
+    uv sync --extra posteriordb
+    uv run python -m mcmc_robust.bench.posteriordb_runner --fetch   # shallow checkout of POSTERIORDB_SHA
+    uv run python -m mcmc_robust.bench.posteriordb_runner [--full | --quick] [--seeds ...]
+        [--posteriors ...] [--arms ...] [--workers N] [--posteriordb PATH] [--output-dir reports]
+
+Outputs `posteriordb_results.json` (provenance, config, rows, aggregates) and `posteriordb_results.csv`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import multiprocessing
+import sys
+import time
+import warnings
+from collections.abc import Callable, Sequence
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Protocol
+
+import jax
+
+jax.config.update("jax_enable_x64", True)
+import numpy as np
+
+from mcmc_robust.bench.ablation_runner import (
+    ARMS,
+    INIT_HALF_WIDTH,
+    RHAT_CONVERGED,
+    _finite_or_none,
+    _iqr_summary,
+    _version,
+    collect_provenance,
+)
+from mcmc_robust.bench.posteriordb import (
+    DEFAULT_POSTERIORDB_PATH,
+    POSTERIORDB_SHA,
+    PosteriorDatabase,
+    fetch_posteriordb,
+    stan_name_to_posteriordb,
+)
+from mcmc_robust.bench.sota_adapters import evaluate_chains_with_arviz
+from mcmc_robust.diagnostics.tail_accuracy import REFERENCE_PROBS, reference_agreement
+from mcmc_robust.diagnostics.tail_alignment import tail_alignment_diagnostic
+from mcmc_robust.jax_unified_nuts import sample_blackjax_unified_nuts
+from mcmc_robust.stan_bridge import StanLogDensity, bridgestan_logdensity_fn
+
+SCHEMA_VERSION: int = 1
+
+#: Draws per chain tried before an initial position is given up on (Stan's limit).
+MAX_INIT_ATTEMPTS: int = 100
+
+DEFAULT_ARMS: tuple[str, ...] = ("stock", "arcsinh", "tukey_h")
+
+#: Arms whose paired per-seed ratios are reported, as the `ratio_vs_<arm>` keys of the aggregates.
+RATIO_BASELINES: tuple[str, ...] = ("stock", "arcsinh")
+
+ROW_FIELDS: tuple[str, ...] = (
+    "posterior",
+    "arm",
+    "seed",
+    "d",
+    "k",
+    "chains",
+    "draws",
+    "tune",
+    "target_accept",
+    "transform_kind",
+    "total_grad_evals",
+    "warmup_grad_evals",
+    "sampling_grad_evals",
+    "grads_per_draw",
+    "frac_max_tree_depth",
+    "bulk_ess",
+    "min_bulk_ess",
+    "tail_ess",
+    "min_tail_ess",
+    "ess_per_grad",
+    "tail_ess_per_grad",
+    "min_tail_ess_per_grad",
+    "max_rhat",
+    "converged",
+    "divergences",
+    "ref_tail_prob_abs_err",
+    "ref_tail_prob_abs_z",
+    "ref_tail_prob_max_abs_z",
+    "ref_tail_prob_n_degenerate",
+    "ref_mean_abs_z",
+    "ref_mean_max_abs_z",
+    "n_nonfinite_draws",
+    "tail_alignment_warning",
+    "tail_alignment_max_chi",
+    "tail_alignment_n_heavy",
+    "tukey_h_n_positive",
+    "tukey_h_max",
+    "step_size_median",
+    "wall_time_sec",
+    "error",
+)
+
+AGG_METRICS: tuple[str, ...] = (
+    "total_grad_evals",
+    "grads_per_draw",
+    "frac_max_tree_depth",
+    "bulk_ess",
+    "min_bulk_ess",
+    "tail_ess",
+    "min_tail_ess",
+    "ess_per_grad",
+    "tail_ess_per_grad",
+    "min_tail_ess_per_grad",
+    "max_rhat",
+    "divergences",
+    "ref_tail_prob_abs_z",
+    "ref_tail_prob_max_abs_z",
+    "ref_mean_abs_z",
+    "ref_mean_max_abs_z",
+    "tukey_h_n_positive",
+    "wall_time_sec",
+)
+
+RATIO_METRICS: tuple[str, ...] = ("min_tail_ess_per_grad", "tail_ess_per_grad", "ess_per_grad", "total_grad_evals")
+
+
+class StanModelLike(StanLogDensity, Protocol):
+    """The part of `bridgestan.StanModel` the runner uses."""
+
+    def param_names(self, *, include_tp: bool = ..., include_gq: bool = ...) -> list[str]: ...
+
+    def param_constrain(self, theta_unc: np.ndarray, *, include_tp: bool = ..., include_gq: bool = ...) -> Any: ...
+
+
+@dataclass(frozen=True)
+class LoadedPosterior:
+    """A compiled model with its reference draws and the columns of `param_constrain` they correspond to."""
+
+    name: str
+    model: StanModelLike
+    reference_names: tuple[str, ...]
+    reference_draws: np.ndarray
+    columns: tuple[int, ...]
+
+    @classmethod
+    def from_model(
+        cls, name: str, model: StanModelLike, reference_names: Sequence[str], reference_draws: np.ndarray
+    ) -> LoadedPosterior:
+        """Matches each reference name to a parameter or transformed parameter of `model` (posteriordb names)."""
+        names = [stan_name_to_posteriordb(n) for n in model.param_names(include_tp=True)]
+        missing = [n for n in reference_names if n not in names]
+        if missing:
+            raise ValueError(f"{name}: reference parameters {missing} are not parameters of the model")
+        return cls(
+            name=name,
+            model=model,
+            reference_names=tuple(reference_names),
+            reference_draws=np.asarray(reference_draws, dtype=np.float64),
+            columns=tuple(names.index(n) for n in reference_names),
+        )
+
+    @property
+    def d(self) -> int:
+        """Unconstrained dimension (what NUTS samples)."""
+        return int(self.model.param_unc_num())
+
+    @property
+    def k(self) -> int:
+        """Number of reference parameters (what is scored)."""
+        return len(self.reference_names)
+
+    def constrain(self, unconstrained: np.ndarray) -> np.ndarray:
+        """Maps draws of shape `(..., d)` to the reference columns, shape `(..., k)`."""
+        flat = np.asarray(unconstrained, dtype=np.float64).reshape(-1, self.d)
+        cols = list(self.columns)
+        out = np.stack([np.asarray(self.model.param_constrain(u, include_tp=True))[cols] for u in flat])
+        return out.reshape(*np.shape(unconstrained)[:-1], self.k)
+
+
+def load_posterior(db: PosteriorDatabase, name: str) -> LoadedPosterior:
+    """Compiles (if needed) and loads posterior `name` with BridgeStan (the `posteriordb` extra)."""
+    import bridgestan
+
+    spec = db.posterior(name)
+    with warnings.catch_warnings():
+        # Posteriors that share a model (posteriordb's nes, earnings, kidiq, ...) load the same shared object;
+        # BridgeStan warns that a changed file would not be reloaded, which cannot happen within one run.
+        warnings.filterwarnings("ignore", message="Loading a shared object .* that has already been loaded")
+        model = bridgestan.StanModel(str(spec.stan_file), data=spec.data_json)
+    return LoadedPosterior.from_model(name, model, spec.reference_names, spec.reference_draws)
+
+
+def initial_positions(model: StanLogDensity, seed: int, chains: int) -> np.ndarray:
+    """Stan's initialisation: Uniform(-2, 2) per unconstrained coordinate, redrawn until the density is finite."""
+    rng = np.random.default_rng(seed)
+    d = int(model.param_unc_num())
+    out = np.empty((chains, d))
+    for c in range(chains):
+        for _ in range(MAX_INIT_ATTEMPTS):
+            x = rng.uniform(-INIT_HALF_WIDTH, INIT_HALF_WIDTH, size=d)
+            try:
+                lp, grad = model.log_density_gradient(x, propto=True, jacobian=True)
+            except RuntimeError:
+                continue
+            if np.isfinite(lp) and np.all(np.isfinite(grad)):
+                out[c] = x
+                break
+        else:
+            raise RuntimeError(f"No finite initial position in {MAX_INIT_ATTEMPTS} attempts (chain {c})")
+    return out
+
+
+@dataclass(frozen=True)
+class PosteriorDBConfig:
+    """Grid and sampler settings (use `full()` for reported results)."""
+
+    posteriors: tuple[str, ...] | None = None
+    arms: tuple[str, ...] = DEFAULT_ARMS
+    seeds: tuple[int, ...] = tuple(range(10))
+    tune: int = 500
+    draws: int = 1000
+    chains: int = 4
+    max_num_doublings: int = 10
+    mode: str = "full"
+    output_dir: str = "reports"
+    workers: int = 1
+    posteriordb_path: str = str(DEFAULT_POSTERIORDB_PATH)
+
+    @classmethod
+    def full(cls, **overrides: Any) -> PosteriorDBConfig:
+        """The reported protocol: every posterior with reference draws, 10 seeds, tune 500, draws 1000, 4 chains."""
+        return replace(cls(), **overrides)
+
+    @classmethod
+    def quick(cls, **overrides: Any) -> PosteriorDBConfig:
+        """Smoke-test sizes (2 seeds, short runs); never for reported results."""
+        return replace(cls(mode="quick", seeds=(0, 1), tune=100, draws=100), **overrides)
+
+    def validate(self) -> None:
+        for arm in self.arms:
+            if arm not in ARMS or ARMS[arm].augmented:
+                allowed = [a for a in ARMS if not ARMS[a].augmented]
+                raise ValueError(f"Arm {arm!r} cannot run on a Stan model; choose from {allowed}")
+        if self.workers < 1:
+            raise ValueError(f"workers must be >= 1, got {self.workers}")
+
+
+def _empty_row(post: LoadedPosterior, arm: str, seed: int, config: PosteriorDBConfig) -> dict[str, Any]:
+    row: dict[str, Any] = dict.fromkeys(ROW_FIELDS)
+    row.update(
+        posterior=post.name,
+        arm=arm,
+        seed=int(seed),
+        d=post.d,
+        k=post.k,
+        chains=config.chains,
+        draws=config.draws,
+        tune=config.tune,
+        target_accept=ARMS[arm].target_accept,
+        transform_kind=ARMS[arm].transform_kind,
+    )
+    return row
+
+
+def run_single(post: LoadedPosterior, arm: str, seed: int, config: PosteriorDBConfig) -> dict[str, Any]:
+    """Runs one (posterior, arm, seed) cell and returns its row (`error` holds the message if it failed)."""
+    arm_spec = ARMS[arm]
+    row = _empty_row(post, arm, seed, config)
+    t0 = time.perf_counter()
+    try:
+        x0 = initial_positions(post.model, seed, config.chains)
+        res = sample_blackjax_unified_nuts(
+            bridgestan_logdensity_fn(post.model),
+            d=post.d,
+            x0=x0,
+            draws=config.draws,
+            tune=config.tune,
+            chains=config.chains,
+            seed=int(seed),
+            target_accept=arm_spec.target_accept,
+            max_num_doublings=config.max_num_doublings,
+            transform_kind=arm_spec.transform_kind,
+            # Scored below by the runner, without a warning that `-W error` would turn into an error row.
+            check_tail_alignment=False,
+        )
+        wall = time.perf_counter() - t0
+        constrained = post.constrain(res.samples)
+        m = evaluate_chains_with_arviz(constrained, res.grad_evals, divergences=res.divergences)
+        agreement = reference_agreement(constrained, post.reference_draws).summary()
+        alignment = tail_alignment_diagnostic(res.samples)
+        n_steps = np.asarray(res.idata.sample_stats["n_steps"].values)
+        grads = int(res.grad_evals)
+        min_tail_ess = _finite_or_none(m["min_tail_ess"])
+        max_rhat = _finite_or_none(m["split_rhat"])
+        h = np.asarray(getattr(res.transform, "h", np.zeros(0)))
+        row.update(
+            total_grad_evals=grads,
+            warmup_grad_evals=int(res.phase1_grad_evals + res.phase2_grad_evals),
+            sampling_grad_evals=int(res.sampling_grad_evals),
+            grads_per_draw=float(np.mean(n_steps)),
+            frac_max_tree_depth=float(np.mean(n_steps >= 2**config.max_num_doublings - 1)),
+            bulk_ess=_finite_or_none(m["bulk_ess"]),
+            min_bulk_ess=_finite_or_none(m["min_bulk_ess"]),
+            tail_ess=_finite_or_none(m["tail_ess"]),
+            min_tail_ess=min_tail_ess,
+            ess_per_grad=_finite_or_none(m["ess_per_grad"]),
+            tail_ess_per_grad=_finite_or_none(m["tail_ess_per_grad"]),
+            min_tail_ess_per_grad=None if min_tail_ess is None else min_tail_ess / grads,
+            max_rhat=max_rhat,
+            converged=max_rhat is not None and max_rhat <= RHAT_CONVERGED,
+            divergences=int(res.divergences),
+            **{key: (int(v) if key.endswith("n_degenerate") else _finite_or_none(v)) for key, v in agreement.items()},
+            n_nonfinite_draws=int(np.sum(~np.all(np.isfinite(constrained), axis=-1))),
+            tail_alignment_warning=alignment.warn,
+            tail_alignment_max_chi=_finite_or_none(alignment.max_chi),
+            tail_alignment_n_heavy=len(alignment.heavy_coordinates),
+            tukey_h_n_positive=int(np.sum(h > 0.0)) if arm_spec.transform_kind == "tukey_h" else None,
+            tukey_h_max=float(np.max(h)) if arm_spec.transform_kind == "tukey_h" and h.size else None,
+            step_size_median=float(np.median(res.step_size)),
+            wall_time_sec=float(wall),
+        )
+    except Exception as exc:
+        row.update(converged=False, wall_time_sec=float(time.perf_counter() - t0), error=f"{type(exc).__name__}: {exc}")
+    return row
+
+
+def aggregate_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per (posterior, arm): medians and IQRs over seeds, paired per-seed ratios to each `RATIO_BASELINES` arm."""
+    posteriors = list(dict.fromkeys(r["posterior"] for r in rows))
+    arm_rank = {a: i for i, a in enumerate(ARMS)}
+    order = sorted(
+        {(r["posterior"], r["arm"]) for r in rows},
+        key=lambda k: (posteriors.index(k[0]), arm_rank.get(k[1], len(arm_rank)), k[1]),
+    )
+    out: list[dict[str, Any]] = []
+    for posterior, arm in order:
+        mine = [r for r in rows if r["posterior"] == posterior and r["arm"] == arm]
+        converged = [r["max_rhat"] is not None and r["max_rhat"] <= RHAT_CONVERGED for r in mine]
+        entry: dict[str, Any] = {
+            "posterior": posterior,
+            "arm": arm,
+            "n_seeds": len(mine),
+            "n_errors": sum(r["error"] is not None for r in mine),
+            "frac_converged": sum(converged) / len(mine),
+            "metrics": {m: _iqr_summary([r[m] for r in mine if r[m] is not None]) for m in AGG_METRICS},
+        }
+        for baseline in RATIO_BASELINES:
+            if arm == baseline:
+                continue
+            base = {r["seed"]: r for r in rows if r["posterior"] == posterior and r["arm"] == baseline}
+            if not base:
+                continue
+            entry[f"ratio_vs_{baseline}"] = {
+                m: _iqr_summary(
+                    [
+                        r[m] / base[r["seed"]][m]
+                        for r in mine
+                        if r["seed"] in base and r[m] is not None and base[r["seed"]][m] not in (None, 0.0)
+                    ]
+                )
+                for m in RATIO_METRICS
+            }
+        out.append(entry)
+    return out
+
+
+NOTES: tuple[str, ...] = (
+    "Every arm runs sample_blackjax_unified_nuts on Stan's unconstrained space via BridgeStan (propto, Jacobian).",
+    "ESS, R-hat and reference agreement are computed on the constrained parameters that have reference draws.",
+    "min_* ESS is the worst reference parameter; converged means max rank-normalised R-hat <= 1.01.",
+    (
+        "ref_*: agreement with posteriordb's reference draws; tail probabilities at the reference's 1/5/95/99% "
+        "quantiles and means, z = (run - reference) / sqrt(MCSE_run^2 + MCSE_ref^2), averaged (abs) or maximal."
+    ),
+    "tail_alignment_* is the library's tail-alignment check on the sampled (unconstrained) draws.",
+    "tukey_h_n_positive counts unconstrained coordinates whose calibrated h is positive (the guard rejected h = 0).",
+    "Ratios are paired by seed (same initial positions and JAX key) and summarised by median and IQR.",
+    (
+        "wall_time_sec includes JAX compilation and the host callbacks; vectorised chains also evaluate the model for "
+        "chains whose trajectory has ended. Do not quote it as an efficiency measure."
+    ),
+)
+
+
+_WORKER_DB: PosteriorDatabase | None = None
+_WORKER_CACHE: dict[str, LoadedPosterior] = {}
+
+
+def _default_loader(path: str) -> Callable[[str], LoadedPosterior]:
+    def load(name: str) -> LoadedPosterior:
+        global _WORKER_DB
+        if name not in _WORKER_CACHE:
+            if _WORKER_DB is None:
+                _WORKER_DB = PosteriorDatabase(path)
+            _WORKER_CACHE[name] = load_posterior(_WORKER_DB, name)
+        return _WORKER_CACHE[name]
+
+    return load
+
+
+def _run_cell(args: tuple[str, str, int, PosteriorDBConfig]) -> dict[str, Any]:
+    name, arm, seed, config = args
+    try:
+        post = _default_loader(config.posteriordb_path)(name)
+    except Exception as exc:
+        row: dict[str, Any] = dict.fromkeys(ROW_FIELDS)
+        row.update(posterior=name, arm=arm, seed=seed, converged=False, error=f"load: {type(exc).__name__}: {exc}")
+        return row
+    return run_single(post, arm, seed, config)
+
+
+def _config_record(config: PosteriorDBConfig, posteriors: Sequence[str]) -> dict[str, Any]:
+    rec = asdict(config)
+    rec.update(
+        posteriors=list(posteriors),
+        arms=list(config.arms),
+        seeds=list(config.seeds),
+        arm_settings={a: asdict(ARMS[a]) for a in config.arms},
+        reference_probs=list(REFERENCE_PROBS),
+        rhat_converged=RHAT_CONVERGED,
+        init=(
+            f"Uniform(-{INIT_HALF_WIDTH}, {INIT_HALF_WIDTH})^d per chain from numpy default_rng(seed), redrawn "
+            f"up to {MAX_INIT_ATTEMPTS} times until the log density is finite; shared by all arms"
+        ),
+    )
+    rec.pop("posteriordb_path")
+    return rec
+
+
+def run_benchmark(
+    config: PosteriorDBConfig,
+    loader: Callable[[str], LoadedPosterior] | None = None,
+    posteriordb_sha: str | None = None,
+    log: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Runs the grid, writes JSON and CSV to `config.output_dir` and returns the JSON document.
+
+    `loader` maps a posterior name to a `LoadedPosterior` (default: BridgeStan on the posteriordb checkout
+    at `config.posteriordb_path`, which also supplies `posteriordb_sha` and the default posterior list).
+    A custom loader runs in this process (`workers` is then ignored).
+    """
+    config.validate()
+    provenance = collect_provenance()
+    provenance["versions"]["bridgestan"] = _version("bridgestan")
+    if loader is None:
+        db = PosteriorDatabase(config.posteriordb_path)
+        posteriordb_sha = db.git_sha()
+        names = list(config.posteriors) if config.posteriors is not None else db.reference_posterior_names()
+    else:
+        if config.posteriors is None:
+            raise ValueError("A custom loader needs config.posteriors")
+        names = list(config.posteriors)
+    provenance["posteriordb_sha"] = posteriordb_sha
+    started = datetime.now(UTC)
+    t0 = time.perf_counter()
+
+    cells = [(n, a, s, config) for n in names for a in config.arms for s in config.seeds]
+    rows: list[dict[str, Any]] = []
+
+    def record(row: dict[str, Any]) -> None:
+        rows.append(row)
+        if log is not None:
+            status = row["error"] or " ".join(
+                f"{label}={row[key]:{spec}}" if row[key] is not None else f"{label}=null"
+                for label, key, spec in (
+                    ("min-tail-ESS/grad", "min_tail_ess_per_grad", ".3g"),
+                    ("grads", "total_grad_evals", "d"),
+                    ("rhat", "max_rhat", ".3f"),
+                    ("div", "divergences", "d"),
+                    ("ref|z|max", "ref_tail_prob_max_abs_z", ".2f"),
+                    ("t", "wall_time_sec", ".1f"),
+                )
+            )
+            log(f"[{len(rows)}/{len(cells)}] {row['posterior']:<44} {row['arm']:<8} seed={row['seed']:<3} {status}")
+
+    if loader is not None:
+        for name, arm, seed, _ in cells:
+            record(run_single(loader(name), arm, seed, config))
+    elif config.workers == 1:
+        for cell in cells:
+            record(_run_cell(cell))
+    else:
+        ctx = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=config.workers, mp_context=ctx) as pool:
+            futures = [pool.submit(_run_cell, cell) for cell in cells]
+            for future in as_completed(futures):
+                record(future.result())
+
+    position = {(n, a, s): i for i, (n, a, s, _) in enumerate(cells)}
+    rows.sort(key=lambda r: position[(r["posterior"], r["arm"], r["seed"])])
+    provenance["timestamp_utc"] = started.isoformat()
+    provenance["total_wall_time_sec"] = time.perf_counter() - t0
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "benchmark": "posteriordb",
+        "provenance": provenance,
+        "config": _config_record(config, names),
+        "notes": list(NOTES),
+        "rows": rows,
+        "aggregates": aggregate_rows(rows),
+    }
+
+    out = Path(config.output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "posteriordb_results.json").write_text(json.dumps(result, indent=2) + "\n")
+    with (out / "posteriordb_results.csv").open("w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(ROW_FIELDS))
+        writer.writeheader()
+        writer.writerows(rows)
+    return result
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0] if __doc__ else None)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--full", action="store_true", help="reported protocol (default)")
+    mode.add_argument("--quick", action="store_true", help="smoke-test sizes")
+    parser.add_argument(
+        "--fetch", action="store_true", help=f"check out posteriordb at {POSTERIORDB_SHA[:12]} and exit"
+    )
+    parser.add_argument("--seeds", type=int, nargs="+")
+    parser.add_argument("--posteriors", nargs="+")
+    parser.add_argument("--arms", nargs="+")
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--posteriordb", default=str(DEFAULT_POSTERIORDB_PATH), help="posteriordb checkout")
+    parser.add_argument("--output-dir", default="reports")
+    return parser
+
+
+def config_from_args(args: argparse.Namespace) -> PosteriorDBConfig:
+    overrides: dict[str, Any] = {
+        "output_dir": args.output_dir,
+        "workers": args.workers,
+        "posteriordb_path": args.posteriordb,
+    }
+    if args.seeds:
+        overrides["seeds"] = tuple(args.seeds)
+    if args.posteriors:
+        overrides["posteriors"] = tuple(args.posteriors)
+    if args.arms:
+        overrides["arms"] = tuple(args.arms)
+    return PosteriorDBConfig.quick(**overrides) if args.quick else PosteriorDBConfig.full(**overrides)
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
+    if args.fetch:
+        print(f"posteriordb at {fetch_posteriordb(args.posteriordb)}")
+        return
+    config = config_from_args(args)
+    result = run_benchmark(config, log=lambda line: print(line, flush=True))
+    errors = sum(r["error"] is not None for r in result["rows"])
+    print(f"{len(result['rows'])} runs, {errors} errors -> {config.output_dir}/posteriordb_results.json")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

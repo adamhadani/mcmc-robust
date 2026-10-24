@@ -8,7 +8,7 @@
 ## 1. Environment & Architecture Invariants
 
 - **Python Version**: Requires Python `>= 3.13`. Fully tested and supported on Python 3.13, 3.14, and 3.15.
-- **Package Manager**: Use `uv` exclusively (`uv sync`, `uv run`). The optional `competitors` extra (nutpie, flowjax) is needed only for `bench/competitor_runner.py`; its tests skip without it. On Python 3.15 nutpie builds from source, which needs Rust.
+- **Package Manager**: Use `uv` exclusively (`uv sync`, `uv run`). The optional `competitors` extra (nutpie, flowjax) is needed only for `bench/competitor_runner.py`; its tests skip without it. On Python 3.15 nutpie builds from source, which needs Rust. The optional `posteriordb` extra (BridgeStan) is needed only for `bench/posteriordb_runner.py`; BridgeStan compiles Stan models with `make` and a C++ toolchain, and downloads the Stan sources to `~/.bridgestan` on first use.
 - **JAX 64-bit Precision**: When JAX is imported, 64-bit float precision must be activated before importing `jax.numpy`:
   ```python
   import jax
@@ -41,7 +41,8 @@
 │   ├── diagnostics/           # Rank-normalised ESS and R-hat, accuracy metrics (KS, W1, quantile error), tracker
 │   ├── integrations.py        # PyMC bridge (PyMCModelTarget, sample_pymc_model) and JaxArcsinhTransform
 │   ├── jax_unified_nuts.py    # Pure-JAX 3-phase NUTS (sample_blackjax_unified_nuts, calibrate_jax_arcsinh_transform)
-│   └── bench/                 # Runners (ablation_runner, competitor_runner, sota_runner, applied_runner, sweep), CLI (python -m mcmc_robust.bench), plots,
+│   ├── stan_bridge.py         # Stan models (BridgeStan) as JAX log densities: bridgestan_logdensity_fn
+│   └── bench/                 # Runners (ablation_runner, competitor_runner, posteriordb_runner, sota_runner, applied_runner, sweep), CLI (python -m mcmc_robust.bench), plots,
 │                              #   render_docs (fills the generated blocks of README.md and REPORT.md from reports/)
 ├── tests/                     # unit/, e2e/ (tiers 1-4) and tier5_adversarial/, all run with -W error
 ├── benchmarks/                # Standalone CLI runner script (run_benchmarks.py)
@@ -94,6 +95,8 @@ uv run pre-commit run --all-files
 ```bash
 uv run python -m mcmc_robust.bench.ablation_runner --full --workers 2  # Table A -> reports/ablation_results.json, ablation_*.csv
 uv sync --extra competitors && uv run python -m mcmc_robust.bench.competitor_runner  # Table B -> reports/competitor_results.{json,csv}
+uv sync --extra posteriordb && uv run python -m mcmc_robust.bench.posteriordb_runner --fetch  # posteriordb checkout
+uv run python -m mcmc_robust.bench.posteriordb_runner --full --workers 6  # Table C -> reports/posteriordb_results.{json,csv}
 uv run python -m mcmc_robust.bench.sota_runner --full   # Tables 1-4 -> reports/sota_comparison_results.{json,csv}
 uv run python -m mcmc_robust.bench.applied_runner       # Table 5   -> reports/applied_benchmark_results.{json,csv}
 uv run python -m mcmc_robust.bench.plot                 # figures   -> reports/figures/

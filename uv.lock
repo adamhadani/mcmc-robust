@@ -227,6 +227,19 @@ wheels = [
 ]
 
 [[package]]
+name = "bridgestan"
+version = "2.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dllist" },
+    { name = "numpy" },
+    { name = "stanio" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/75/1b/40970acd6b7c119893cafc58a2d2b59e5ea97ea06112b923792dd74cb8c7/bridgestan-2.9.0-py3-none-any.whl", hash = "sha256:6859dc63f863d781df1fd9f6a7272fdc831e819e608f90247cc6cc2396977394", size = 12448, upload-time = "2026-07-06T15:28:09.612Z" },
+]
+
+[[package]]
 name = "cachetools"
 version = "6.2.6"
 source = { registry = "https://pypi.org/simple" }
@@ -452,6 +465,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/68/bc/d36966de7304047a1001a7559fbf266c464bb5d8cc85464536ef8c9bcc32/distlib-0.4.4.tar.gz", hash = "sha256:ca4175b4ac7f71223cc30ed7248c45d2b38c2439d8ee6e498ab67ed63cf3508d", size = 621304, upload-time = "2026-10-16T13:56:34.203Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/2b/238f02a4927fa2e27aa995371d240a468b52e42eae44a678434aff736b38/distlib-0.4.4-py2.py3-none-any.whl", hash = "sha256:cf09d55b1e85a89576b036aeb71550bfd68320f3f21761ca329eadadad918638", size = 472099, upload-time = "2026-10-16T13:56:32.053Z" },
+]
+
+[[package]]
+name = "dllist"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b2/ce/dda13123329d55555de67b414206f14f4f80b96cb273ec59d76d5ce6b5c3/dllist-2.0.0.tar.gz", hash = "sha256:7413ba963aaa1b2b6827eadd7908e40e635b19108ab431667485eaf75c492bf4", size = 5369, upload-time = "2025-02-10T15:41:07.637Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7b/07/a212ca4cfe56fa35c8315307e37df218e5946c726a792b5c7a795b245c10/dllist-2.0.0-py3-none-any.whl", hash = "sha256:cd307b1a91bc46fae084f8c817d79be7e34951b149a2fd69004772e03573bfb3", size = 5721, upload-time = "2025-02-10T15:41:06.045Z" },
 ]
 
 [[package]]
@@ -1011,6 +1033,9 @@ dev = [
     { name = "pytest-impacted", extra = ["fast"] },
     { name = "ruff" },
 ]
+posteriordb = [
+    { name = "bridgestan" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1026,6 +1051,7 @@ dev = [
 requires-dist = [
     { name = "arviz", specifier = ">=1.3.0" },
     { name = "blackjax", specifier = ">=1.7.1" },
+    { name = "bridgestan", marker = "extra == 'posteriordb'", specifier = ">=2.9.0,<3" },
     { name = "coverage", marker = "extra == 'dev'", specifier = ">=7.8.0" },
     { name = "equinox", marker = "extra == 'competitors'", specifier = ">=0.11.12" },
     { name = "flowjax", marker = "extra == 'competitors'", specifier = ">=17.1.0" },
@@ -1043,7 +1069,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11.9" },
     { name = "scipy", specifier = ">=1.14.0" },
 ]
-provides-extras = ["competitors", "dev"]
+provides-extras = ["competitors", "posteriordb", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1992,6 +2018,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1f/ea/49c993d6dfdd7338c9b1000a0f36817ed7ec84577ae2e52f890d1a4ff909/smmap-5.0.3.tar.gz", hash = "sha256:4d9debb8b99007ae47165abc08670bd74cb74b5227dda7f643eccc4e9eb5642c", size = 22506, upload-time = "2026-03-09T03:43:26.1Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/d4/59e74daffcb57a07668852eeeb6035af9f32cbfd7a1d2511f17d2fe6a738/smmap-5.0.3-py3-none-any.whl", hash = "sha256:c106e05d5a61449cf6ba9a1e650227ecfb141590d2a98412103ff35d89fc7b2f", size = 24390, upload-time = "2026-03-09T03:43:24.361Z" },
+]
+
+[[package]]
+name = "stanio"
+version = "0.5.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2c/5b/6e376499c3f9d71e4154b031d059663598534dd038f421e8c643d61afec5/stanio-0.5.1.tar.gz", hash = "sha256:348d52f947dec431e118f4b601c4c5296929b86401d4d4dd5aa9373b0d4ae4ac", size = 11983, upload-time = "2024-07-08T19:35:48.029Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/56/87/37a80e4d5bd453c33262d8fb618b6840fd98d24ed08e046a4a9b10177fa3/stanio-0.5.1-py3-none-any.whl", hash = "sha256:99ad590daa5834681245c2b651716ec2e06223853661ada21430c621521c849f", size = 8065, upload-time = "2024-07-08T19:35:46.503Z" },
 ]
 
 [[package]]
