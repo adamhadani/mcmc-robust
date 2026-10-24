@@ -107,7 +107,11 @@ def _synthetic_ablation(tmp_path: Path) -> render_docs.Reports:
         ("gauss_x", "stock"): [1.0, 1.0, 1.0],
         ("gauss_x", "arcsinh"): [0.8, 0.9, 0.7],
         ("gauss_x", "affine"): [1.0, 1.0, 1.0],
+        ("heavy", "tukey_h"): [8.0, 4.0, 1.0],
+        ("gauss_x", "tukey_h"): [1.0, 1.0, 1.0],
     }
+    # The tail-alignment warning fired on these runs only.
+    warned = {("heavy", "arcsinh"): [True, True, False], ("heavy", "stock"): [True, False, False]}
     divs = {("gauss_x", "arcsinh"): [0, 2, 0]}
     # Cells (coordinate, p) where the chain never drew beyond the exact quantile, per seed.
     unvisited = {("heavy", "arcsinh"): [0, 0, 3], ("heavy", "stock"): [0, 0, 0]}
@@ -123,6 +127,7 @@ def _synthetic_ablation(tmp_path: Path) -> render_docs.Reports:
             "total_grad_evals": 1000,
             "tail_prob_abs_err": 0.002,
             "tail_prob_n_degenerate": unvisited.get((t, a), [0, 0, 0])[s],
+            "tail_alignment_warning": warned.get((t, a), [False, False, False])[s],
         }
         for (t, a), vals in tpg.items()
         for s, v in enumerate(vals)
@@ -208,3 +213,17 @@ def test_competitor_table_lists_excluded_arms(tmp_path: Path) -> None:
     text = render_docs.render_competitor_table(_synthetic_competitors(tmp_path))
     assert "not run: no official code found" in text
     assert "| axis | `arcsinh_nuts` | 6.00× [4.50, 6.00] |" in text
+
+
+def test_ablation_findings_compare_tukey_h_with_arcsinh_and_stock(tmp_path: Path) -> None:
+    text = render_docs.render_ablation_findings(_synthetic_ablation(tmp_path))
+    assert "heavy 2.0× (better than arcsinh on 3 of 3 seeds)" in text  # tukey_h / arcsinh = 2, 2, 2
+    assert "gauss_x 1.0× (wins on 0 of 3 seeds)" in text  # tukey_h / stock on the Gaussian
+
+
+def test_ablation_findings_report_tail_alignment_warnings(tmp_path: Path) -> None:
+    text = render_docs.render_ablation_findings(_synthetic_ablation(tmp_path))
+    assert "**Tail-alignment warning**" in text
+    assert "with `arcsinh`: heavy: 2 of 3 seeds" in text
+    # One run never visits a tail (heavy, arcsinh, seed 2), and the warning did not fire on it.
+    assert "fired on 0 of 1" in text
