@@ -36,7 +36,7 @@ jobs:
         enable-cache: true
 
     - name: Install the project
-      run: uv sync --all-extras --dev
+      run: uv sync --dev --extra dev
     - name: Cache pre-commit hook environments
       uses: actions/cache@v4
       with:
@@ -79,7 +79,8 @@ jobs:
         version: "latest"
         enable-cache: true
     - name: Install the project
-      run: uv sync --all-extras --dev
+      # nutpie (the competitors extra) has wheels for CPython 3.12-3.14 only; on 3.15 its tests skip.
+      run: uv sync --dev --extra dev ${{ matrix.python-version != '3.15' && '--extra competitors' || '' }}
     - name: Run tests
       env:
         EVENT_NAME: ${{ github.event_name }}

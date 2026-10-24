@@ -198,6 +198,10 @@ class Reports:
     def ablation(self) -> dict[str, Any]:
         return self._load("ablation_results.json")
 
+    @cached_property
+    def competitors(self) -> dict[str, Any]:
+        return self._load("competitor_results.json")
+
     def sota_rows(self, task_prefix: str, target_name: str | None = None) -> list[dict[str, Any]]:
         return [
             r
@@ -768,7 +772,146 @@ def render_ablation_findings(reports: Reports) -> str:
     return "\n".join(bullets) + "\n"
 
 
+# --- direct competitors (reports/competitor_results.json) --------------------------------------
+
+_COMPETITOR_TARGETS: dict[str, str] = {
+    "task1": "Task 1",
+    "task3": "Task 3",
+    "corr_t1": "rotated t (ν = 1)",
+    "corr_gauss": "rotated Gaussian",
+}
+
+
+def _competitor_runs(reports: Reports, target: str, arm: str) -> dict[int, dict[str, Any]]:
+    return {
+        r["seed"]: r
+        for r in reports.competitors["rows"]
+        if r["target"] == target and r["arm"] == arm and r.get("status", "ok") == "ok"
+    }
+
+
+def _competitor_ratios(reports: Reports, target: str, arm: str, reference: str, metric: str) -> list[float]:
+    a, b = _competitor_runs(reports, target, arm), _competitor_runs(reports, target, reference)
+    return [
+        a[s][metric] / b[s][metric] for s in sorted(a.keys() & b.keys()) if a[s][metric] is not None and b[s][metric]
+    ]
+
+
+def _competitor_targets(reports: Reports) -> list[str]:
+    return list(dict.fromkeys(r["target"] for r in reports.competitors["rows"]))
+
+
+def render_competitor_table(reports: Reports) -> str:
+    data = reports.competitors
+    ref = data["reference_arm"]
+    cfg = data["config"]
+    body = []
+    for target in _competitor_targets(reports):
+        for arm in data["arms"]:
+            runs = list(_competitor_runs(reports, target, arm).values())
+            if not runs:
+                continue
+            if arm == ref:
+                grad_cell, sec_cell = "1 (reference)", "1"
+            else:
+                q25, med, q75 = np.percentile(
+                    _competitor_ratios(reports, target, arm, ref, "tail_ess_per_grad"), [25, 50, 75]
+                )
+                grad_cell = f"{med:.2f}× [{q25:.2f}, {q75:.2f}]"
+                sec_cell = f"{float(np.median(_competitor_ratios(reports, target, arm, ref, 'tail_ess_per_sec'))):.2f}×"
+            errs = [r["tail_prob_abs_err_p99"] for r in runs if r.get("tail_prob_abs_err_p99") is not None]
+            mcse = [r["tail_prob_mcse_p99"] for r in runs if r.get("tail_prob_mcse_p99") is not None]
+            rhats = [r["split_rhat"] for r in runs if r.get("split_rhat") is not None]
+            body.append(
+                [
+                    _COMPETITOR_TARGETS.get(target, target),
+                    f"`{arm}`",
+                    grad_cell,
+                    sec_cell,
+                    f"{sum(bool(r['converged']) for r in runs)} of {len(runs)}",
+                    _rhat(max(rhats)) if rhats else "n/a",
+                    _int(sum(r["divergences"] or 0 for r in runs)),
+                    f"{float(np.median(errs)):.4f} ({float(np.median(mcse)):.4f})" if errs and mcse else "n/a",
+                ]
+            )
+    header = [
+        "Target",
+        "Arm",
+        "Tail-ESS/grad vs stock, median [IQR]",
+        "Tail-ESS/s vs stock, median",
+        "Seeds converged",
+        "Max R-hat",
+        "Divergences, all seeds",
+        "Tail-probability error at 0.99, median (MCSE)",
+    ]
+    arms = "; ".join(f"`{a}`: {spec['description']}" for a, spec in data["arms"].items())
+    excluded = "; ".join(f"`{name}` ({spec['status']})" for name, spec in data.get("excluded_arms", {}).items())
+    setup = (
+        f"{len(cfg['seeds'])} seeds; each run has {cfg['chains']} chains × {cfg['draws']:,} draws. Ratios are paired by "
+        "seed against stock BlackJAX NUTS; gradient counts include warm-up, and nutpie's flow training reuses "
+        "warm-up gradients, so it adds wall time but no gradient evaluations. Wall-time ratios favour the "
+        "jit-compiled BlackJAX arms over nutpie's Python callbacks. Source: `reports/competitor_results.json`."
+    )
+    parts = [setup, "Arms: " + arms + "."]
+    if excluded:
+        parts.append("Excluded: " + excluded + ".")
+    return "\n\n".join(parts) + "\n\n" + _table(header, body, numeric_from=2)
+
+
+def render_competitor_findings(reports: Reports) -> str:
+    arms = reports.competitors["arms"]
+
+    def vs(arm: str) -> str:
+        parts = []
+        for t in _competitor_targets(reports):
+            ratios = _competitor_ratios(reports, t, "arcsinh_nuts", arm, "tail_ess_per_grad")
+            if ratios:
+                wins = sum(r > 1.0 for r in ratios)
+                parts.append(
+                    f"{_COMPETITOR_TARGETS.get(t, t)} {float(np.median(ratios)):.1f}× "
+                    f"(better on {wins} of {len(ratios)} seeds)"
+                )
+        return "; ".join(parts)
+
+    def converged(arm: str) -> str:
+        return "; ".join(
+            f"{_COMPETITOR_TARGETS.get(t, t)}: {sum(bool(r['converged']) for r in runs.values())} of {len(runs)}"
+            for t in _competitor_targets(reports)
+            if (runs := _competitor_runs(reports, t, arm))
+        )
+
+    bullets = []
+    if "nutpie_diag" in arms:
+        bullets.append(
+            "- **Arcsinh vs nutpie's default** (gradient-based mass matrix), tail-ESS per gradient: "
+            + vs("nutpie_diag")
+            + "."
+        )
+    if "nutpie_flow" in arms:
+        bullets.append(
+            "- **Arcsinh vs nutpie's normalizing-flow adaptation** (same warm-up length), tail-ESS per gradient: "
+            + vs("nutpie_flow")
+            + "."
+        )
+    if "nutpie_flow_tune1500" in arms:
+        bullets.append(
+            "- **Arcsinh vs the flow with nutpie's own default warm-up** (1,500 draws, all counted): "
+            + vs("nutpie_flow_tune1500")
+            + "."
+        )
+    bullets.append(
+        f"- **Seeds converged** (max R-hat at most {RHAT_CONVERGED}): `arcsinh_nuts` "
+        + converged("arcsinh_nuts")
+        + ("; `nutpie_flow` " + converged("nutpie_flow") if "nutpie_flow" in arms else "")
+        + "."
+    )
+    return "\n".join(bullets) + "\n"
+
+
 BLOCKS: dict[str, Callable[[Reports], str]] = {
+    "readme-competitors": render_competitor_findings,
+    "competitor-findings": render_competitor_findings,
+    "competitor-table": render_competitor_table,
     "readme-ablation": render_ablation_findings,
     "ablation-findings": render_ablation_findings,
     "ablation-table": render_ablation_table,

@@ -145,6 +145,6 @@ markers = [
 impacted_module = "src/mcmc_robust"
 impacted_tests_dir = "tests"
 # Files that tests read as data, which import analysis cannot see: the generated reports (test_bench.py,
-# test_ablation_runner.py, test_docs_consistency.py), the docs and the Lean file (rendered and checked by
+# test_ablation_runner.py, test_competitor_runner.py, test_docs_consistency.py), the docs and the Lean file (rendered and checked by
 # test_docs_consistency.py, test_readme_snippets.py) and example.py (imported by test_example.py).
-impacted_invalidate_all = ["reports/*.json", "reports/ablation_*.csv", "README.md", "REPORT.md", "formal/*.lean", "example.py"]
+impacted_invalidate_all = ["reports/*.json", "reports/*.csv", "README.md", "REPORT.md", "formal/*.lean", "example.py"]
