@@ -136,13 +136,13 @@ def main() -> None:
 
     key = jax.random.PRNGKey(seed)
     t0 = time.perf_counter()
-    # Execute across 2 chains
+    # Execute across 2 chains with matched target_accept=0.80
     k1, k2 = jax.random.split(key)
     z1, info1 = transform.scan_nuts(
-        k1, raw_logp, jnp.zeros(target.d), num_samples=n_samples, num_warmup=n_warmup, target_accept=0.90
+        k1, raw_logp, jnp.zeros(target.d), num_samples=n_samples, num_warmup=n_warmup, target_accept=0.80
     )
     z2, info2 = transform.scan_nuts(
-        k2, raw_logp, jnp.zeros(target.d), num_samples=n_samples, num_warmup=n_warmup, target_accept=0.90
+        k2, raw_logp, jnp.zeros(target.d), num_samples=n_samples, num_warmup=n_warmup, target_accept=0.80
     )
     w_jax = time.perf_counter() - t0
     samples_jax = np.stack([np.asarray(z1), np.asarray(z2)], axis=0)
@@ -167,6 +167,7 @@ def main() -> None:
             "time_s": m_jax["wall_clock_time"],
             "ess_per_sec": m_jax["bulk_ess"] / max(0.001, m_jax["wall_clock_time"]),
             "divergences": int(m_jax["divergences"]),
+            "p_neck": float(np.mean(samples_jax[:, :, 1] < -1.0)),
         }
     )
 
@@ -182,7 +183,7 @@ def main() -> None:
         n_samples=n_samples,
         n_warmup=n_warmup,
         seed=seed,
-        sampler_kwargs={"step_size": 0.15, "gamma": 0.2, "radius": 3.0, "max_depth": 8, "adapt_tail_scale": False},
+        sampler_kwargs={"step_size": 0.15, "gamma": 0.2, "max_depth": 10, "adapt_tail_scale": True},
     )
     w_rob = time.perf_counter() - t0
     m_rob = evaluate_chains_with_arviz(
@@ -203,29 +204,34 @@ def main() -> None:
             "time_s": m_rob["wall_clock_time"],
             "ess_per_sec": m_rob["bulk_ess"] / max(0.001, m_rob["wall_clock_time"]),
             "divergences": int(m_rob["divergences"]),
+            "p_neck": float(np.mean(samples_rob[:, :, 1] < -1.0)),
         }
     )
+
+    # Add neck probability to baseline records
+    records[0]["p_neck"] = float(np.mean(samples_bj[:, :, 1] < -1.0))
+    records[1]["p_neck"] = float(np.mean(samples_pm[:, :, 1] < -1.0))
 
     # -------------------------------------------------------------------------
     # Pretty-Print Comparison Table
     # -------------------------------------------------------------------------
-    print("\n" + "=" * 94)
-    print("HEAD-TO-HEAD MCMC ROBUSTNESS COMPARISON TABLE")
-    print("=" * 94)
+    print("\n" + "=" * 108)
+    print("HEAD-TO-HEAD MCMC ROBUSTNESS COMPARISON TABLE (Post-Warmup Divergences & Funnel Neck)")
+    print("=" * 108)
     header = (
         f"{'Sampler':<28} | {'Total Grads':>11} | {'ESS/grad':>9} | "
-        f"{'Tail-ESS/grad':>13} | {'Time (s)':>8} | {'ESS/sec':>9} | {'Divergences':>11}"
+        f"{'Tail-ESS/grad':>13} | {'Time (s)':>8} | {'Post-Warm Divs':>14} | {'P(log tau<-1)':>13}"
     )
     print(header)
-    print("-" * 94)
+    print("-" * 108)
     for r in records:
         line = (
             f"{r['sampler']:<28} | {r['grads']:>11,d} | {r['ess_per_grad']:>9.5f} | "
-            f"{r['tail_ess_per_grad']:>13.5f} | {r['time_s']:>8.2f} | {r['ess_per_sec']:>9.1f} | "
-            f"{r['divergences']:>11,d}"
+            f"{r['tail_ess_per_grad']:>13.5f} | {r['time_s']:>8.2f} | {r['divergences']:>14,d} | "
+            f"{r['p_neck']:>13.3f}"
         )
         print(line)
-    print("=" * 94)
+    print("=" * 108)
 
     # -------------------------------------------------------------------------
     # Key Takeaways

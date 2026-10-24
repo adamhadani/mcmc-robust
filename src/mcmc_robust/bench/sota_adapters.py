@@ -96,6 +96,33 @@ class EightSchoolsTarget(TargetDistribution):
         self.mu_prior_sigma = float(mu_prior_sigma)
         self.tau_prior_scale = float(tau_prior_scale)
 
+        # Precompute exact 1D marginal posterior p(eta | y) via Gelman et al. (BDA3 Sec 5.5)
+        # analytical marginalization of (mu, theta) | eta, y.
+        self._eta_grid = np.linspace(-8.0, 5.0, 5001)
+        tau_sq_grid = np.exp(2.0 * self._eta_grid)  # (G,)
+        # v_j(eta) = sigma_j^2 + tau^2, shape (G, 8)
+        v_grid = (self.sigma[None, :] ** 2) + tau_sq_grid[:, None]
+        inv_v = 1.0 / v_grid
+        prec_mu = (1.0 / (self.mu_prior_sigma**2)) + np.sum(inv_v, axis=1)
+        var_mu = 1.0 / prec_mu
+        mu_hat = var_mu * np.sum(inv_v * self.y[None, :], axis=1)
+
+        lp_eta_prior = (
+            np.log(2.0 / (self.tau_prior_scale * np.pi))
+            + self._eta_grid
+            - np.log1p(tau_sq_grid / (self.tau_prior_scale**2))
+        )
+        quad_terms = np.sum(((self.y[None, :] - mu_hat[:, None]) ** 2) * inv_v, axis=1) + (mu_hat**2) / (
+            self.mu_prior_sigma**2
+        )
+        lp_eta_post = lp_eta_prior + 0.5 * np.log(var_mu) - 0.5 * np.sum(np.log(v_grid), axis=1) - 0.5 * quad_terms
+        lp_eta_post -= np.max(lp_eta_post)
+        pdf_eta = np.exp(lp_eta_post)
+        cdf_eta = np.cumsum(0.5 * (pdf_eta[:-1] + pdf_eta[1:]) * np.diff(self._eta_grid))
+        self._eta_cdf = np.concatenate([[0.0], cdf_eta / cdf_eta[-1]])
+        self._prob_eta_lt_neg1 = float(np.interp(-1.0, self._eta_grid, self._eta_cdf))
+        self._q05_eta = float(np.interp(0.05, self._eta_cdf, self._eta_grid))
+
     def log_prob(self, x: np.ndarray) -> float:
         x_arr = np.asarray(x, dtype=np.float64)
         if not np.all(np.isfinite(x_arr)):
@@ -158,26 +185,46 @@ class EightSchoolsTarget(TargetDistribution):
         return grad
 
     def sample_ground_truth(self, n: int, rng: np.random.Generator | None = None) -> np.ndarray:
-        """Draws reference prior predictive samples."""
+        """Draws exact independent posterior samples (mu, eta, theta_0..7) | y via BDA3 analytical factorization."""
         if rng is None:
             rng = np.random.default_rng(42)
         samples = np.empty((n, self.d), dtype=np.float64)
-        mu = rng.normal(0.0, self.mu_prior_sigma, size=n)
-        tau = np.abs(rng.standard_cauchy(size=n)) * self.tau_prior_scale
+        u = rng.uniform(0.0, 1.0, size=n)
+        eta = np.interp(u, self._eta_cdf, self._eta_grid)
+        tau_sq = np.exp(2.0 * eta)
+
+        v_mat = (self.sigma[None, :] ** 2) + tau_sq[:, None]
+        inv_v = 1.0 / v_mat
+        var_mu = 1.0 / ((1.0 / (self.mu_prior_sigma**2)) + np.sum(inv_v, axis=1))
+        mu_hat = var_mu * np.sum(inv_v * self.y[None, :], axis=1)
+        mu = rng.normal(loc=mu_hat, scale=np.sqrt(var_mu))
+
         samples[:, 0] = mu
-        samples[:, 1] = np.log(np.maximum(tau, 1e-10))
-        for i in range(n):
-            samples[i, 2:] = rng.normal(mu[i], tau[i], size=self.n_schools)
+        samples[:, 1] = eta
+
+        inv_sig_sq = 1.0 / (self.sigma[None, :] ** 2)
+        inv_tau_sq = 1.0 / tau_sq[:, None]
+        post_var_theta = 1.0 / (inv_sig_sq + inv_tau_sq)
+        post_mean_theta = post_var_theta * (self.y[None, :] * inv_sig_sq + mu[:, None] * inv_tau_sq)
+        samples[:, 2:] = rng.normal(loc=post_mean_theta, scale=np.sqrt(post_var_theta))
         return samples
 
     def exact_moments_or_quantiles(self) -> dict[str, Any]:
-        """Provides analytical reference summary."""
+        """Provides analytical posterior summary and quantiles."""
+        ref = self.sample_ground_truth(50000, rng=np.random.default_rng(12345))
         return {
             "n_schools": self.n_schools,
             "y": self.y,
             "sigma": self.sigma,
             "mu_prior_sigma": self.mu_prior_sigma,
             "tau_prior_scale": self.tau_prior_scale,
+            "prob_log_tau_lt_neg1": self._prob_eta_lt_neg1,
+            "q05_log_tau": self._q05_eta,
+            "mean": np.mean(ref, axis=0),
+            "q05": np.quantile(ref, 0.05, axis=0),
+            "q50": np.quantile(ref, 0.50, axis=0),
+            "q95": np.quantile(ref, 0.95, axis=0),
+            "q99": np.quantile(ref, 0.99, axis=0),
         }
 
 
@@ -214,7 +261,15 @@ class SparseSignalRegressionTarget(TargetDistribution):
         self.prior_scale = float(prior_scale)
 
         rng = np.random.default_rng(seed)
-        self.X = rng.normal(0.0, 1.0, size=(self.n_obs, self.d)).astype(np.float64)
+        raw_X = rng.normal(0.0, 1.0, size=(self.n_obs, self.d)).astype(np.float64)
+        # Orthonormalize active columns so X_act^T X_act = n_obs * I_{n_active},
+        # while inactive biomarker columns lie in the uninformative nullspace (X_inact = 0).
+        # This yields a genuine heavy-tailed posterior on inactive coordinates (exact Cauchy(0, prior_scale))
+        # and non-zero shifted posterior modes on active coordinates (~ beta_true), with exact 1D marginals.
+        self.X = np.zeros((self.n_obs, self.d), dtype=np.float64)
+        if self.n_active > 0:
+            q_mat, _ = np.linalg.qr(raw_X[:, : self.n_active])
+            self.X[:, : self.n_active] = q_mat * np.sqrt(float(self.n_obs))
 
         # True sparse signal
         self.beta_true = np.zeros(self.d, dtype=np.float64)
@@ -229,6 +284,23 @@ class SparseSignalRegressionTarget(TargetDistribution):
         self.XtX = self.X.T @ self.X
         self.Xty = self.X.T @ self.y
         self.inv_var = 1.0 / (self.noise_std**2)
+
+        # Precompute exact 1D marginal posterior grids for active coordinates
+        self._active_grids: list[np.ndarray] = []
+        self._active_cdfs: list[np.ndarray] = []
+        post_sigma = self.noise_std / np.sqrt(max(1.0, float(self.n_obs)))
+        for j in range(min(self.n_active, self.d)):
+            ols_j = float(self.Xty[j] / max(1.0, float(self.n_obs)))
+            grid = np.linspace(ols_j - 12.0 * post_sigma, ols_j + 12.0 * post_sigma, 4001)
+            lp_grid = -0.5 * (self.n_obs / (self.noise_std**2)) * ((grid - ols_j) ** 2) - np.log1p(
+                (grid / self.prior_scale) ** 2
+            )
+            lp_grid -= np.max(lp_grid)
+            pdf = np.exp(lp_grid)
+            cdf = np.cumsum(0.5 * (pdf[:-1] + pdf[1:]) * np.diff(grid))
+            cdf = np.concatenate([[0.0], cdf / cdf[-1]])
+            self._active_grids.append(grid)
+            self._active_cdfs.append(cdf)
 
     def log_prob(self, beta: np.ndarray) -> float:
         b = np.asarray(beta, dtype=np.float64)
@@ -267,14 +339,38 @@ class SparseSignalRegressionTarget(TargetDistribution):
         return grad_lik + grad_prior
 
     def sample_ground_truth(self, n: int, rng: np.random.Generator | None = None) -> np.ndarray:
-        return np.tile(self.beta_true, (n, 1))
+        """Draws exact independent samples from the posterior distribution pi(beta | X, y)."""
+        if rng is None:
+            rng = np.random.default_rng(42)
+        samples = np.empty((n, self.d), dtype=np.float64)
+        for j in range(self.d):
+            if j < len(self._active_grids):
+                u = rng.uniform(0.0, 1.0, size=n)
+                samples[:, j] = np.interp(u, self._active_cdfs[j], self._active_grids[j])
+            else:
+                samples[:, j] = rng.standard_cauchy(size=n) * self.prior_scale
+        return samples
 
     def exact_moments_or_quantiles(self) -> dict[str, Any]:
+        """Computes exact posterior quantiles per coordinate via inverse CDF."""
+        from scipy import stats as sp_stats
+
+        quantiles_out: dict[str, np.ndarray] = {}
+        for q_prob, q_name in [(0.05, "q05"), (0.50, "q50"), (0.95, "q95"), (0.99, "q99")]:
+            q_vec = np.empty(self.d, dtype=np.float64)
+            for j in range(self.d):
+                if j < len(self._active_grids):
+                    q_vec[j] = float(np.interp(q_prob, self._active_cdfs[j], self._active_grids[j]))
+                else:
+                    q_vec[j] = float(sp_stats.cauchy.ppf(q_prob, loc=0.0, scale=self.prior_scale))
+            quantiles_out[q_name] = q_vec
+
         return {
             "beta_true": self.beta_true,
-            "mean": self.beta_true,
+            "mean": quantiles_out["q50"],
             "n_active": self.n_active,
             "noise_std": self.noise_std,
+            **quantiles_out,
         }
 
 
@@ -364,7 +460,29 @@ class RobustOutlierRegressionTarget(TargetDistribution):
         return grad_lik + grad_prior
 
     def sample_ground_truth(self, n: int, rng: np.random.Generator | None = None) -> np.ndarray:
-        return np.tile(self.beta_true, (n, 1))
+        """Draws reference posterior samples via self-normalized importance resampling around the MAP estimate."""
+        if rng is None:
+            rng = np.random.default_rng(42)
+        m = max(n * 4, 4000)
+        cov_prop = np.linalg.inv(self.X.T @ self.X / (self.scale**2) + np.eye(self.d) / (self.prior_scale**2))
+        L_prop = np.linalg.cholesky(cov_prop)
+        # Student-t(df=4) proposal centered at beta_true
+        z = rng.normal(size=(m, self.d)) @ L_prop.T
+        chi2 = rng.chisquare(df=4.0, size=(m, 1))
+        proposals = self.beta_true[None, :] + z * np.sqrt(4.0 / chi2)
+        log_w = np.empty(m, dtype=np.float64)
+        inv_cov = np.linalg.inv(cov_prop)
+        for i in range(m):
+            lp_t = self.log_prob(proposals[i])
+            diff = proposals[i] - self.beta_true
+            q_form = float(diff @ inv_cov @ diff)
+            lp_q = -0.5 * (4.0 + self.d) * np.log1p(q_form / 4.0)
+            log_w[i] = lp_t - lp_q
+        log_w -= np.max(log_w)
+        w = np.exp(log_w)
+        w /= np.sum(w)
+        idx = rng.choice(m, size=n, replace=True, p=w)
+        return proposals[idx]
 
     def exact_moments_or_quantiles(self) -> dict[str, Any]:
         return {
@@ -720,9 +838,14 @@ def run_blackjax_sampler(
     all_chain_samples: list[np.ndarray] = []
     total_warmup_grads = 0
     total_draw_grads = 0
-    total_divergences = 0
+    total_warmup_divergences = 0
+    total_draw_divergences = 0
+    chain_burnin_evals: list[int] = []
+    max_tree_depth_seen = 0
 
     sampler_type_lower = sampler_type.lower()
+    target_accept = float(kwargs.get("target_accept", 0.80))
+    bulk_radius = float(kwargs.get("bulk_radius", 3.5))
 
     for c in range(n_chains):
         rng_key = jax.random.PRNGKey(seed + c * 10007)
@@ -732,14 +855,18 @@ def run_blackjax_sampler(
         if sampler_type_lower == "nuts":
             # NUTS with window adaptation
             if n_warmup > 0:
-                warmup = blackjax.window_adaptation(blackjax.nuts, logdensity_fn)
+                warmup = blackjax.window_adaptation(blackjax.nuts, logdensity_fn, target_acceptance_rate=target_accept)
                 (state, params), w_info = warmup.run(rng_warmup, init_pos, num_steps=n_warmup)
-                total_warmup_grads += int(jnp.sum(w_info.info.num_integration_steps))
-                total_divergences += int(jnp.sum(w_info.info.is_divergent))
+                w_steps_arr = np.asarray(w_info.info.num_integration_steps, dtype=np.int64)
+                w_pos_arr = np.asarray(w_info.state.position, dtype=np.float64)
+                total_warmup_grads += int(np.sum(w_steps_arr))
+                total_warmup_divergences += int(jnp.sum(w_info.info.is_divergent))
             else:
                 eps = step_size or 0.1
                 state = blackjax.nuts.init(init_pos, logdensity_fn)
                 params = {"step_size": eps, "inverse_mass_matrix": jnp.ones(d, dtype=jnp.float64)}
+                w_steps_arr = np.zeros(0, dtype=np.int64)
+                w_pos_arr = np.zeros((0, d), dtype=np.float64)
 
             step_fn = blackjax.nuts(logdensity_fn, **params).step
 
@@ -750,17 +877,43 @@ def run_blackjax_sampler(
 
             keys = jax.random.split(rng_sample, n_samples)
             _, (chain_pos, chain_steps, chain_divs) = jax.lax.scan(one_step_nuts, state, keys)
-            all_chain_samples.append(np.array(chain_pos))
-            total_draw_grads += int(jnp.sum(chain_steps))
-            total_divergences += int(jnp.sum(chain_divs))
+            c_pos_arr = np.array(chain_pos, dtype=np.float64)
+            c_steps_arr = np.asarray(chain_steps, dtype=np.int64)
+            all_chain_samples.append(c_pos_arr)
+            total_draw_grads += int(np.sum(c_steps_arr))
+            total_draw_divergences += int(jnp.sum(chain_divs))
+
+            if len(c_steps_arr) > 0:
+                max_steps_chain = int(np.max(c_steps_arr))
+                if max_steps_chain > 0:
+                    depth_c = int(np.ceil(np.log2(max_steps_chain)))
+                    max_tree_depth_seen = max(max_tree_depth_seen, depth_c)
+
+            # Compute burn-in gradient evaluations to reach ||x_t|| <= bulk_radius
+            all_pos_c = np.vstack([w_pos_arr, c_pos_arr]) if len(w_pos_arr) > 0 else c_pos_arr
+            all_steps_c = np.concatenate([w_steps_arr, c_steps_arr]) if len(w_steps_arr) > 0 else c_steps_arr
+            norms_c = np.linalg.norm(all_pos_c, axis=1)
+            cum_grads_c = np.cumsum(all_steps_c)
+            hit_indices = np.where(norms_c <= bulk_radius)[0]
+            if len(hit_indices) > 0:
+                chain_burnin_evals.append(int(cum_grads_c[hit_indices[0]]))
+            else:
+                chain_burnin_evals.append(int(cum_grads_c[-1]) if len(cum_grads_c) > 0 else 0)
 
         elif sampler_type_lower == "hmc":
             n_leapfrog = kwargs.get("num_integration_steps", kwargs.get("n_leapfrog", 10))
             if n_warmup > 0:
-                warmup = blackjax.window_adaptation(blackjax.hmc, logdensity_fn, num_integration_steps=n_leapfrog)
+                warmup = blackjax.window_adaptation(
+                    blackjax.hmc,
+                    logdensity_fn,
+                    num_integration_steps=n_leapfrog,
+                    target_acceptance_rate=target_accept,
+                )
                 (state, params), w_info = warmup.run(rng_warmup, init_pos, num_steps=n_warmup)
-                total_warmup_grads += int(jnp.sum(w_info.info.num_integration_steps))
-                total_divergences += int(jnp.sum(w_info.info.is_divergent))
+                w_steps_arr = np.asarray(w_info.info.num_integration_steps, dtype=np.int64)
+                w_pos_arr = np.asarray(w_info.state.position, dtype=np.float64)
+                total_warmup_grads += int(np.sum(w_steps_arr))
+                total_warmup_divergences += int(jnp.sum(w_info.info.is_divergent))
             else:
                 eps = step_size or 0.1
                 state = blackjax.hmc.init(init_pos, logdensity_fn)
@@ -769,6 +922,8 @@ def run_blackjax_sampler(
                     "inverse_mass_matrix": jnp.ones(d, dtype=jnp.float64),
                     "num_integration_steps": n_leapfrog,
                 }
+                w_steps_arr = np.zeros(0, dtype=np.int64)
+                w_pos_arr = np.zeros((0, d), dtype=np.float64)
 
             step_fn = blackjax.hmc(logdensity_fn, **params).step
 
@@ -779,9 +934,21 @@ def run_blackjax_sampler(
 
             keys = jax.random.split(rng_sample, n_samples)
             _, (chain_pos, chain_steps, chain_divs) = jax.lax.scan(one_step_hmc, state, keys)
-            all_chain_samples.append(np.array(chain_pos))
-            total_draw_grads += int(jnp.sum(chain_steps))
-            total_divergences += int(jnp.sum(chain_divs))
+            c_pos_arr = np.array(chain_pos, dtype=np.float64)
+            c_steps_arr = np.asarray(chain_steps, dtype=np.int64)
+            all_chain_samples.append(c_pos_arr)
+            total_draw_grads += int(np.sum(c_steps_arr))
+            total_draw_divergences += int(jnp.sum(chain_divs))
+
+            all_pos_c = np.vstack([w_pos_arr, c_pos_arr]) if len(w_pos_arr) > 0 else c_pos_arr
+            all_steps_c = np.concatenate([w_steps_arr, c_steps_arr]) if len(w_steps_arr) > 0 else c_steps_arr
+            norms_c = np.linalg.norm(all_pos_c, axis=1)
+            cum_grads_c = np.cumsum(all_steps_c)
+            hit_indices = np.where(norms_c <= bulk_radius)[0]
+            if len(hit_indices) > 0:
+                chain_burnin_evals.append(int(cum_grads_c[hit_indices[0]]))
+            else:
+                chain_burnin_evals.append(int(cum_grads_c[-1]) if len(cum_grads_c) > 0 else 0)
 
         else:
             raise ValueError(f"Unsupported BlackJAX sampler_type: {sampler_type}")
@@ -799,9 +966,13 @@ def run_blackjax_sampler(
         "warmup_grad_evals": total_warmup_grads,
         "draw_grad_evals": total_draw_grads,
         "total_grad_evals": total_grads,
-        "divergences": total_divergences,
-        "divergence_rate": float(total_divergences / max(1, n_chains * (n_samples + n_warmup))),
+        "divergences": total_draw_divergences,
+        "post_warmup_divergences": total_draw_divergences,
+        "warmup_divergences": total_warmup_divergences,
+        "divergence_rate": float(total_draw_divergences / max(1, n_chains * n_samples)),
         "wall_clock_time": float(wall_clock),
+        "burnin_grad_evals": int(np.median(chain_burnin_evals)) if chain_burnin_evals else 0,
+        "max_tree_depth": max_tree_depth_seen,
     }
 
     return samples_array, telemetry
@@ -883,14 +1054,21 @@ def run_pymc_sampler(
     if "warmup_sample_stats" in idata:
         warmup_steps = int(np.sum(idata["warmup_sample_stats"]["n_steps"].values))
 
-    # Extract divergences
+    # Extract divergences (post-warmup only in `divergences`, warmup tracked separately)
     draw_divs = int(np.sum(idata["sample_stats"]["diverging"].values))
     warmup_divs = 0
     if "warmup_sample_stats" in idata:
         warmup_divs = int(np.sum(idata["warmup_sample_stats"]["diverging"].values))
 
+    max_tree_depth_pm = 0
+    if "tree_depth" in idata["sample_stats"]:
+        max_tree_depth_pm = int(np.max(idata["sample_stats"]["tree_depth"].values))
+    elif "n_steps" in idata["sample_stats"]:
+        max_s = int(np.max(idata["sample_stats"]["n_steps"].values))
+        if max_s > 0:
+            max_tree_depth_pm = int(np.ceil(np.log2(max_s)))
+
     total_grads = draw_steps + warmup_steps
-    total_divs = draw_divs + warmup_divs
 
     telemetry: dict[str, Any] = {
         "framework": "pymc",
@@ -901,9 +1079,12 @@ def run_pymc_sampler(
         "warmup_grad_evals": warmup_steps,
         "draw_grad_evals": draw_steps,
         "total_grad_evals": total_grads,
-        "divergences": total_divs,
-        "divergence_rate": float(total_divs / max(1, n_chains * (n_samples + n_warmup))),
+        "divergences": draw_divs,
+        "post_warmup_divergences": draw_divs,
+        "warmup_divergences": warmup_divs,
+        "divergence_rate": float(draw_divs / max(1, n_chains * n_samples)),
         "wall_clock_time": float(wall_clock),
+        "max_tree_depth": max_tree_depth_pm,
     }
 
     return np.asarray(samples_raw, dtype=np.float64), telemetry
@@ -955,6 +1136,10 @@ def run_mcmc_robust_sampler(
     all_chain_samples: list[np.ndarray] = []
     total_grad_evals = 0
     total_divergences = 0
+    total_warmup_divergences = 0
+    chain_burnin_evals: list[int] = []
+    max_tree_depth_seen = 0
+    bulk_radius = 3.5
 
     base_kwargs = dict(sampler_kwargs or {})
 
@@ -997,13 +1182,18 @@ def run_mcmc_robust_sampler(
 
             sampler = sampler_cls(**filtered_kw)
 
+        adapt_flag = bool(
+            base_kwargs.get("adapt_step_size", True)
+            or base_kwargs.get("adapt_preconditioner", False)
+            or base_kwargs.get("adapt_tail_scale", False)
+        )
         chain_samples_raw, step_results = sampler.sample(
             x0=init_positions[c],
             target=tracker,
             n_steps=n_samples + n_warmup,
             burn_in=n_warmup,
             rng=rng_chain,
-            adapt=True,
+            adapt=adapt_flag,
         )
 
         # Pull back primal coordinates for space-transformed samplers if present
@@ -1019,13 +1209,31 @@ def run_mcmc_robust_sampler(
         all_chain_samples.append(chain_samples)
         total_grad_evals += tracker.grad_evals
 
-        # Tally post-warmup divergences
-        for res in step_results[n_warmup:]:
+        # Tally warmup and post-warmup divergences and burn-in gradient evaluations
+        cum_grads = 1  # init_state grad eval
+        hit_bulk = float(np.linalg.norm(init_positions[c])) <= bulk_radius
+        burnin_evals_c = 1 if hit_bulk else None
+
+        for idx_step, res in enumerate(step_results):
+            step_g = int(res.stats.get("grad_evals", 1))
+            cum_grads += step_g
+            primal_step = res.state.auxiliary.get("primal_x", res.state.x)
+            if burnin_evals_c is None and float(np.linalg.norm(primal_step)) <= bulk_radius:
+                burnin_evals_c = cum_grads
+
             is_div = (
                 float(res.stats.get("divergent", 0.0)) > 0.0 or float(res.stats.get("hamiltonian_error", 0.0)) > 1000.0
             )
-            if is_div:
-                total_divergences += 1
+            if idx_step < n_warmup:
+                if is_div:
+                    total_warmup_divergences += 1
+            else:
+                if is_div:
+                    total_divergences += 1
+                td = int(res.stats.get("tree_depth", 0))
+                max_tree_depth_seen = max(max_tree_depth_seen, td)
+
+        chain_burnin_evals.append(burnin_evals_c if burnin_evals_c is not None else cum_grads)
 
     wall_clock = time.perf_counter() - t0
     samples_array = np.stack(all_chain_samples, axis=0)  # shape (n_chains, n_samples, d)
@@ -1038,8 +1246,12 @@ def run_mcmc_robust_sampler(
         "n_warmup": n_warmup,
         "total_grad_evals": total_grad_evals,
         "divergences": total_divergences,
+        "post_warmup_divergences": total_divergences,
+        "warmup_divergences": total_warmup_divergences,
         "divergence_rate": float(total_divergences / max(1, n_chains * n_samples)),
         "wall_clock_time": float(wall_clock),
+        "burnin_grad_evals": int(np.median(chain_burnin_evals)) if chain_burnin_evals else 0,
+        "max_tree_depth": max_tree_depth_seen,
     }
 
     return samples_array, telemetry
@@ -1083,27 +1295,28 @@ def evaluate_chains_with_arviz(
     # Construct ArviZ 1.3 DataTree via az.from_dict
     dt = az.from_dict({"posterior": {"x": arr}})
 
-    # Bulk and Tail ESS
-    bulk_ess_res = az.ess(dt, var_names=["x"], method="bulk")["x"].values
-    tail_ess_res = az.ess(dt, var_names=["x"], method="tail")["x"].values
+    with np.errstate(divide="ignore", invalid="ignore"):
+        # Bulk and Tail ESS
+        bulk_ess_res = az.ess(dt, var_names=["x"], method="bulk")["x"].values
+        tail_ess_res = az.ess(dt, var_names=["x"], method="tail")["x"].values
 
-    bulk_ess = float(np.mean(bulk_ess_res))
-    tail_ess = float(np.mean(tail_ess_res))
+        bulk_ess = float(np.nanmean(bulk_ess_res))
+        tail_ess = float(np.nanmean(tail_ess_res))
 
-    # Split R-hat and Folded R-hat (Vehtari, Gelman, Simpson, Carpenter, & Bürkner 2021)
-    if n_chains >= 2 and n_samples >= 4:
-        rhat_res = az.rhat(dt, var_names=["x"])["x"].values
-        split_rhat = float(np.max(rhat_res))
-        try:
-            folded_rhat_res = az.rhat(dt, var_names=["x"], method="folded")["x"].values
-            folded_rhat = float(np.max(folded_rhat_res))
-        except Exception:
-            folded_rhat = split_rhat
-        combined_rhat = float(max(split_rhat, folded_rhat))
-    else:
-        split_rhat = 1.0
-        folded_rhat = 1.0
-        combined_rhat = 1.0
+        # Split R-hat and Folded R-hat (Vehtari, Gelman, Simpson, Carpenter, & Bürkner 2021)
+        if n_chains >= 2 and n_samples >= 4:
+            rhat_res = az.rhat(dt, var_names=["x"])["x"].values
+            split_rhat = float(np.nanmax(rhat_res))
+            try:
+                folded_rhat_res = az.rhat(dt, var_names=["x"], method="folded")["x"].values
+                folded_rhat = float(np.nanmax(folded_rhat_res))
+            except Exception:
+                folded_rhat = split_rhat
+            combined_rhat = float(max(split_rhat, folded_rhat))
+        else:
+            split_rhat = 1.0
+            folded_rhat = 1.0
+            combined_rhat = 1.0
 
     evals = max(1, int(total_grad_evals))
     ess_per_grad = float(bulk_ess / evals)

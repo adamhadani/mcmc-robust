@@ -203,15 +203,16 @@ class UnifiedRobustNUTS(Sampler):
         if self.gamma <= 0.0:
             return grad_z.copy(), 0.0
 
-        if self.mode == "coordinate":
-            kappa_coord = epsilon * s_z * np.abs(grad_z)
-            force = grad_z / ((1.0 + self.gamma * kappa_coord) ** self.taming_power)
-            kappa_max = float(np.max(kappa_coord))
-            return force, kappa_max
-        else:
-            kappa_global = epsilon * float(np.linalg.norm(s_z * grad_z))
-            force = grad_z / ((1.0 + self.gamma * kappa_global) ** self.taming_power)
-            return force, kappa_global
+        with np.errstate(over="ignore", invalid="ignore"):
+            if self.mode == "coordinate":
+                kappa_coord = epsilon * s_z * np.abs(grad_z)
+                force = grad_z / ((1.0 + self.gamma * kappa_coord) ** self.taming_power)
+                kappa_max = float(np.max(kappa_coord))
+                return force, kappa_max
+            else:
+                kappa_global = epsilon * float(np.linalg.norm(s_z * grad_z))
+                force = grad_z / ((1.0 + self.gamma * kappa_global) ** self.taming_power)
+                return force, kappa_global
 
     def init_state(self, x0: np.ndarray, target: TargetDistribution) -> ChainState:
         """Initializes ChainState with strictly 1 target evaluation."""
@@ -426,19 +427,25 @@ class UnifiedRobustNUTS(Sampler):
         v_minus = self._velocity(p_new_m, s_z)
         no_u_turn = bool(np.dot(delta_z, v_plus) >= 0.0 and np.dot(delta_z, v_minus) >= 0.0)
 
-        # Cross-subtree U-turn check (Betancourt 2017)
+        # Cross-subtree inner-seam U-turn checks (time-reversal symmetric)
         if no_u_turn:
             if v == -1:
-                delta_cross = z_p - z_mm
+                delta_left_inner = z_m - z_mm
+                delta_inner_right = z_p - z_mp
                 cross_ok = bool(
-                    np.dot(delta_cross, self._velocity(p_p, s_z)) >= 0.0
-                    and np.dot(delta_cross, self._velocity(p_mm, s_z)) >= 0.0
+                    np.dot(delta_left_inner, self._velocity(p_m, s_z)) >= 0.0
+                    and np.dot(delta_left_inner, self._velocity(p_mm, s_z)) >= 0.0
+                    and np.dot(delta_inner_right, self._velocity(p_p, s_z)) >= 0.0
+                    and np.dot(delta_inner_right, self._velocity(p_mp, s_z)) >= 0.0
                 )
             else:
-                delta_cross = z_pp - z_m
+                delta_left_inner = z_pm - z_m
+                delta_inner_right = z_pp - z_p
                 cross_ok = bool(
-                    np.dot(delta_cross, self._velocity(p_pp, s_z)) >= 0.0
-                    and np.dot(delta_cross, self._velocity(p_m, s_z)) >= 0.0
+                    np.dot(delta_left_inner, self._velocity(p_pm, s_z)) >= 0.0
+                    and np.dot(delta_left_inner, self._velocity(p_m, s_z)) >= 0.0
+                    and np.dot(delta_inner_right, self._velocity(p_pp, s_z)) >= 0.0
+                    and np.dot(delta_inner_right, self._velocity(p_p, s_z)) >= 0.0
                 )
             no_u_turn = no_u_turn and cross_ok
 
@@ -660,10 +667,10 @@ class UnifiedRobustNUTS(Sampler):
         W2 = int(0.80 * W)
         d = len(result.state.x)
 
-        # Phase 1: Tail Scale Calibration (0 <= step_idx < W1)
+        # Phase 1: Tail Scale & Location Calibration (0 <= step_idx < W1)
         if step_idx < W1:
             if self.adapt_tail_scale:
-                self._phase1_samples.append(np.abs(result.state.x))
+                self._phase1_samples.append(result.state.x.copy())
             if self.adaptation is None:
                 self.adaptation = DualAveragingAdaptation(
                     initial_step_size=self.step_size,
@@ -673,15 +680,24 @@ class UnifiedRobustNUTS(Sampler):
 
             if step_idx == W1 - 1 and self.adapt_tail_scale and len(self._phase1_samples) > 0:
                 stacked = np.vstack(self._phase1_samples)
-                q90 = np.quantile(stacked, 0.90, axis=0)
-                self.radius = np.clip(q90 * 1.5, self.min_radius, self.max_radius)
+                med = np.median(stacked, axis=0)
+                centered = stacked - med
+                q75, q25 = np.quantile(centered, [0.75, 0.25], axis=0)
+                iqr_scale = (q75 - q25) / 1.3489795
+                mad_scale = np.median(np.abs(centered), axis=0) / 0.67448975
+                q90_abs = np.quantile(np.abs(centered), 0.90, axis=0)
+                base_scale = np.where(iqr_scale > self.min_radius, iqr_scale, np.maximum(mad_scale, q90_abs))
+                self.radius = np.clip(base_scale * 1.5, self.min_radius, self.max_radius)
                 self._transform = CoordinateWiseArcsinhTransform(
                     d=d,
                     radii=self.radius,
                     mask=self._mask,
+                    location=med,
                 )
                 self._tail_scale_frozen = True
                 self._phase1_samples.clear()
+                if self.adaptation is not None:
+                    self.adaptation.reset()
 
         # Phase 2: Diagonal Metric Adaptation (W1 <= step_idx < W2)
         elif step_idx < W2:
@@ -693,14 +709,14 @@ class UnifiedRobustNUTS(Sampler):
                     self.welford.update(np.asarray(z))
                 if (step_idx - W1 + 1) % 25 == 0 or step_idx == W2 - 1:
                     self.set_preconditioner(self.welford.diagonal_scale())
-                    if self.adaptation is not None:
-                        self.adaptation.reset(initial_step_size=self.step_size)
 
             if self.adaptation is not None:
                 self.step_size = self.adaptation.update(result.accept_prob)
 
             if step_idx == W2 - 1:
                 self._preconditioner_frozen = True
+                if self.adaptation is not None:
+                    self.adaptation.reset()
 
         # Phase 3: Step-Size Fine Tuning (W2 <= step_idx < W)
         elif step_idx < W:

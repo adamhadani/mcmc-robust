@@ -12,14 +12,16 @@ class CoordinateWiseArcsinhTransform(SpaceTransformation):
 
     For heavy-tailed coordinates (mask[i] == True):
         Forward:
-            z_i = arcsinh(x_i / R_i)
-            log |det J| = -sum_i ln(R_i * sqrt(1 + (x_i / R_i)^2))
+            u_i = (x_i - \mu_i) / R_i
+            z_i = arcsinh(u_i)
+            log |det J| = -sum_i ln(R_i * sqrt(1 + u_i^2))
         Inverse:
-            x_i = R_i * sinh(z_i)
+            x_i = \mu_i + R_i * sinh(z_i)
             log |det J^{-1}| = sum_i (ln R_i + ln cosh(z_i))
         Pullback gradient:
             nabla_{z_i} log pi_z(z) = R_i * cosh(z_i) * nabla_{x_i} log pi_x(x) + tanh(z_i)
-                                    = sqrt(R_i^2 + x_i^2) * nabla_{x_i} log pi_x(x) + x_i / sqrt(R_i^2 + x_i^2)
+                                    = sqrt(R_i^2 + (x_i - \mu_i)^2) * nabla_{x_i} log pi_x(x)
+                                      + (x_i - \mu_i) / sqrt(R_i^2 + (x_i - \mu_i)^2)
 
     For light-tailed coordinates (mask[i] == False):
         z_i = x_i,  x_i = z_i
@@ -27,6 +29,7 @@ class CoordinateWiseArcsinhTransform(SpaceTransformation):
         nabla_{z_i} log pi_z(z) = nabla_{x_i} log pi_x(x)
 
     Satisfies:
+    - Exact translation equivariance when location \mu_i is calibrated from coordinate medians
     - Round-trip invertibility || inverse(forward(x)[0])[0] - x ||_inf < 1e-12
     - Jacobian log-determinant cancellation | log |det J| + log |det J^{-1}| | < 1e-12
     - Pullback gradient consistency vs finite differences < 1e-7
@@ -38,18 +41,22 @@ class CoordinateWiseArcsinhTransform(SpaceTransformation):
         d: int | None = None,
         radii: float | Sequence[float] | np.ndarray = 1.0,
         mask: Sequence[bool] | np.ndarray | None = None,
+        location: float | Sequence[float] | np.ndarray = 0.0,
     ) -> None:
-        """Initializes CoordinateWiseArcsinhTransform.
+        r"""Initializes CoordinateWiseArcsinhTransform.
 
         Args:
-            d: Dimension of the space R^d. If None, inferred from radii length.
+            d: Dimension of the space R^d. If None, inferred from radii or location length.
             radii: Confinement radius R_i > 0 per coordinate (scalar or vector of shape (d,)).
             mask: Optional boolean mask of shape (d,) indicating which coordinates
                 are transformed (True) vs left untransformed (False). Defaults to all True.
+            location: Centering location \mu_i per coordinate (scalar or vector of shape (d,)).
         """
         if d is None:
             if hasattr(radii, "__len__"):
                 d = len(radii)  # type: ignore[arg-type]
+            elif hasattr(location, "__len__"):
+                d = len(location)  # type: ignore[arg-type]
             else:
                 raise ValueError("Must provide dimension d when radii is a scalar float")
 
@@ -71,6 +78,18 @@ class CoordinateWiseArcsinhTransform(SpaceTransformation):
             raise ValueError("All coordinate radii must be strictly positive and finite")
         self._radii: np.ndarray = r_arr
 
+        if hasattr(location, "__len__"):
+            loc_arr = np.asarray(location, dtype=np.float64)
+            if loc_arr.shape != (d_int,):
+                raise ValueError(f"location shape {loc_arr.shape} must match (d,) with d={d_int}")
+        else:
+            loc_val = float(location)
+            loc_arr = np.full(d_int, loc_val, dtype=np.float64)
+
+        if not np.all(np.isfinite(loc_arr)):
+            raise ValueError("All coordinate locations must be finite")
+        self._location: np.ndarray = loc_arr
+
         if mask is None:
             self._mask: np.ndarray = np.ones(d_int, dtype=bool)
         else:
@@ -83,6 +102,11 @@ class CoordinateWiseArcsinhTransform(SpaceTransformation):
     def radii(self) -> np.ndarray:
         """Coordinate scale vector R of shape (d,)."""
         return self._radii
+
+    @property
+    def location(self) -> np.ndarray:
+        """Coordinate location vector mu of shape (d,)."""
+        return self._location
 
     @property
     def mask(self) -> np.ndarray:
@@ -105,7 +129,7 @@ class CoordinateWiseArcsinhTransform(SpaceTransformation):
         z = x_arr.copy()
         m = self._mask
         if np.any(m):
-            xm = x_arr[m]
+            xm = x_arr[m] - self._location[m]
             rm = self._radii[m]
             scaled = xm / rm
             z[m] = np.arcsinh(scaled)
@@ -144,8 +168,9 @@ class CoordinateWiseArcsinhTransform(SpaceTransformation):
         if np.any(m):
             ym = y_arr[m]
             rm = self._radii[m]
+            locm = self._location[m]
             with np.errstate(over="ignore"):
-                x[m] = rm * np.sinh(ym)
+                x[m] = locm + rm * np.sinh(ym)
             # Robust log(cosh(z)) = |z| - ln 2 + log1p(exp(-2|z|)) avoiding overflow
             abs_ym = np.abs(ym)
             log_cosh = abs_ym - np.log(2.0) + np.log1p(np.exp(-2.0 * abs_ym))
@@ -175,12 +200,13 @@ class CoordinateWiseArcsinhTransform(SpaceTransformation):
         gz = gx.copy()
         m = self._mask
         if np.any(m):
-            xm = x_arr[m]
-            rm = self._radii[m]
-            # Numerically stabilized scale = sqrt(rm^2 + xm^2) avoiding intermediate squaring overflow:
-            # np.hypot(rm, xm) prevents overflow to inf when xm^2 > 1.8e308 (for |xm| > 1.34e154).
-            scale = np.hypot(rm, xm)
-            gz[m] = scale * gx[m] + (xm / scale)
+            with np.errstate(over="ignore", invalid="ignore"):
+                xm = x_arr[m] - self._location[m]
+                rm = self._radii[m]
+                # Numerically stabilized scale = sqrt(rm^2 + xm^2) avoiding intermediate squaring overflow:
+                # np.hypot(rm, xm) prevents overflow to inf when xm^2 > 1.8e308 (for |xm| > 1.34e154).
+                scale = np.hypot(rm, xm)
+                gz[m] = scale * gx[m] + (xm / scale)
 
         return gz
 
@@ -192,7 +218,10 @@ class CoordinateWiseArcsinhTransform(SpaceTransformation):
         quantile_ratio_threshold: float = 3.0,
         min_radius: float = 1e-4,
     ) -> "CoordinateWiseArcsinhTransform":
-        """Factory calibrating radii and heavy/light mask from exploratory samples.
+        """Factory calibrating location, radii, and heavy/light mask from exploratory samples.
+
+        Uses translation-equivariant coordinate medians for location mu_i and normal-consistent
+        signed interquartile range IQR(x_i - mu_i) / 1.3489795 (with MAD fallback) for scale R_i.
 
         Args:
             samples: 2D array of exploratory samples of shape (n_samples, d).
@@ -211,19 +240,22 @@ class CoordinateWiseArcsinhTransform(SpaceTransformation):
             raise ValueError(f"Need at least 20 samples to calibrate, got {n}")
 
         med = np.median(s, axis=0)
-        centered_abs = np.abs(s - med)
+        centered = s - med
+        centered_abs = np.abs(centered)
 
-        # Scale estimate via 75th percentile / semi-IQR
-        q75 = np.quantile(centered_abs, 0.75, axis=0)
-        q25 = np.quantile(centered_abs, 0.25, axis=0)
-        iqr_scale = (q75 - q25) / 1.349
-        radii = np.where(iqr_scale > min_radius, iqr_scale, np.maximum(min_radius, q75))
+        # Normal-consistent scale estimate via signed IQR: for N(0, sigma^2), IQR = 1.3489795 * sigma
+        q75_signed = np.quantile(centered, 0.75, axis=0)
+        q25_signed = np.quantile(centered, 0.25, axis=0)
+        iqr_scale = (q75_signed - q25_signed) / 1.3489795
+        mad_scale = np.median(centered_abs, axis=0) / 0.67448975
+        radii = np.where(iqr_scale > min_radius, iqr_scale, np.maximum(min_radius, mad_scale))
 
-        # Quantile ratio q99 / q75
-        q99 = np.quantile(centered_abs, 0.99, axis=0)
-        q_ratio = q99 / np.maximum(1e-6, q75)
+        # Quantile ratio q99(|x - med|) / q75(|x - med|)
+        q75_abs = np.quantile(centered_abs, 0.75, axis=0)
+        q99_abs = np.quantile(centered_abs, 0.99, axis=0)
+        q_ratio = q99_abs / np.maximum(1e-6, q75_abs)
 
-        # Hill estimator on top 10%
+        # Hill estimator on top 10% of |x - med|
         k = max(5, int(0.10 * n))
         alpha_hat = np.empty(d, dtype=np.float64)
         for j in range(d):
@@ -236,4 +268,4 @@ class CoordinateWiseArcsinhTransform(SpaceTransformation):
             alpha_hat[j] = 1.0 / max(1e-4, gamma)
 
         mask = (q_ratio > quantile_ratio_threshold) | (alpha_hat <= alpha_threshold)
-        return cls(d=d, radii=radii, mask=mask)
+        return cls(d=d, radii=radii, mask=mask, location=med)

@@ -14,7 +14,6 @@ from mcmc_robust.bench.adapters import (
 )
 from mcmc_robust.bench.plot import (
     generate_all_figures,
-    generate_mock_benchmark_results,
     load_benchmark_data,
 )
 from mcmc_robust.bench.runner import (
@@ -311,19 +310,9 @@ def test_ac3_gentle_mala_stability_superiority(tmp_path):
 
 
 @pytest.mark.unit
-def test_mock_benchmark_results_schema():
-    """Mock benchmark generator produces valid schemas for all 4 figures."""
-    mock = generate_mock_benchmark_results()
-    assert "figure1_roughness" in mock
-    assert "figure2_heterogeneous" in mock
-    assert "figure3_bayesian" in mock
-    assert "figure4_benign" in mock
-
-
-@pytest.mark.unit
 def test_plot_generate_all_figures(tmp_path):
-    """Plotting pipeline generates all 5 figures in PNG format."""
-    figs = generate_all_figures(out_dir=tmp_path, formats=("png",))
+    """Plotting pipeline generates all 5 figures in PNG format from reports/ artifacts."""
+    figs = generate_all_figures(reports_dir=Path("reports"), out_dir=tmp_path, formats=("png",))
     assert len(figs) == 5
     for f in figs:
         assert f.exists()
@@ -377,11 +366,7 @@ def test_plot_load_benchmark_data_dir_resolution(tmp_path):
 
 
 @pytest.mark.unit
-def test_plot_mock_fallback_on_missing_file():
-    """Verifies clean fallback to standardized mock data when benchmark files do not exist."""
-    data = load_benchmark_data("non_existent_path_xyz.json")
-    assert "figure1_roughness" in data
-    assert "figure2_heterogeneous" in data
-    assert "figure3_bayesian" in data
-    assert "figure4_benign" in data
-    assert len(data["figure1_roughness"]["h_grid"]) == 13
+def test_plot_raises_on_missing_file():
+    """Verifies FileNotFoundError is raised when benchmark files do not exist (no mock fallback)."""
+    with pytest.raises(FileNotFoundError):
+        load_benchmark_data("non_existent_path_xyz.json")

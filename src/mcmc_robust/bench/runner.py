@@ -157,11 +157,13 @@ SAMPLER_FACTORIES: dict[str, Callable[[int, float], Sampler]] = {
     "hmc": lambda d, h: HMC(step_size=h, n_leapfrog=5),
     "tamed_mala": lambda d, h: GloballyTamedMALA(step_size=h, gamma=0.2, mode="coordinate"),
     "barker": lambda d, h: BarkerLangevin(step_size=h),
-    "stereographic_mala": lambda d, h: make_stereographic_mala(step_size=h, dim=d, scale=1.0),
+    "stereographic_mala": lambda d, h: make_stereographic_mala(step_size=h, dim=d, scale=float(np.sqrt(d))),
     "radial_mala": lambda d, h: make_radial_mala(step_size=h, dim=d, radius=3.0, stiffness=0.5),
     "gentle_mala": lambda d, h: GentleMALA(step_size=h, gamma=1.0, mode="coordinate"),
-    "anisotropic_tail_mala": lambda d, h: AnisotropicTailMALA(step_size=h, radii=1.0),
-    "unified_robust": lambda d, h: UnifiedRobustSampler(step_size=h, gamma=0.1, radius=3.0, mode="coordinate"),
+    "anisotropic_tail_mala": lambda d, h: AnisotropicTailMALA(step_size=h, radii=None),
+    "unified_robust": lambda d, h: UnifiedRobustSampler(
+        step_size=h, gamma=0.1, radius=3.0, mode="coordinate", adapt_tail_scale=True
+    ),
 }
 
 REGIME_TARGET_MAP: dict[str, list[str]] = {
@@ -389,12 +391,22 @@ class BenchmarkRunner:
             ess_per_grad = bulk_ess / effective_evals
             tail_ess_per_grad = tail_ess / effective_evals
             n_samples = len(flat_samples)
+            extra_stats: dict[str, Any] = {
+                "coord_tail_ess_per_grad": [
+                    float(v / effective_evals) if np.isfinite(v) else 0.0 for v in np.atleast_1d(tail_ess_arr)
+                ],
+                "coord_bulk_ess_per_grad": [
+                    float(v / effective_evals) if np.isfinite(v) else 0.0 for v in np.atleast_1d(bulk_ess_arr)
+                ],
+                "coord_q99_error": [float(v) if np.isfinite(v) else 0.0 for v in q_errs[0.99]],
+            }
         else:
             bulk_ess = tail_ess = ess_per_grad = tail_ess_per_grad = float("nan")
             split_rhat = folded_rhat = float("nan")
             ks_pvalue = ks_stat = wasserstein1 = float("nan")
             q05_err = q95_err = q99_err = float("nan")
             n_samples = 0
+            extra_stats = {}
 
         return RunRecord(
             regime=regime,
@@ -424,6 +436,7 @@ class BenchmarkRunner:
             wall_clock_time=wall_clock,
             non_divergence=not diverged,
             divergence_reason=divergence_reason,
+            extra_stats=extra_stats,
         )
 
     def run_all(self) -> BenchmarkResult:
@@ -472,29 +485,43 @@ class BenchmarkRunner:
         completed = sum(1 for r in records if r.non_divergence)
         diverged = total - completed
 
-        # AC2 Check: Benign parity on d=50 Gaussian
+        # AC2 Check: Benign parity on d=50 Gaussian across matched (target_name, dimension, init_type) conditions
         ac2_records = [r for r in records if r.dimension == 50 and "gaussian" in r.target_name and r.non_divergence]
         ac2_pass = False
         ac2_ratio = 0.0
         if ac2_records:
-            mala_ess = max((r.ess_per_grad for r in ac2_records if r.sampler_name == "mala"), default=0.0)
-            unified_ess = max((r.ess_per_grad for r in ac2_records if r.sampler_name == "unified_robust"), default=0.0)
-            if mala_ess > 0:
-                ac2_ratio = unified_ess / mala_ess
+            ac2_groups: dict[tuple[str, int, str], dict[str, float]] = {}
+            for r in ac2_records:
+                key = (r.target_name, r.dimension, r.init_type)
+                ac2_groups.setdefault(key, {})[r.sampler_name] = r.ess_per_grad
+            matched_ac2_ratios = [
+                grp["unified_robust"] / grp["mala"]
+                for grp in ac2_groups.values()
+                if "mala" in grp and "unified_robust" in grp and grp["mala"] > 0
+            ]
+            if matched_ac2_ratios:
+                ac2_ratio = float(np.median(matched_ac2_ratios))
                 ac2_pass = bool(ac2_ratio >= 0.70)
 
-        # AC4 Check: Heavy tail efficiency on d>=10 mixed target
+        # AC4 Check: Heavy tail efficiency on d>=10 mixed target across matched conditions
         ac4_records = [
             r for r in records if r.dimension >= 10 and "heterogeneous" in r.target_name and r.non_divergence
         ]
         ac4_pass = False
+        ac4_ratio = 0.0
         if ac4_records:
-            barker_tail = max((r.tail_ess_per_grad for r in ac4_records if r.sampler_name == "barker"), default=0.0)
-            unified_tail = max(
-                (r.tail_ess_per_grad for r in ac4_records if r.sampler_name == "unified_robust"), default=0.0
-            )
-            if barker_tail > 0:
-                ac4_pass = bool((unified_tail / barker_tail) >= 1.5)
+            ac4_groups: dict[tuple[str, int, str], dict[str, float]] = {}
+            for r in ac4_records:
+                key = (r.target_name, r.dimension, r.init_type)
+                ac4_groups.setdefault(key, {})[r.sampler_name] = r.tail_ess_per_grad
+            matched_ac4_ratios = [
+                grp["unified_robust"] / grp["barker"]
+                for grp in ac4_groups.values()
+                if "barker" in grp and "unified_robust" in grp and grp["barker"] > 0
+            ]
+            if matched_ac4_ratios:
+                ac4_ratio = float(np.median(matched_ac4_ratios))
+                ac4_pass = bool(ac4_ratio >= 1.5)
 
         return {
             "total_runs": total,
@@ -506,6 +533,7 @@ class BenchmarkRunner:
                 "AC2_benign_parity": ac2_pass,
                 "AC2_ess_ratio": ac2_ratio,
                 "AC4_heavy_tail_efficiency": ac4_pass,
+                "AC4_tail_ess_ratio": ac4_ratio,
             },
         }
 

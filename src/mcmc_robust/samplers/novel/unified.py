@@ -46,6 +46,7 @@ class UnifiedRobustSampler(Sampler):
         max_radius: float = 1e4,
         mask: Sequence[bool] | np.ndarray | None = None,
         adaptation: DualAveragingAdaptation | None = None,
+        kappa_max: float = 1.5,
     ) -> None:
         r"""Initializes UnifiedRobustSampler.
 
@@ -84,6 +85,7 @@ class UnifiedRobustSampler(Sampler):
         self.taming_power: float = float(taming_power)
         self.min_radius: float = float(min_radius)
         self.max_radius: float = float(max_radius)
+        self.kappa_max: float = float(kappa_max)
 
         # Coordinate tail scale storage
         self._initial_radius: float | np.ndarray = (
@@ -150,12 +152,26 @@ class UnifiedRobustSampler(Sampler):
 
         if self.mode == "coordinate":
             kappa_coord = h * s_z * np.abs(grad_z)
-            b = grad_z / ((1.0 + self.gamma * kappa_coord) ** self.taming_power)
+            stiff = self.gamma * kappa_coord
+            if np.isinf(self.kappa_max):
+                b = grad_z / ((1.0 + stiff) ** self.taming_power)
+            else:
+                excess = np.maximum(0.0, kappa_coord - 1.0)
+                b = grad_z / (
+                    (1.0 + stiff + (excess / self.kappa_max) ** (1.0 / self.taming_power)) ** self.taming_power
+                )
             kappa_max = float(np.max(kappa_coord))
             return b, kappa_max
         else:
             kappa_global = h * float(np.linalg.norm(s_z * grad_z))
-            b = grad_z / ((1.0 + self.gamma * kappa_global) ** self.taming_power)
+            stiff_g = self.gamma * kappa_global
+            if np.isinf(self.kappa_max):
+                b = grad_z / ((1.0 + stiff_g) ** self.taming_power)
+            else:
+                excess_g = max(0.0, kappa_global - 1.0)
+                b = grad_z / (
+                    (1.0 + stiff_g + (excess_g / self.kappa_max) ** (1.0 / self.taming_power)) ** self.taming_power
+                )
             return b, kappa_global
 
     def init_state(self, x0: np.ndarray, target: TargetDistribution) -> ChainState:
@@ -343,10 +359,10 @@ class UnifiedRobustSampler(Sampler):
         W2 = int(0.80 * W)
         d = len(result.state.x)
 
-        # Phase 1: Tail Scale Calibration (0 <= step_idx < W1)
+        # Phase 1: Tail Scale & Location Calibration (0 <= step_idx < W1)
         if step_idx < W1:
             if self.adapt_tail_scale:
-                self._phase1_samples.append(np.abs(result.state.x))
+                self._phase1_samples.append(result.state.x.copy())
             if self.adaptation is None:
                 self.adaptation = DualAveragingAdaptation(
                     initial_step_size=self.step_size,
@@ -356,15 +372,24 @@ class UnifiedRobustSampler(Sampler):
 
             if step_idx == W1 - 1 and self.adapt_tail_scale and len(self._phase1_samples) > 0:
                 stacked = np.vstack(self._phase1_samples)
-                q90 = np.quantile(stacked, 0.90, axis=0)
-                self.radius = np.clip(q90 * 1.5, self.min_radius, self.max_radius)
+                med = np.median(stacked, axis=0)
+                centered = stacked - med
+                q75, q25 = np.quantile(centered, [0.75, 0.25], axis=0)
+                iqr_scale = (q75 - q25) / 1.3489795
+                mad_scale = np.median(np.abs(centered), axis=0) / 0.67448975
+                q90_abs = np.quantile(np.abs(centered), 0.90, axis=0)
+                base_scale = np.where(iqr_scale > self.min_radius, iqr_scale, np.maximum(mad_scale, q90_abs))
+                self.radius = np.clip(base_scale * 1.5, self.min_radius, self.max_radius)
                 self._transform = CoordinateWiseArcsinhTransform(
                     d=d,
                     radii=self.radius,
                     mask=self._mask,
+                    location=med,
                 )
                 self._tail_scale_frozen = True
                 self._phase1_samples.clear()
+                if self.adaptation is not None:
+                    self.adaptation.reset()
 
         # Phase 2: Diagonal Metric Adaptation (W1 <= step_idx < W2)
         elif step_idx < W2:
@@ -374,17 +399,17 @@ class UnifiedRobustSampler(Sampler):
                 z = result.state.auxiliary.get("z")
                 if z is not None:
                     self.welford.update(np.asarray(z))
-                # Periodically update preconditioner and reset dual averaging anchor
+                # Periodically update preconditioner
                 if (step_idx - W1 + 1) % 25 == 0 or step_idx == W2 - 1:
                     self.set_preconditioner(self.welford.diagonal_scale())
-                    if self.adaptation is not None:
-                        self.adaptation.reset(initial_step_size=self.step_size)
 
             if self.adaptation is not None:
                 self.step_size = self.adaptation.update(result.accept_prob)
 
             if step_idx == W2 - 1:
                 self._preconditioner_frozen = True
+                if self.adaptation is not None:
+                    self.adaptation.reset()
 
         # Phase 3: Step-Size Fine Tuning (W2 <= step_idx < W)
         elif step_idx < W:

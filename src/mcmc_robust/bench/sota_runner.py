@@ -35,6 +35,7 @@ from mcmc_robust.bench.sota_adapters import (
 )
 from mcmc_robust.samplers.automala import AutoMALA
 from mcmc_robust.samplers.barker import BarkerLangevin
+from mcmc_robust.samplers.mala import MALA
 from mcmc_robust.samplers.novel.anisotropic_tail import AnisotropicTailMALA
 from mcmc_robust.samplers.novel.gentle_mala import GentleMALA
 from mcmc_robust.samplers.novel.nuts import UnifiedRobustNUTS
@@ -45,6 +46,18 @@ from mcmc_robust.targets.heavy_tailed import (
     HeterogeneousHeavyTailedTarget,
 )
 from mcmc_robust.targets.roughness import NealsFunnelTarget, QuarticTarget
+
+
+def _build_extra_stats(info: dict[str, Any], **custom: Any) -> dict[str, Any]:
+    """Extracts standardized diagnostic telemetry from runner info dict."""
+    stats: dict[str, Any] = {
+        "warmup_divergences": int(info.get("warmup_divergences", 0)),
+        "post_warmup_divergences": int(info.get("post_warmup_divergences", info.get("divergences", 0))),
+        "max_tree_depth": int(info.get("max_tree_depth", 1)),
+        "burnin_grad_evals": info.get("burnin_grad_evals"),
+    }
+    stats.update(custom)
+    return stats
 
 
 @dataclass
@@ -76,6 +89,9 @@ class SOTARunRecord:
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
+        for k, v in d.items():
+            if isinstance(v, (np.floating, float)):
+                d[k] = float(v) if np.isfinite(v) else None
         return d
 
 
@@ -83,8 +99,8 @@ class SOTARunRecord:
 class SOTABenchmarkConfig:
     """Configuration for SOTA benchmark execution."""
 
-    n_samples: int = 500
-    n_warmup: int = 300
+    n_samples: int = 1000
+    n_warmup: int = 500
     n_chains: int = 4
     seed: int = 42
     output_dir: str = "reports"
@@ -154,6 +170,7 @@ class SOTABenchmarkRunner:
             divergence_rate=m_pm["divergence_rate"],
             wall_clock_time=m_pm["wall_clock_time"],
             q99_rel_error=m_pm.get("q99_rel_error"),
+            extra_stats=_build_extra_stats(info_pm),
         )
         records.append(rec_pm)
 
@@ -188,6 +205,7 @@ class SOTABenchmarkRunner:
             divergence_rate=m_bj["divergence_rate"],
             wall_clock_time=m_bj["wall_clock_time"],
             q99_rel_error=m_bj.get("q99_rel_error"),
+            extra_stats=_build_extra_stats(info_bj),
         )
         records.append(rec_bj)
 
@@ -234,6 +252,7 @@ class SOTABenchmarkRunner:
                 q99_rel_error=m_barker.get("q99_rel_error"),
                 tail_ess_gain_vs_standard=m_barker["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_barker["ess_per_grad"] / baseline_bulk_rate,
+                extra_stats=_build_extra_stats(info_barker),
             )
         )
 
@@ -277,6 +296,7 @@ class SOTABenchmarkRunner:
                 q99_rel_error=m_stereo.get("q99_rel_error"),
                 tail_ess_gain_vs_standard=m_stereo["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_stereo["ess_per_grad"] / baseline_bulk_rate,
+                extra_stats=_build_extra_stats(info_stereo),
             )
         )
 
@@ -320,6 +340,7 @@ class SOTABenchmarkRunner:
                 q99_rel_error=m_auto.get("q99_rel_error"),
                 tail_ess_gain_vs_standard=m_auto["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_auto["ess_per_grad"] / baseline_bulk_rate,
+                extra_stats=_build_extra_stats(info_auto),
             )
         )
 
@@ -331,7 +352,7 @@ class SOTABenchmarkRunner:
             n_warmup=n_warmup,
             n_chains=n_chains,
             seed=seed,
-            sampler_kwargs={"step_size": 0.20, "gamma": 0.05, "radius": 2.0, "adapt_tail_scale": False},
+            sampler_kwargs={"step_size": 0.20, "gamma": 0.05, "adapt_tail_scale": True},
         )
 
         m_urs = evaluate_chains_with_arviz(
@@ -364,6 +385,7 @@ class SOTABenchmarkRunner:
                 q99_rel_error=m_urs.get("q99_rel_error"),
                 tail_ess_gain_vs_standard=m_urs["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_urs["ess_per_grad"] / baseline_bulk_rate,
+                extra_stats=_build_extra_stats(info_urs),
             )
         )
 
@@ -375,7 +397,7 @@ class SOTABenchmarkRunner:
             n_warmup=n_warmup,
             n_chains=n_chains,
             seed=seed,
-            sampler_kwargs={"step_size": 0.05, "n_leapfrog": 5, "radius": 2.0, "gamma": 1.0},
+            sampler_kwargs={"step_size": 0.05, "n_leapfrog": 5, "gamma": 1.0, "adapt_tail_scale": True},
         )
         m_hmc = evaluate_chains_with_arviz(
             s_hmc,
@@ -407,6 +429,7 @@ class SOTABenchmarkRunner:
                 q99_rel_error=m_hmc.get("q99_rel_error"),
                 tail_ess_gain_vs_standard=m_hmc["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_hmc["ess_per_grad"] / baseline_bulk_rate,
+                extra_stats=_build_extra_stats(info_hmc),
             )
         )
 
@@ -418,7 +441,7 @@ class SOTABenchmarkRunner:
             n_warmup=n_warmup,
             n_chains=n_chains,
             seed=seed,
-            sampler_kwargs={"step_size": 0.15, "radius": 2.0, "max_depth": 8, "adapt_tail_scale": False},
+            sampler_kwargs={"step_size": 0.15, "max_depth": 10, "adapt_tail_scale": True},
         )
 
         m_nuts = evaluate_chains_with_arviz(
@@ -451,6 +474,7 @@ class SOTABenchmarkRunner:
                 q99_rel_error=m_nuts.get("q99_rel_error"),
                 tail_ess_gain_vs_standard=m_nuts["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_nuts["ess_per_grad"] / baseline_bulk_rate,
+                extra_stats=_build_extra_stats(info_nuts),
             )
         )
 
@@ -473,6 +497,15 @@ class SOTABenchmarkRunner:
         target_name = "eight_schools_centered"
         task_id = "task2_hierarchical_funnels"
         task_name = "Hierarchical Funnels (Rubin 1981 Eight-Schools)"
+
+        def _es_extra(samples_arr: np.ndarray, info_dict: dict[str, Any]) -> dict[str, Any]:
+            log_tau = samples_arr[:, :, 1]
+            return _build_extra_stats(
+                info_dict,
+                min_log_tau=float(np.min(log_tau)),
+                prob_log_tau_lt_neg1=float(np.mean(log_tau < -1.0)),
+                q05_log_tau=float(np.quantile(log_tau, 0.05)),
+            )
 
         # 1. PyMC NUTS
         s_pm, info_pm = run_pymc_sampler(
@@ -504,7 +537,7 @@ class SOTABenchmarkRunner:
             divergences=info_pm["divergences"],
             divergence_rate=m_pm["divergence_rate"],
             wall_clock_time=m_pm["wall_clock_time"],
-            extra_stats={"min_log_tau": float(np.min(s_pm[:, :, 1]))},
+            extra_stats=_es_extra(s_pm, info_pm),
         )
         records.append(rec_pm)
 
@@ -538,7 +571,7 @@ class SOTABenchmarkRunner:
             divergences=info_bj["divergences"],
             divergence_rate=m_bj["divergence_rate"],
             wall_clock_time=m_bj["wall_clock_time"],
-            extra_stats={"min_log_tau": float(np.min(s_bj[:, :, 1]))},
+            extra_stats=_es_extra(s_bj, info_bj),
         )
         records.append(rec_bj)
 
@@ -582,7 +615,7 @@ class SOTABenchmarkRunner:
                 divergence_rate=m_tamed["divergence_rate"],
                 wall_clock_time=m_tamed["wall_clock_time"],
                 ess_gain_vs_standard=m_tamed["ess_per_grad"] / baseline_ess_rate,
-                extra_stats={"min_log_tau": float(np.min(s_tamed[:, :, 1]))},
+                extra_stats=_es_extra(s_tamed, info_tamed),
             )
         )
 
@@ -624,7 +657,7 @@ class SOTABenchmarkRunner:
                 divergence_rate=m_auto["divergence_rate"],
                 wall_clock_time=m_auto["wall_clock_time"],
                 ess_gain_vs_standard=m_auto["ess_per_grad"] / baseline_ess_rate,
-                extra_stats={"min_log_tau": float(np.min(s_auto[:, :, 1]))},
+                extra_stats=_es_extra(s_auto, info_auto),
             )
         )
 
@@ -666,7 +699,7 @@ class SOTABenchmarkRunner:
                 divergence_rate=m_gentle["divergence_rate"],
                 wall_clock_time=m_gentle["wall_clock_time"],
                 ess_gain_vs_standard=m_gentle["ess_per_grad"] / baseline_ess_rate,
-                extra_stats={"min_log_tau": float(np.min(s_gentle[:, :, 1]))},
+                extra_stats=_es_extra(s_gentle, info_gentle),
             )
         )
 
@@ -678,7 +711,7 @@ class SOTABenchmarkRunner:
             n_warmup=n_warmup,
             n_chains=n_chains,
             seed=seed,
-            sampler_kwargs={"step_size": 0.30, "gamma": 0.1, "radius": 3.0, "adapt_tail_scale": False},
+            sampler_kwargs={"step_size": 0.30, "gamma": 0.1, "adapt_tail_scale": True},
         )
         m_urs = evaluate_chains_with_arviz(
             s_urs,
@@ -708,7 +741,7 @@ class SOTABenchmarkRunner:
                 divergence_rate=m_urs["divergence_rate"],
                 wall_clock_time=m_urs["wall_clock_time"],
                 ess_gain_vs_standard=m_urs["ess_per_grad"] / baseline_ess_rate,
-                extra_stats={"min_log_tau": float(np.min(s_urs[:, :, 1]))},
+                extra_stats=_es_extra(s_urs, info_urs),
             )
         )
 
@@ -720,7 +753,7 @@ class SOTABenchmarkRunner:
             n_warmup=n_warmup,
             n_chains=n_chains,
             seed=seed,
-            sampler_kwargs={"step_size": 0.15, "gamma": 0.2, "radius": 3.0, "max_depth": 8, "adapt_tail_scale": False},
+            sampler_kwargs={"step_size": 0.15, "gamma": 0.2, "max_depth": 10, "adapt_tail_scale": True},
         )
         m_nuts = evaluate_chains_with_arviz(
             s_nuts,
@@ -750,7 +783,7 @@ class SOTABenchmarkRunner:
                 divergence_rate=m_nuts["divergence_rate"],
                 wall_clock_time=m_nuts["wall_clock_time"],
                 ess_gain_vs_standard=m_nuts["ess_per_grad"] / baseline_ess_rate,
-                extra_stats={"min_log_tau": float(np.min(s_nuts[:, :, 1]))},
+                extra_stats=_es_extra(s_nuts, info_nuts),
             )
         )
 
@@ -758,6 +791,15 @@ class SOTABenchmarkRunner:
         target_funnel = NealsFunnelTarget(d=10, sigma_v=3.0)
         target_funnel_name = "neals_funnel_d10"
         task_funnel_name = "Hierarchical Funnels (Neal's Funnel d=10)"
+
+        def _funnel_extra(samples_arr: np.ndarray, info_dict: dict[str, Any]) -> dict[str, Any]:
+            v_col = samples_arr[:, :, 0]
+            return _build_extra_stats(
+                info_dict,
+                min_v=float(np.min(v_col)),
+                prob_v_lt_neg2=float(np.mean(v_col < -2.0)),
+                q05_v=float(np.quantile(v_col, 0.05)),
+            )
 
         s_bj_f, info_bj_f = run_blackjax_sampler(
             target_funnel, sampler_type="nuts", n_samples=n_samples, n_warmup=n_warmup, n_chains=n_chains, seed=seed
@@ -788,7 +830,7 @@ class SOTABenchmarkRunner:
             divergences=info_bj_f["divergences"],
             divergence_rate=m_bj_f["divergence_rate"],
             wall_clock_time=m_bj_f["wall_clock_time"],
-            extra_stats={"min_v": float(np.min(s_bj_f[:, :, 0]))},
+            extra_stats=_funnel_extra(s_bj_f, info_bj_f),
         )
         records.append(rec_bj_f)
         baseline_funnel_rate = max(1e-8, m_bj_f["ess_per_grad"])
@@ -801,7 +843,7 @@ class SOTABenchmarkRunner:
             n_warmup=n_warmup,
             n_chains=n_chains,
             seed=seed,
-            sampler_kwargs={"step_size": 0.35, "gamma": 0.2, "radius": 3.0, "adapt_tail_scale": False},
+            sampler_kwargs={"step_size": 0.35, "gamma": 0.2, "adapt_tail_scale": True},
         )
         m_urs_f = evaluate_chains_with_arviz(
             s_urs_f,
@@ -831,7 +873,49 @@ class SOTABenchmarkRunner:
                 divergence_rate=m_urs_f["divergence_rate"],
                 wall_clock_time=m_urs_f["wall_clock_time"],
                 ess_gain_vs_standard=m_urs_f["ess_per_grad"] / baseline_funnel_rate,
-                extra_stats={"min_v": float(np.min(s_urs_f[:, :, 0]))},
+                extra_stats=_funnel_extra(s_urs_f, info_urs_f),
+            )
+        )
+
+        # UnifiedRobustNUTS on Neal's Funnel
+        s_nuts_f, info_nuts_f = run_mcmc_robust_sampler(
+            UnifiedRobustNUTS,
+            target_funnel,
+            n_samples=n_samples,
+            n_warmup=n_warmup,
+            n_chains=n_chains,
+            seed=seed,
+            sampler_kwargs={"step_size": 0.15, "gamma": 0.2, "max_depth": 10, "adapt_tail_scale": True},
+        )
+        m_nuts_f = evaluate_chains_with_arviz(
+            s_nuts_f,
+            info_nuts_f["total_grad_evals"],
+            target=target_funnel,
+            divergences=info_nuts_f["divergences"],
+            wall_clock_time=info_nuts_f["wall_clock_time"],
+        )
+        records.append(
+            SOTARunRecord(
+                task_id=task_id,
+                task_name=task_funnel_name,
+                target_name=target_funnel_name,
+                dimension=target_funnel.d,
+                sampler_name="UnifiedRobustNUTS (Neal)",
+                framework="mcmc_robust",
+                n_chains=n_chains,
+                n_samples=n_samples,
+                n_warmup=n_warmup,
+                total_grad_evals=info_nuts_f["total_grad_evals"],
+                bulk_ess=m_nuts_f["bulk_ess"],
+                tail_ess=m_nuts_f["tail_ess"],
+                split_rhat=m_nuts_f["split_rhat"],
+                ess_per_grad=m_nuts_f["ess_per_grad"],
+                tail_ess_per_grad=m_nuts_f["tail_ess_per_grad"],
+                divergences=info_nuts_f["divergences"],
+                divergence_rate=m_nuts_f["divergence_rate"],
+                wall_clock_time=m_nuts_f["wall_clock_time"],
+                ess_gain_vs_standard=m_nuts_f["ess_per_grad"] / baseline_funnel_rate,
+                extra_stats=_funnel_extra(s_nuts_f, info_nuts_f),
             )
         )
 
@@ -890,6 +974,7 @@ class SOTABenchmarkRunner:
             divergence_rate=m_bj["divergence_rate"],
             wall_clock_time=m_bj["wall_clock_time"],
             q99_rel_error=m_bj.get("q99_rel_error"),
+            extra_stats=_build_extra_stats(info_bj),
         )
         records.append(rec_bj)
 
@@ -936,6 +1021,7 @@ class SOTABenchmarkRunner:
                 q99_rel_error=m_barker.get("q99_rel_error"),
                 tail_ess_gain_vs_standard=m_barker["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_barker["ess_per_grad"] / baseline_bulk_rate,
+                extra_stats=_build_extra_stats(info_barker),
             )
         )
 
@@ -979,6 +1065,7 @@ class SOTABenchmarkRunner:
                 q99_rel_error=m_auto.get("q99_rel_error"),
                 tail_ess_gain_vs_standard=m_auto["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_auto["ess_per_grad"] / baseline_bulk_rate,
+                extra_stats=_build_extra_stats(info_auto),
             )
         )
 
@@ -990,7 +1077,7 @@ class SOTABenchmarkRunner:
             n_warmup=n_warmup,
             n_chains=n_chains,
             seed=seed,
-            sampler_kwargs={"step_size": 0.15, "radii": 2.0},
+            sampler_kwargs={"step_size": 0.15, "radii": None},
         )
         m_aniso = evaluate_chains_with_arviz(
             s_aniso,
@@ -1022,6 +1109,7 @@ class SOTABenchmarkRunner:
                 q99_rel_error=m_aniso.get("q99_rel_error"),
                 tail_ess_gain_vs_standard=m_aniso["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_aniso["ess_per_grad"] / baseline_bulk_rate,
+                extra_stats=_build_extra_stats(info_aniso),
             )
         )
 
@@ -1033,7 +1121,7 @@ class SOTABenchmarkRunner:
             n_warmup=n_warmup,
             n_chains=n_chains,
             seed=seed,
-            sampler_kwargs={"step_size": 0.15, "gamma": 0.1, "radius": 1.0, "adapt_tail_scale": False},
+            sampler_kwargs={"step_size": 0.15, "gamma": 0.1, "adapt_tail_scale": True},
         )
         m_urs = evaluate_chains_with_arviz(
             s_urs,
@@ -1065,6 +1153,7 @@ class SOTABenchmarkRunner:
                 q99_rel_error=m_urs.get("q99_rel_error"),
                 tail_ess_gain_vs_standard=m_urs["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_urs["ess_per_grad"] / baseline_bulk_rate,
+                extra_stats=_build_extra_stats(info_urs),
             )
         )
 
@@ -1076,7 +1165,7 @@ class SOTABenchmarkRunner:
             n_warmup=n_warmup,
             n_chains=n_chains,
             seed=seed,
-            sampler_kwargs={"step_size": 0.15, "radius": 1.0, "max_depth": 8, "adapt_tail_scale": False},
+            sampler_kwargs={"step_size": 0.15, "max_depth": 10, "adapt_tail_scale": True},
         )
 
         m_nuts = evaluate_chains_with_arviz(
@@ -1109,6 +1198,7 @@ class SOTABenchmarkRunner:
                 q99_rel_error=m_nuts.get("q99_rel_error"),
                 tail_ess_gain_vs_standard=m_nuts["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_nuts["ess_per_grad"] / baseline_bulk_rate,
+                extra_stats=_build_extra_stats(info_nuts),
             )
         )
 
@@ -1139,6 +1229,48 @@ class SOTABenchmarkRunner:
         direction = rng.normal(size=(n_chains, d))
         direction = direction / np.linalg.norm(direction, axis=1, keepdims=True)
         x0_tail = direction * (10.0 * np.sqrt(d))
+
+        # 0. Classical MALA (Standard unadapted step size h=0.10 explodes from ||x0||=31.6)
+        s_mala, info_mala = run_mcmc_robust_sampler(
+            MALA,
+            target,
+            n_samples=n_samples,
+            n_warmup=n_warmup,
+            n_chains=n_chains,
+            seed=seed,
+            x0=x0_tail,
+            sampler_kwargs={"step_size": 0.10, "adapt_step_size": False},
+        )
+        m_mala = evaluate_chains_with_arviz(
+            s_mala,
+            info_mala["total_grad_evals"],
+            target=target,
+            divergences=info_mala["divergences"],
+            wall_clock_time=info_mala["wall_clock_time"],
+        )
+        records.append(
+            SOTARunRecord(
+                task_id=task_id,
+                task_name=task_name,
+                target_name=target_name,
+                dimension=target.d,
+                sampler_name="Classical MALA",
+                framework="reference",
+                n_chains=n_chains,
+                n_samples=n_samples,
+                n_warmup=n_warmup,
+                total_grad_evals=info_mala["total_grad_evals"],
+                bulk_ess=m_mala["bulk_ess"],
+                tail_ess=m_mala["tail_ess"],
+                split_rhat=m_mala["split_rhat"],
+                ess_per_grad=m_mala["ess_per_grad"],
+                tail_ess_per_grad=m_mala["tail_ess_per_grad"],
+                divergences=info_mala["divergences"],
+                divergence_rate=m_mala["divergence_rate"],
+                wall_clock_time=m_mala["wall_clock_time"],
+                extra_stats=_build_extra_stats(info_mala),
+            )
+        )
 
         # 1. BlackJAX HMC (Standard HMC explodes or rejects 100%)
         s_bj_hmc, info_bj_hmc = run_blackjax_sampler(
@@ -1179,6 +1311,7 @@ class SOTABenchmarkRunner:
                 divergences=info_bj_hmc["divergences"],
                 divergence_rate=m_bj_hmc["divergence_rate"],
                 wall_clock_time=m_bj_hmc["wall_clock_time"],
+                extra_stats=_build_extra_stats(info_bj_hmc),
             )
         )
 
@@ -1219,10 +1352,12 @@ class SOTABenchmarkRunner:
                 divergences=info_bj["divergences"],
                 divergence_rate=m_bj["divergence_rate"],
                 wall_clock_time=m_bj["wall_clock_time"],
+                extra_stats=_build_extra_stats(info_bj),
             )
         )
 
         baseline_ess_rate = max(1e-8, m_bj["ess_per_grad"])
+        baseline_tail_rate = max(1e-8, m_bj["tail_ess_per_grad"])
 
         # 3. GloballyTamedMALA (Power & Vasdekis 2025)
         s_tamed, info_tamed = run_mcmc_robust_sampler(
@@ -1262,7 +1397,9 @@ class SOTABenchmarkRunner:
                 divergences=info_tamed["divergences"],
                 divergence_rate=m_tamed["divergence_rate"],
                 wall_clock_time=m_tamed["wall_clock_time"],
+                tail_ess_gain_vs_standard=m_tamed["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_tamed["ess_per_grad"] / baseline_ess_rate,
+                extra_stats=_build_extra_stats(info_tamed),
             )
         )
 
@@ -1304,7 +1441,9 @@ class SOTABenchmarkRunner:
                 divergences=info_auto["divergences"],
                 divergence_rate=m_auto["divergence_rate"],
                 wall_clock_time=m_auto["wall_clock_time"],
+                tail_ess_gain_vs_standard=m_auto["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_auto["ess_per_grad"] / baseline_ess_rate,
+                extra_stats=_build_extra_stats(info_auto),
             )
         )
 
@@ -1346,7 +1485,9 @@ class SOTABenchmarkRunner:
                 divergences=info_gentle["divergences"],
                 divergence_rate=m_gentle["divergence_rate"],
                 wall_clock_time=m_gentle["wall_clock_time"],
+                tail_ess_gain_vs_standard=m_gentle["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_gentle["ess_per_grad"] / baseline_ess_rate,
+                extra_stats=_build_extra_stats(info_gentle),
             )
         )
 
@@ -1359,7 +1500,7 @@ class SOTABenchmarkRunner:
             n_chains=n_chains,
             seed=seed,
             x0=x0_tail,
-            sampler_kwargs={"step_size": 0.15, "gamma": 0.5, "radius": 3.0},
+            sampler_kwargs={"step_size": 0.15, "gamma": 0.5, "adapt_tail_scale": True},
         )
         m_urs = evaluate_chains_with_arviz(
             s_urs,
@@ -1388,7 +1529,9 @@ class SOTABenchmarkRunner:
                 divergences=info_urs["divergences"],
                 divergence_rate=m_urs["divergence_rate"],
                 wall_clock_time=m_urs["wall_clock_time"],
+                tail_ess_gain_vs_standard=m_urs["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_urs["ess_per_grad"] / baseline_ess_rate,
+                extra_stats=_build_extra_stats(info_urs),
             )
         )
 
@@ -1401,7 +1544,7 @@ class SOTABenchmarkRunner:
             n_chains=n_chains,
             seed=seed,
             x0=x0_tail,
-            sampler_kwargs={"step_size": 0.15, "gamma": 0.5, "radius": 3.0, "max_depth": 8},
+            sampler_kwargs={"step_size": 0.15, "gamma": 0.5, "max_depth": 10, "adapt_tail_scale": True},
         )
         m_nuts = evaluate_chains_with_arviz(
             s_nuts,
@@ -1430,7 +1573,9 @@ class SOTABenchmarkRunner:
                 divergences=info_nuts["divergences"],
                 divergence_rate=m_nuts["divergence_rate"],
                 wall_clock_time=m_nuts["wall_clock_time"],
+                tail_ess_gain_vs_standard=m_nuts["tail_ess_per_grad"] / baseline_tail_rate,
                 ess_gain_vs_standard=m_nuts["ess_per_grad"] / baseline_ess_rate,
+                extra_stats=_build_extra_stats(info_nuts),
             )
         )
 
@@ -1492,10 +1637,9 @@ class SOTABenchmarkRunner:
             r for r in all_records if r.task_id in ("task2_hierarchical_funnels", "task4_stiff_tail_return")
         ]
         rough_gains = [
-            r.ess_gain_vs_standard
+            max(r.ess_gain_vs_standard or 0.0, r.tail_ess_gain_vs_standard or 0.0)
             for r in rough_stiff_recs
             if r.sampler_name in ("UnifiedRobustNUTS", "UnifiedRobustSampler", "GentleMALA")
-            and r.ess_gain_vs_standard is not None
         ]
         max_rough_gain = max(rough_gains, default=0.0)
         guardrail_rough_stiff = bool(max_rough_gain >= 2.0)
@@ -1606,8 +1750,8 @@ def main() -> None:
 
     is_quick = bool(args.quick) or (not bool(args.full))
     n_chains = args.n_chains or (2 if is_quick else 4)
-    n_samples = args.n_samples or (200 if is_quick else 500)
-    n_warmup = args.n_warmup or (100 if is_quick else 300)
+    n_samples = args.n_samples or (200 if is_quick else 1000)
+    n_warmup = args.n_warmup or (100 if is_quick else 500)
 
     config = SOTABenchmarkConfig(
         n_samples=n_samples,

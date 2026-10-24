@@ -47,6 +47,7 @@ class GentleMALA(Sampler):
         target_accept: float = 0.574,
         adapt_step_size: bool = False,
         adaptation: DualAveragingAdaptation | None = None,
+        kappa_max: float = 25.0,
     ) -> None:
         r"""Initializes GentleMALA sampler.
 
@@ -58,17 +59,22 @@ class GentleMALA(Sampler):
             target_accept: Optimal target acceptance rate for dual averaging (default: 0.574).
             adapt_step_size: Whether to adapt step size during warmup.
             adaptation: Optional pre-configured DualAveragingAdaptation instance.
+            kappa_max: Soft asymptotic drift cap \kappa_{\max} > 0 preventing origin overshoot
+                outside the square-root basin (pass float('inf') for pure square-root damping).
         """
         super().__init__(step_size=step_size, preconditioner=preconditioner)
         if gamma <= 0.0:
             raise ValueError(f"gamma must be positive, got {gamma}")
         if mode not in ("global", "coordinate"):
             raise ValueError(f"mode must be 'global' or 'coordinate', got {mode}")
+        if kappa_max <= 0.0:
+            raise ValueError(f"kappa_max must be positive, got {kappa_max}")
 
         self.gamma: float = float(gamma)
         self.mode: str = mode
         self.target_accept: float = float(target_accept)
         self.adapt_step_size: bool = bool(adapt_step_size)
+        self.kappa_max: float = float(kappa_max)
 
         if adaptation is not None:
             self.adaptation: DualAveragingAdaptation | None = adaptation
@@ -95,9 +101,11 @@ class GentleMALA(Sampler):
             return self.gamma * h * (s * np.abs(grad))
 
     def _gentle_drift(self, grad: np.ndarray, s: np.ndarray) -> np.ndarray:
-        """Computes gently attenuated drift b_h(x)."""
+        """Computes gently attenuated drift b_h(x) with soft asymptotic cap."""
         stiff = self._stiffness(grad, s)
-        return grad / np.sqrt(1.0 + stiff)
+        if np.isinf(self.kappa_max):
+            return grad / np.sqrt(1.0 + stiff)
+        return grad / np.sqrt(1.0 + stiff + (stiff / self.kappa_max) ** 2)
 
     def _tamed_drift(self, grad: np.ndarray) -> np.ndarray:
         """Helper computing gentle drift with current preconditioner."""

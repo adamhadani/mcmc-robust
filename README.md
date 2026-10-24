@@ -15,7 +15,7 @@ Gradient-based Markov Chain Monte Carlo algorithms (MALA, HMC, NUTS) power moder
 1. **Target Roughness (§3.3):** Super-linear potential growth ($\nabla U(x) \to \infty$) flings standard MALA/NUTS across modes, causing numerical overflow and **proposal freezing** (0% acceptance). Prior remedies (**Globally Tamed MALA**, **Barker Proposal**) cap drift velocity to $O(1)$, which eliminates explosions but degrades super-exponential tail contraction into a sluggish $\Omega(R_0)$ crawl.
 2. **Target Flatness (§4.3):** Sub-exponential, heavy polynomial tails ($\|\nabla \log \pi(x)\| \to 0$) cause gradient vanishing and random-walk diffusion. Prior remedies (**Stereographic MALA**, **Radial Diffeomorphisms**) compress space radially using Euclidean radius $r = \|x\|$, which artificially squashes well-behaved Gaussian dimensions by orders of magnitude whenever a single heavy-tailed coordinate excursions, inducing catastrophic stiffness in orthogonal directions.
 
-`mcmc-robust` simultaneously solves both open problems through **square-root local stiffness damping** (`GentleMALA`), **coordinate-wise diffeomorphic tail negation** (`CoordinateWiseArcsinhTransform`), and an adaptive 3-phase warmup schedule (`UnifiedRobustSampler` & `UnifiedRobustNUTS`).
+`mcmc-robust` simultaneously solves both open problems through **soft-capped square-root local stiffness damping** (`GentleMALA`), **shift-equivariant coordinate-wise diffeomorphic tail negation** (`CoordinateWiseArcsinhTransform`), and an adaptive 3-phase warmup schedule (`UnifiedRobustSampler` & `UnifiedRobustNUTS`).
 
 ### Headline Key Results Box
 
@@ -23,15 +23,17 @@ Gradient-based Markov Chain Monte Carlo algorithms (MALA, HMC, NUTS) power moder
 ┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                   HEADLINE BENCHMARK HIGHLIGHTS                                       │
 ├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ • Divergence Elimination in Funnels: 0 divergences on Rubin's Eight-Schools & Neal's Funnel           │
-│   (vs. 15 divergences in PyMC 6.3.2 NUTS and 20 divergences in BlackJAX 1.7.1 NUTS).                  │
-│ • Tail-ESS/Gradient Throughput: 5.26x gain on high-dim mixed tails (d=20) vs. standard NUTS.           │
-│ • 99th-Percentile Quantile Error: Reduced by 72% on heterogeneous heavy tails vs. Stereographic MALA.  │
-│ • Quartic Potential Burn-In: 2.3x to 56.3x faster mode return than Globally Tamed MALA across a       │
-│   46.4x wider stable step-size window.                                                                 │
-│ • Benign Parity: 94.5%–104.7% ESS/grad efficiency parity with tuned MALA on 50D Gaussians (0 penalty). │
-│ • Pure-JAX XLA Compilation: 28.5x higher Tail-ESS/grad and 5.3x wall-clock speedup vs. BlackJAX NUTS. │
-│ • Lean 4 Formal Verification: 0 sorries, 0 linter warnings, machine-precision invertibility (< 1e-14).│
+│ • Heavy-Tailed Regression (d=10): UnifiedRobustNUTS achieves 23.5x higher Tail-ESS/grad than           │
+│   BlackJAX NUTS and 4.3x higher than PyMC NUTS, while cutting q99 tail error from 41.6% to 8.1%.       │
+│ • High-Dim Mixed Tails (d=20): UnifiedRobustNUTS delivers 2.34x higher Tail-ESS/grad (and 46% fewer    │
+│   gradients) than BlackJAX NUTS, while AnisotropicTailMALA achieves 4.62x higher Tail-ESS/grad.       │
+│ • Hierarchical Funnel Neck Exploration: On Rubin's Eight-Schools, UnifiedRobustNUTS cuts post-warmup   │
+│   divergences by 90%–95% (7 vs. 68–148) while penetrating log(tau) < -1 where stock NUTS records 0%.   │
+│ • Quartic Potential Burn-In: 121.2x wider stable step-size window than standard MALA and 2.85x–6.50x   │
+│   faster median burn-in across step-size grids (5 steps vs. 17 for Globally Tamed MALA at h=0.15).     │
+│ • Benign Parity: 103.5% overall ESS/grad efficiency parity with tuned MALA on 50D Gaussians (0 tax).   │
+│ • Lean 4 Formal Verification: 26 machine-checked theorems (0 sorries, 0 warnings) covering shifted     │
+│   diffeomorphism invertibility, discrete basin bounds, global contraction, and MH detailed balance.    │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -66,14 +68,14 @@ from mcmc_robust.targets import NealsFunnelTarget
 target = NealsFunnelTarget(d=10)
 
 # Instantiate novel sampler with stiffness damping and coordinate-wise transformation
-sampler = UnifiedRobustNUTS(step_size=0.05, warmup_steps=100, max_depth=8)
+sampler = UnifiedRobustNUTS(step_size=0.15, warmup_steps=500, max_depth=10, adapt_tail_scale=True)
 
 # Draw stationary posterior samples
 x0 = np.zeros(10)
-samples, results = sampler.sample(x0=x0, target=target, n_steps=200, burn_in=100)
+samples, results = sampler.sample(x0=x0, target=target, n_steps=1500, burn_in=500)
 print("Posterior mean:", np.mean(samples, axis=0))
-divs = sum(int(r.stats.get("divergent", 0)) for r in results)
-print("Divergences detected:", divs)  # Strictly 0
+post_warmup_divs = sum(int(r.stats.get("divergent", 0)) for r in results[500:])
+print("Post-warmup divergences:", post_warmup_divs)
 ```
 
 #### 2. Plug-and-Play with PyMC Models (`sample_pymc_model`)
@@ -93,9 +95,9 @@ with pm.Model() as model:
 idata = sample_pymc_model(
     model,
     sampler="unified_nuts",
-    draws=500,
-    tune=250,
-    chains=2,
+    draws=1000,
+    tune=500,
+    chains=4,
     random_seed=42,
 )
 print("ArviZ DataTree summary:\n", idata.posterior)
@@ -118,8 +120,8 @@ def logdensity_fn(x):
     return -0.5 * (v / 3.0) ** 2 - 0.5 * jnp.sum(x[1:] ** 2) * jnp.exp(-v) - 0.5 * 9.0 * v
 
 
-# Automatic coordinate-wise arcsinh diffeomorphism
-transform = JaxArcsinhTransform(radius=jnp.ones(10))
+# Automatic shift-equivariant coordinate-wise arcsinh diffeomorphism
+transform = JaxArcsinhTransform(radius=jnp.ones(10), location=jnp.zeros(10))
 warped_logdensity = transform.wrap_logdensity(logdensity_fn)
 
 # Run under BlackJAX NUTS with compiled JIT throughput
@@ -145,114 +147,95 @@ final_state, samples = jax.lax.scan(body_fn, state, keys)
 
 | Component | Foundational Literature | Prior Limitation | Our Novel Resolution |
 | :--- | :--- | :--- | :--- |
-| **Roughness Adaptation** | Brosse et al. (2018); Power & Vasdekis (2025, §3.3) | Global $(1 + \gamma \|\nabla U\|)^{-1}$ bounding destroys super-exponential tail pull, causing sluggish $\Omega(R_0)$ burn-in crawl. | **Square-Root Stiffness Damping** (`GentleMALA`): Multiplies drift by $(1 + \kappa)^{-1/2}$, retaining super-linear $r^{p/2}$ drift to snap back in $O(1)$ steps. |
-| **Heavy-Tail Flatness** | Yang et al. (2024, AoS); Livingstone & Zanella (2022) | Stereographic/Radial maps use scalar radius $r = \|x\|$, compressing orthogonal Gaussian coordinates by $50\times$ in mixed-tail settings. | **Coordinate-Wise $\text{arcsinh}$ Diffeomorphism**: Decouples coordinates, yields diagonal $O(d)$ Jacobian, converts polynomial tails into constant restoring drift. |
-| **Non-Degenerate Symplectic NUTS** | Hoffman & Gelman (2014); Betancourt (2017) | Unchecked momentum integration in stiff funnels causes energy divergence and early trajectory termination. | **UnifiedRobustNUTS**: Warped metric space integration with localized gradient damping and 3-phase warmup adaptation. |
+| **Roughness Adaptation** | Brosse et al. (2018); Power & Vasdekis (2025, §3.3) | Global $(1 + \gamma \|\nabla U\|)^{-1}$ bounding destroys super-exponential tail pull, causing sluggish $\Omega(R_0)$ burn-in crawl. | **Soft-Capped Square-Root Stiffness Damping** (`GentleMALA`): Multiplies drift by $(1 + \kappa + (\kappa/\kappa_{\max})^2)^{-1/2}$, retaining $r^{p/2}$ pull inside the basin while guaranteeing global non-overshoot contraction outside. |
+| **Heavy-Tail Flatness** | Johnson & Geyer (2012, AoS); Yang et al. (2024, AoS); Livingstone & Zanella (2022) | Stereographic/Radial maps use scalar radius $r = \|x\|$, compressing orthogonal Gaussian coordinates by $50\times$ in mixed-tail settings. | **Shift-Equivariant Coordinate-Wise $\text{arcsinh}$ Diffeomorphism**: Maps $z_i = \text{arcsinh}((x_i - \mu_i)/R_i)$ with normal-consistent signed IQR scale calibration, decoupling coordinates with $O(d)$ diagonal Jacobian. |
+| **Non-Degenerate Symplectic NUTS** | Hoffman & Gelman (2014); Betancourt (2017); Bou-Rabee et al. (2025, WALNUTS) | Unchecked momentum integration in stiff tails/funnels causes tree-depth blowup and divergent trajectories. | **UnifiedRobustNUTS**: Warped metric space integration with localized gradient damping, complete subtree U-turn checks, and 3-phase warmup adaptation. |
 
 ---
 
 ### Empirical Multi-Chain Benchmarks (Grounded in `reports/sota_comparison_results.csv`)
 
-All benchmarks below reflect multi-chain runs evaluated via ArviZ 1.3 using Vehtari et al. (2021) rank-normalized diagnostics. Generated with:
+All benchmarks below reflect **4-chain runs ($4 \text{ chains} \times 1,000 \text{ post-warmup draws}$, after $500 \text{ warmup steps}$)** evaluated via ArviZ 1.3 using Vehtari et al. (2021) rank-normalized diagnostics. Generated with:
 ```bash
-uv run python benchmarks/run_benchmarks.py --benchmark 5 --plot
+uv run python -m mcmc_robust.bench.sota_runner --full
+uv run python -m mcmc_robust.bench.plot
 ```
 
-#### Understanding Metrics: Absolute ESS vs. ESS/grad vs. ESS/sec
+#### Understanding Metrics: Absolute ESS vs. ESS/grad vs. Post-Warmup Divergences
 
-Before inspecting Tables 1–4, it is essential to distinguish the three complementary efficiency metrics reported across fixed-draw ($400$ draws = $2 \text{ chains} \times 200 \text{ draws}$) benchmark suites:
+1. **Why `Total Grads` and Raw `ESS` Differ Between First-Order and Symplectic Samplers:**
+   In Tables 1–4, every sampler is executed for $4 \text{ chains} \times 1,000 \text{ draws}$ ($4,000$ retained draws). A **first-order Langevin sampler costs strictly 1 gradient evaluation per step** ($6,004$ gradients total across 4 chains including warmup), whereas **NUTS builds binary leapfrog trees of up to $2^{10} = 1,024$ steps** ($45,978$ to $2,109,517$ gradient evaluations). `ESS/grad` and `Tail-ESS/grad` normalize effective sample size by total gradient evaluations (including warmup), providing an apples-to-apples measure of statistical information per unit of target evaluation work.
+2. **Apples-to-Apples Symplectic Comparison (`UnifiedRobustNUTS` vs. Stock NUTS at Equal Draws):**
+   - **Heavy-Tailed Cauchy Regression (Table 1):** `UnifiedRobustNUTS` outperforms both PyMC NUTS and BlackJAX NUTS in **raw Bulk-ESS** ($3,441.5$ vs. $1,964.7$ and $1,684.5$), **raw Tail-ESS** ($1,917.4$ vs. $1,160.5$ and $984.8$), **$\widehat{R}$** ($1.002$ vs. $1.013$ and $1.037$), and **$q_{99}$ tail quantile error** ($8.1\%$ vs. $41.6\%$ and $45.3\%$), while consuming **$2.6\times$ fewer gradients than PyMC** and **$12.1\times$ fewer gradients than BlackJAX** ($23.5\times$ higher Tail-ESS/grad than BlackJAX NUTS).
+   - **High-Dimensional Mixed Tails (Table 3):** `UnifiedRobustNUTS` outperforms BlackJAX NUTS in **both** raw Bulk-ESS ($4,608.6$ vs. $3,877.1$) and raw Tail-ESS ($2,809.8$ vs. $2,230.2$) using **$46\%$ fewer gradient evaluations** ($71,545$ vs. $133,000$), achieving **$2.34\times$ higher Tail-ESS/grad** and cutting $q_{99}$ error in half ($5.8\%$ vs. $11.3\%$).
+   - **Stiff Quartic Tail Return (Table 4):** `UnifiedRobustNUTS` achieves higher raw Tail-ESS than BlackJAX NUTS ($3,502.7$ vs. $3,171.0$), better $\widehat{R}$ ($1.002$ vs. $1.006$), and $2.7\times$ faster burn-in ($15$ gradients vs. $40$ gradients to reach the bulk), while `GentleMALA` reaches the bulk in just **5 gradient evaluations** and delivers **$2.22\times$ higher Tail-ESS/grad** than BlackJAX NUTS.
+3. **Symmetric Post-Warmup Divergence Accounting:**
+   Across all frameworks (`pymc`, `blackjax`, and `mcmc-robust`), `Divergences` in Tables 1–4 strictly counts **post-warmup divergent transitions** during the $4,000$ sampling draws, while transient warmup divergences during step-size/mass-matrix adaptation are recorded separately in `extra_stats["warmup_divergences"]`.
 
-1. **Why `Total Grads` and Raw `ESS` Differ in Fixed-Draw Runs:**
-   In Tables 1–4, every sampler is executed for exactly $200$ post-warmup draws. However, **1 draw of a first-order Langevin sampler costs strictly 1 gradient evaluation** ($602$ gradients total including warmup, running in $\sim 15\text{–}35\text{ ms}$), whereas **1 draw of NUTS builds a binary trajectory tree of 8–128 leapfrog steps** ($4,587$ to $42,292$ gradient evaluations — $7.6\times$ to $70\times$ more compute work!). Comparing raw absolute ESS between a 1-gradient Langevin step and a 64-gradient NUTS tree without gradient normalization is comparing a bicycle to a freight train on per-trip fuel.
+#### Table 1: Heavy-Tailed Cauchy Regression ($d=10$, $4 \times 1,000$ draws)
+*Target: Sparse-signal Bayesian regression ($s = (5, -4, 3, 0, \dots, 0)$) with Cauchy prior $\beta_j \sim \text{Cauchy}(0, 1)$, inducing multimodal heavy-tailed posterior geometry.*
 
-2. **Equal-Budget Parity (First-Order `UnifiedRobustSampler` vs. Stock NUTS):**
-   When allocated an **equal gradient budget** or **equal wall-clock time**, `UnifiedRobustSampler` out-produces stock NUTS:
-   - On Cauchy Regression, running `UnifiedRobustSampler` for the $4,587$ gradient evaluations used by PyMC produces $\sim 530$ absolute Tail-ESS (vs. PyMC's $330.4$), in less wall-clock time and with $0$ divergences.
-   - On Stiff Quartic Return, running `UnifiedRobustSampler` for the $5,222$ gradient evaluations of BlackJAX NUTS yields $\sim 890$ absolute Tail-ESS (vs. BlackJAX's $297.4$) and $0$ divergences (vs. $14$).
+| Sampler | Framework | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | ESS/grad | Tail-ESS/grad | Post-Warmup Divs | $q_{99}$ Rel Error |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| PyMC NUTS (Standard) | `pymc` | 450,980 | 1,964.7 | 1,160.5 | 1.013 | 0.00436 | 0.00257 | 0 (0.0%) | 41.6% |
+| BlackJAX NUTS (Standard) | `blackjax` | 2,109,517 | 1,684.5 | 984.8 | 1.037 | 0.00080 | 0.00047 | 0 (0.0%) | 45.3% |
+| BarkerLangevin (2022) | Reference | 6,004 | 334.6 | 377.6 | 2.323 | 0.05572 | **0.06290** | **0 (0.0%)** | 62.3% |
+| Stereographic MALA (2024) | Reference | 6,004 | 331.3 | 269.1 | 2.465 | 0.05519 | 0.04483 | **0 (0.0%)** | 65.7% |
+| AutoMALA (2024) | Reference | 11,126 | 395.8 | 523.7 | 2.438 | 0.03557 | 0.04707 | **0 (0.0%)** | 68.6% |
+| **UnifiedRobustSampler** | `mcmc-robust` | 6,004 | 347.0 | 364.7 | 2.312 | **0.05780** | 0.06074 | **0 (0.0%)** | 48.5% |
+| **UnifiedRobustHMC** | `mcmc-robust` | 29,892 | 1,021.0 | 550.8 | 1.040 | 0.03416 | 0.01843 | **0 (0.0%)** | 54.2% |
+| **UnifiedRobustNUTS** | `mcmc-robust` | 174,625 | **3,441.5** | **1,917.4** | **1.002** | 0.01971 | 0.01098 | **0 (0.0%)** | **8.1%** |
 
-3. **Apples-to-Apples Comparison (`UnifiedRobustNUTS` vs. Stock NUTS at Equal Draws):**
-   When comparing multi-step symplectic samplers on identical draws:
-   - **High-Dimensional Mixed Tails (Table 3):** `UnifiedRobustNUTS` outperforms BlackJAX NUTS in **both** absolute Bulk-ESS ($551.8$ vs. $368.1$, $+50\%$) and absolute Tail-ESS ($298.0$ vs. $194.5$, $+53\%$) while using **$40\%$ fewer gradient evaluations** ($9,080$ vs. $15,104$) and converging cleanly ($\widehat{R}=1.015$ vs. $1.223$).
-   - **Stiff Quartic Tail Return (Table 4):** `UnifiedRobustNUTS` achieves higher absolute Tail-ESS than BlackJAX NUTS ($329.7$ vs. $297.4$), superior convergence ($\widehat{R}=1.008$ vs. $1.024$), and eliminates all $14$ divergences ($0$ vs. $14$).[^hmc-note]
-   - **Hierarchical Funnel (Table 2):** `UnifiedRobustNUTS` achieves higher absolute Tail-ESS than PyMC NUTS ($111.5$ vs. $90.2$) with $20\%$ fewer gradient evaluations while completely eliminating all $15\text{–}20$ divergences.
-   - **Pure-JAX XLA Acceleration (Table 5):** Transformed NUTS under XLA JIT achieves $2.13\times$ higher absolute raw Tail-ESS ($570$ vs. $267$) in $2.5\times$ less time ($340\text{ ms}$ vs. $848\text{ ms}$) — representing $28.5\times$ higher Tail-ESS/grad and $5.3\times$ higher wall-clock Tail-ESS/sec.
+#### Table 2: Hierarchical Funnels — Rubin's Eight-Schools & Neal's Funnel ($d=10$, $4 \times 1,000$ draws)
+*Targets: (2a) Rubin's (1981) Centered Eight-Schools ($\tau \sim \text{Half-Cauchy}(0, 5)$, exact ground truth $\mathbb{P}(\log\tau < -1) = 13.0\%$, $q_{0.05}(\log\tau) = -1.49$); (2b) Neal's Funnel ($v \sim \mathcal{N}(0, 3^2)$, exact ground truth $\mathbb{P}(v < -2) = 25.25\%$, $q_{0.05}(v) = -4.93$).*
 
-[^hmc-note]: In Table 4, BlackJAX HMC records a raw Bulk-ESS of $1,040.8$, but this is a harmonic oscillation artifact of a fixed trajectory length across an un-damped quartic potential; it severely fails convergence ($\widehat{R} = 1.165$) and incurs $30$ divergent transitions ($7.5\%$).
+| Target & Sampler | Framework | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | ESS/grad | Post-Warmup Divs | Neck Mass | Neck $q_{0.05}$ |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Eight-Schools:** PyMC NUTS | `pymc` | 117,717 | 539.9 | 677.0 | 1.032 | 0.00459 | 148 (3.70%) | 0.0% | -0.11 |
+| **Eight-Schools:** BlackJAX NUTS | `blackjax` | 149,818 | 659.4 | 933.7 | 1.012 | 0.00440 | 68 (1.70%) | 0.0% | -0.07 |
+| **Eight-Schools:** GloballyTamedMALA | Reference | 6,004 | 7.5 | 9.7 | 2.053 | 0.00124 | **0 (0.0%)** | 30.2% | -2.58 |
+| **Eight-Schools:** AutoMALA (2024) | Reference | 14,036 | 7.4 | 9.9 | 1.900 | 0.00053 | **0 (0.0%)** | 7.2% | -1.08 |
+| **Eight-Schools:** GentleMALA | `mcmc-robust` | 6,004 | 5.7 | 7.7 | 2.445 | 0.00095 | **0 (0.0%)** | 6.7% | -1.07 |
+| **Eight-Schools:** **UnifiedRobustSampler** | `mcmc-robust` | 6,004 | 5.1 | 6.8 | 3.040 | 0.00085 | **0 (0.0%)** | **16.6%** | **-1.49** |
+| **Eight-Schools:** **UnifiedRobustNUTS** | `mcmc-robust` | 291,573 | 515.8 | 732.8 | 1.017 | 0.00177 | **7 (0.18%)** | 1.5% | -0.53 |
+| **Neal's Funnel:** BlackJAX NUTS | `blackjax` | 160,066 | 4,130.7 | 300.8 | 1.151 | 0.02581 | 3 (0.08%) | 5.0% | -2.01 |
+| **Neal's Funnel:** **UnifiedRobustSampler** | `mcmc-robust` | 6,004 | 11.8 | 10.2 | 2.092 | 0.00197 | **0 (0.0%)** | **29.1%** | **-4.47** |
+| **Neal's Funnel:** **UnifiedRobustNUTS** | `mcmc-robust` | 160,757 | 273.8 | 208.8 | **1.079** | 0.00170 | 34 (0.85%) | **22.3%** | **-4.40** |
 
-#### Table 1: Heavy-Tailed Cauchy Regression ($d=10$)
-*Target: Bayesian regression with Cauchy observation errors ($y_i \sim \text{Cauchy}(X_i \beta, 1)$), inducing sub-exponential polynomial tails.*
+> **Why Funnel Neck Diagnostics Matter alongside Divergences:** A coordinate-wise diffeomorphism $\psi_i(x_i)$ has a diagonal Jacobian and does not algebraically eliminate the multiplicative cross-coordinate coupling $x_i \sim \mathcal{N}(0, e^v)$ of a centered funnel (non-centered reparameterization remains preferred whenever model structure allows). However, inspecting the neck mass reveals why standard NUTS fails on centered funnels: on Eight-Schools, PyMC NUTS (`148` post-warmup divergences) and BlackJAX NUTS (`68` post-warmup divergences) bounce off the neck at $\log\tau \approx -0.4$, recording **$0.0\%$ probability mass in $\log\tau < -1$** (true: $13.0\%$). On Neal's Funnel ($d=10$), BlackJAX NUTS stalls at $v_{\min} = -3.81$, capturing only **$5.0\%$** of the neck region $v < -2$ (true: $25.25\%$, $q_{0.05}(v) = -4.93$) and failing convergence ($\widehat{R} = 1.151$). By contrast, `UnifiedRobustNUTS` cuts Eight-Schools post-warmup divergences by **$90\%\text{–}95\%$** and on Neal's Funnel penetrates to $v_{\min} = -6.43$, recovering **$22.3\%$ neck mass** and $q_{0.05}(v) = -4.40$ ($\widehat{R} = 1.079$).
 
-| Sampler | Framework | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | ESS/grad | Tail-ESS/grad | Divergences |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| PyMC NUTS (Standard) | `pymc` 6.3.2 | 4,587 | 423.7 | 330.4 | 1.024 | 0.0924 | 0.0720 | 4 (1.0%) |
-| BlackJAX NUTS (Standard) | `blackjax` 1.7.1 | 5,496 | 337.5 | 278.8 | 1.018 | 0.0614 | 0.0507 | 8 (2.0%) |
-| BarkerLangevin (2022) | Reference | 602 | 20.3 | 38.4 | 1.355 | 0.0337 | 0.0637 | **0 (0.0%)** |
-| Stereographic MALA (2024) | Reference | 602 | 35.5 | 60.1 | 1.316 | 0.0590 | 0.0999 | **0 (0.0%)** |
-| AutoMALA (2024) | Reference | 2,766 | 15.3 | 21.1 | 1.422 | 0.0055 | 0.0076 | **0 (0.0%)** |
-| **UnifiedRobustSampler** | `mcmc-robust` | 602 | 49.1 | 69.4 | 1.135 | 0.0815 | **0.1153** | **0 (0.0%)** |
-| **UnifiedRobustHMC** | `mcmc-robust` | 3,002 | 259.7 | 191.2 | 1.038 | 0.0865 | 0.0637 | **0 (0.0%)** |
-| **UnifiedRobustNUTS** | `mcmc-robust` | 4,718 | 349.3 | 267.2 | **1.012** | 0.0740 | 0.0566 | **0 (0.0%)** |
-
-#### Table 2: Rubin's (1981) Centered Eight-Schools Hierarchical Funnel ($d=10$)
-*Target: Centered hierarchical model with scale $\tau \sim \text{Half-Cauchy}(0, 5)$, inducing an acute collapsing neck.*
-
-| Sampler | Framework | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | ESS/grad | Divergences | Convergence |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| PyMC NUTS (Standard) | `pymc` 6.3.2 | 42,292 | 98.6 | 90.2 | 1.069 | 0.0023 | 15 (3.75%) | Pathological |
-| BlackJAX NUTS (Standard) | `blackjax` 1.7.1 | 24,443 | 98.4 | 123.3 | 1.116 | 0.0040 | 20 (5.00%) | Pathological |
-| GloballyTamedMALA (2025) | Reference | 602 | 5.1 | 13.3 | 1.902 | 0.0084 | **0 (0.0%)** | Slow crawl |
-| AutoMALA (2024) | Reference | 1,481 | 6.0 | 10.9 | 2.036 | 0.0040 | **0 (0.0%)** | Line-search cost |
-| GentleMALA | `mcmc-robust` | 602 | 4.1 | 12.2 | 2.161 | 0.0067 | **0 (0.0%)** | High explore |
-| **UnifiedRobustSampler** | `mcmc-robust` | 602 | 5.7 | 10.6 | 1.891 | **0.0095** | **0 (0.0%)** | Robust |
-| **UnifiedRobustNUTS** | `mcmc-robust` | 34,058 | 83.2 | 111.5 | **1.071** | 0.0024 | **0 (0.0%)** | **Valid MCMC** |
-
-> **Why 0 vs. 15–20 Divergences Matters:** In Hamiltonian Monte Carlo, a divergent transition indicates that the symplectic integrator violated energy conservation ($\Delta H > 1000$), causing the leapfrog trajectory to diverge from the true Hamiltonian flow. When standard NUTS encounters a divergence, it discards the trajectory and retains the initial point, creating false concentration outside the funnel neck. As shown by Betancourt (2017) and Vehtari et al. (2021), **even a single divergence invalidates asymptotic Central Limit Theorem guarantees**. By warping the geometry, `UnifiedRobustNUTS` achieves **strictly 0 divergences**, guaranteeing valid credible intervals without requiring manual non-centered reparameterization.
-
-#### Table 3: High-Dimensional Heterogeneous Mixed Tails ($d=20$)
+#### Table 3: High-Dimensional Heterogeneous Mixed Tails ($d=20$, $4 \times 1,000$ draws)
 *Target: 10 heavy-tailed coordinates ($\nu \in [1.2, 2.5]$) and 10 Gaussian coordinates ($\sigma_j = 1$).*
 
 | Sampler | Framework | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | Tail-ESS/grad | Tail Gain vs Standard | $q_{99}$ Rel Error |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| BlackJAX NUTS (Standard) | `blackjax` 1.7.1 | 15,104 | 368.1 | 194.5 | 1.223 | 0.0129 | 1.0x (Baseline) | 23.8% |
-| BarkerLangevin (2022) | Reference | 602 | 22.1 | 26.0 | 1.681 | 0.0432 | 3.4x | 41.0% |
-| AutoMALA (2024) | Reference | 1,431 | 20.1 | 30.9 | 1.604 | 0.0216 | 1.7x | 34.2% |
-| AnisotropicTailMALA | `mcmc-robust` | 602 | 22.6 | 16.5 | 2.246 | 0.0275 | 2.1x | 29.6% |
-| **UnifiedRobustSampler** | `mcmc-robust` | 602 | 22.2 | 40.8 | 1.347 | **0.0677** | **5.26x** | 42.0% |
-| **UnifiedRobustNUTS** | `mcmc-robust` | 9,080 | 551.8 | 298.0 | **1.015** | 0.0328 | **2.55x** | **21.4%** |
+| BlackJAX NUTS (Standard) | `blackjax` | 133,000 | 3,877.1 | 2,230.2 | 1.015 | 0.01677 | 1.00x (Baseline) | 11.3% |
+| BarkerLangevin (2022) | Reference | 6,004 | 276.2 | 381.0 | 1.824 | 0.06345 | 3.78x | 20.3% |
+| AutoMALA (2024) | Reference | 11,008 | 126.7 | 183.6 | 1.237 | 0.01668 | 0.99x | 18.6% |
+| **AnisotropicTailMALA** | `mcmc-robust` | 6,004 | 317.9 | 465.2 | 1.285 | **0.07748** | **4.62x** | 15.8% |
+| **UnifiedRobustSampler** | `mcmc-robust` | 6,004 | 93.9 | 170.1 | 1.130 | 0.02832 | 1.69x | 13.0% |
+| **UnifiedRobustNUTS** | `mcmc-robust` | 71,545 | **4,608.6** | **2,809.8** | **1.003** | 0.03927 | **2.34x** | **5.8%** |
 
-#### Table 4: Stiff Quartic Tail Return ($\|x_0\| = 10\sqrt{d}, d=10$)
-*Target: Quartic potential $U(x) = \frac{1}{4}\|x\|^4$ initialized far in the tail.*
+#### Table 4: Stiff Quartic Tail Return ($\|x_0\| = 10\sqrt{d}, d=10$, $4 \times 1,000$ draws)
+*Target: Quartic potential $U(x) = \frac{1}{4}\|x\|^4$ initialized far in the tail ($\|x_0\| = 31.62$).*
 
-| Sampler | Framework | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | ESS/grad | Divergences | Tail-ESS/grad |
+| Sampler | Framework | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | Tail-ESS/grad | Burn-in Grads to Bulk | Post-Warmup Divs |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| BlackJAX HMC (Standard) | `blackjax` 1.7.1 | 6,000 | 1,040.8 | 136.0 | 1.165 | **0.1735** | 30 (7.5%) | 0.0227 |
-| BlackJAX NUTS (Standard) | `blackjax` 1.7.1 | 5,222 | 650.2 | 297.4 | 1.024 | 0.1245 | 14 (3.5%) | 0.0570 |
-| GloballyTamedMALA (2025) | Reference | 602 | 29.7 | 44.4 | 1.202 | 0.0494 | **0 (0.0%)** | 0.0738 |
-| AutoMALA (2024) | Reference | 1,343 | 2.4 | 5.3 | 3.059 | 0.0018 | **0 (0.0%)** | 0.0040 |
-| GentleMALA | `mcmc-robust` | 602 | 53.7 | 87.1 | 1.111 | 0.0893 | **0 (0.0%)** | 0.1447 |
-| **UnifiedRobustSampler** | `mcmc-robust` | 596 | 85.6 | 103.1 | 1.076 | 0.1437 | **0 (0.0%)** | **0.1730** |
-| **UnifiedRobustNUTS** | `mcmc-robust` | 5,244 | 585.9 | 329.7 | **1.008** | 0.1117 | **0 (0.0%)** | 0.0629 |
+| Classical MALA ($h=0.10$) | Reference | 6,004 | 4.0 | 4.0 | $\infty$ (Frozen) | 0.00067 | $\infty$ (Never reached) | 0 (100% reject) |
+| BlackJAX HMC (Standard) | `blackjax` | 60,000 | 4,993.6 | 2,208.3 | 1.003 | 0.03680 | 50 | 0 (273 warmup) |
+| BlackJAX NUTS (Standard) | `blackjax` | 45,978 | 7,188.2 | 3,171.0 | 1.006 | 0.06897 | 40 | 0 (75 warmup) |
+| GloballyTamedMALA (2025) | Reference | 6,004 | 202.9 | 346.1 | 1.036 | 0.05765 | 17 | **0 (0 warmup)** |
+| AutoMALA (2024) | Reference | 19,625 | 4.3 | 4.6 | 4.558 | 0.00023 | $\infty$ (Stalled) | **0 (0 warmup)** |
+| **GentleMALA** | `mcmc-robust` | 6,004 | 611.9 | 920.5 | 1.010 | **0.15332 (2.22x)** | **5 (3.4x vs Tamed)** | **0 (0 warmup)** |
+| **UnifiedRobustSampler** | `mcmc-robust` | 6,004 | 403.7 | 765.0 | 1.019 | **0.12741 (1.85x)** | **10 (1.7x vs Tamed)** | **0 (0 warmup)** |
+| **UnifiedRobustNUTS** | `mcmc-robust` | 62,131 | 4,697.1 | **3,502.7** | **1.002** | 0.05638 | **15 (2.7x vs NUTS)** | **0 (24 warmup)** |
 
 ---
 
 ### Publication Figure 5: Head-to-Head External SOTA Comparison
-*Generated by `src/mcmc_robust/bench/plot.py` and saved to `reports/figures/figure5_sota_nuts_comparison.png` (300 DPI) and `.pdf`:*
+*Generated directly from `reports/sota_comparison_results.json` by `src/mcmc_robust/bench/plot.py` and saved to `reports/figures/figure5_sota_nuts_comparison.png` (300 DPI) and `.pdf`:*
 
 ![Figure 5: External SOTA NUTS Comparison](reports/figures/figure5_sota_nuts_comparison.png)
-
----
-
-### Table 5: Pure-JAX XLA Compiled Performance vs. Stock BlackJAX NUTS
-
-Under XLA JIT compilation (`jax.jit` + `jax.lax.scan`), our transformed NUTS (`JaxArcsinhTransform` + `blackjax.nuts`) completely out-scales stock `blackjax.nuts` on Rubin's Eight-Schools:
-
-| Sampler Metric | Stock BlackJAX NUTS | Pure-JAX Transformed NUTS | Relative Gain |
-| :--- | :---: | :---: | :---: |
-| **Total Grads** | 18,563 | 5,094 | **3.6x fewer gradient evals** |
-| **Bulk-ESS / Grad** | 0.00298 | 0.00490 | **1.64x efficiency** |
-| **Tail-ESS / Grad** | 0.00454 | 0.00806 | **1.78x efficiency** |
-| **Divergences** | 19 | **0** | **100% divergence free** |
-| **Wall-Clock Compilation** | 2.85s | 2.69s | **1.06x faster** |
 
 ---
 
@@ -260,7 +243,7 @@ Under XLA JIT compilation (`jax.jit` + `jax.lax.scan`), our transformed NUTS (`J
 
 ### Lean 4 Mathematical Foundations (`formal/McmcRobustFormal.lean`)
 
-All core mathematical pillars are formally formalized and verified sorry-free in Lean 4 with 0 linter warnings under `#lint`:
+All 26 core mathematical theorems and lemmas are formally verified sorry-free in Lean 4 with 0 linter warnings under `#lint`:
 
 ```bash
 cd formal && lake build
@@ -268,18 +251,20 @@ cd formal && lake build
 
 | Theorem / Lemma Name | Mathematical Statement | Verification Status |
 | :--- | :--- | :---: |
-| `arcsinh_inv_right` | $\forall x, \sinh(\text{arcsinh}(x)) = x$ | **Proved (0 sorries)** |
-| `arcsinh_inv_left` | $\forall y, \text{arcsinh}(\sinh(y)) = y$ | **Proved (0 sorries)** |
-| `scaled_invertibility_roundtrip_forward` | $\forall x, \forall R > 0, \Psi_R^{-1}(\Psi_R(x)) = x$ | **Proved (0 sorries)** |
-| `scaled_invertibility_roundtrip_inverse` | $\forall z, \forall R > 0, \Psi_R(\Psi_R^{-1}(z)) = z$ | **Proved (0 sorries)** |
-| `inverseMap_jacobian_factor_pos` | $\forall z, \forall R > 0, \cosh(z) > 0 \implies \det J > 0$ | **Proved (0 sorries)** |
-| `arsinh_deriv_eq` | $\forall x, \frac{d}{dx}\text{arcsinh}(x) = (1+x^2)^{-1/2}$ | **Proved (0 sorries)** |
-| `metric_scale_pos` | $\forall x, \forall R > 0, R / \sqrt{R^2 + x^2} > 0$ | **Proved (0 sorries)** |
-| `metric_scale_le_one` | $\forall x, \forall R > 0, R / \sqrt{R^2 + x^2} \le 1$ | **Proved (0 sorries)** |
-| `forwardMap_metric_pos` | $\forall x, \forall R > 0, \sqrt{R^2 + x^2} / R > 0$ | **Proved (0 sorries)** |
-| `rho_pos` | $\forall \kappa \ge 0, (1+\kappa)^{-1/2} > 0$ | **Proved (0 sorries)** |
-| `rho_le_one` | $\forall \kappa \ge 0, (1+\kappa)^{-1/2} \le 1$ | **Proved (0 sorries)** |
-| `rho_strictAntiOn` | $\kappa_1 < \kappa_2 \implies \rho(\kappa_1) > \rho(\kappa_2)$ | **Proved (0 sorries)** |
+| `arcsinh_inv_right` / `arcsinh_inv_left` | $\sinh(\text{arcsinh}(x)) = x$ and $\text{arcsinh}(\sinh(y)) = y$ | **Proved (0 sorries)** |
+| `scaled_invertibility_roundtrip_forward` / `_inverse` | $\forall R \ne 0, \Psi_R^{-1}(\Psi_R(x)) = x$ and $\Psi_R(\Psi_R^{-1}(z)) = z$ | **Proved (0 sorries)** |
+| `shifted_invertibility_roundtrip_forward` / `_inverse` | $\forall \mu, R \ne 0, \Psi_{\mu,R}^{-1}(\Psi_{\mu,R}(x)) = x$ and $\Psi_{\mu,R}(\Psi_{\mu,R}^{-1}(z)) = z$ | **Proved (0 sorries)** |
+| `shiftedForwardMap_translation_invariant` | $\Psi_{\mu+c, R}(x+c) = \Psi_{\mu, R}(x)$ (Translation invariance) | **Proved (0 sorries)** |
+| `inverseMap_jacobian_factor_pos` | $\forall z, R > 0, \cosh(z) > 0 \implies R \cosh(z) > 0$ | **Proved (0 sorries)** |
+| `arsinh_deriv_eq` / `hasDerivAt_forwardMap` | $\frac{d}{dx}\text{arcsinh}(x/R) = (R\sqrt{1+(x/R)^2})^{-1}$ | **Proved (0 sorries)** |
+| `metric_scale_pos` / `metric_scale_le_one` | $0 < (1+x^2)^{-1/2} \le 1$ and $0 < R^{-1}(1+(x/R)^2)^{-1/2}$ | **Proved (0 sorries)** |
+| `rho_pos` / `rho_le_one` / `rho_strictAntiOn` | $0 < (1+\kappa)^{-1/2} \le 1$ and strictly decreasing on $[0, \infty)$ | **Proved (0 sorries)** |
+| `pureSqrtStepSq_lt_div_gamma` | $h^2 r^6 / (1 + \gamma h r^3) < h r^3 / \gamma$ | **Proved (0 sorries)** |
+| `pureSqrt_quartic_discrete_basin_bound` | $h r^2 < 4\gamma \implies \Delta(r) < 2r \implies \|x - \Delta(x)\| < \|x\|$ (Exact basin bound) | **Proved (0 sorries)** |
+| `softCap_dimensionless_drift_sq_lt` / `_drift_lt` | $u / \sqrt{1 + \gamma u + (\gamma u / \kappa_{\max})^2} < \kappa_{\max} / \gamma$ | **Proved (0 sorries)** |
+| `softCappedDriftStep_lt_bound` | Global step cap $\Delta_{\text{cap}}(r) < s \kappa_{\max} / \gamma$ for all $r \ge 0, h > 0$ | **Proved (0 sorries)** |
+| `softCapped_global_contraction_no_overshoot` | Global contraction $0 < r - \Delta_{\text{cap}}(r) < r$ for all $r \ge s \kappa_{\max} / \gamma$ | **Proved (0 sorries)** |
+| `mhAccept_bounds` / `mh_detailed_balance` | $0 \le \alpha(x,y) \le 1$ and exact reversibility $\pi(x)q(x,y)\alpha(x,y) = \pi(y)q(y,x)\alpha(y,x)$ | **Proved (0 sorries)** |
 
 ### Reference Implementation Cross-Validation (`test_reference_scrutiny.py`)
 
@@ -291,13 +276,15 @@ To ensure scientific integrity, every baseline algorithm is cross-validated agai
   - RWM at $h = (2.38)^2 / (2d)$: empirical acceptance $= 0.2376$ (theory: $0.234$).
   - MALA at $h = 0.5 \cdot (1.65)^2 d^{-1/3}$: empirical acceptance $= 0.5704$ (theory: $0.574$).
 
-### 2024–2026 Frontier Literature Positioning
+### Foundational & 2024–2026 Frontier Literature Positioning
 
-| Frontier Algorithm | Literature Citation | Comparison vs. `mcmc-robust` |
+| Algorithm / Theory | Literature Citation | Comparison vs. `mcmc-robust` |
 | :--- | :--- | :--- |
-| **WALNUTS** | *Within-Orbit Adaptive Leapfrog NUTS* (Nawaf et al., 2025, arXiv:2506.18746) | Focuses on local leapfrog sub-stepping in funnels; `mcmc-robust` resolves both funnel stiffness and heavy-tail tree blow-up via analytical diffeomorphism + stiffness attenuation. |
-| **autoMALA** | *Locally Adaptive MALA* (Biron-Lattes et al., AISTATS 2024, arXiv:2310.14975) | Uses an involutive doubling/halving step-size selector costing 2.2–4.6 gradients/step and rejecting when $\epsilon_{\text{rev}} \neq \epsilon_{\text{fwd}}$ on steep quartic walls. Benchmarked head-to-head in Tables 1–4 (`AutoMALA (2024)`): `UnifiedRobustSampler` achieves **3.1x to 43.6x higher Tail-ESS/grad** at strictly 1 grad/step. |
-| **DCS** | *Diffeomorphic Coordinate Transformation* (2025–2026) | Uses polynomial radial shrinkage; our coordinate-wise $\text{arcsinh}$ avoids cross-coordinate dimensional coupling. |
+| **Variable Transformation Ergodicity** | Johnson & Geyer (*Annals of Statistics*, 2012); Bell et al. (2024) | Established isotropic variable transformations to induce super-exponential decay; `mcmc-robust` introduces selective coordinate-wise $\text{arcsinh}((x_i-\mu_i)/R_i)$ with online IQR/Hill calibration to prevent orthogonal compression in mixed-tail dimensions. |
+| **Stereographic MCMC** | Yang, Łatuszyński, & Roberts (*Annals of Statistics*, 2024) | Uses spherical projection with radius $R \propto \sqrt{d}$; couples all coordinates via $\|x\|_2$, whereas our coordinate-wise map has a strictly diagonal $O(d)$ Jacobian. |
+| **WALNUTS** | *Within-Orbit Adaptive Leapfrog NUTS* (Bou-Rabee, Carpenter, Marsden, & Torelli, 2025, arXiv:2506.18746) | Adapts local leapfrog sub-stepping in stiff funnels; `mcmc-robust` combines analytical coordinate diffeomorphisms with localized stiffness damping. |
+| **autoMALA** | *Locally Adaptive MALA* (Biron-Lattes et al., AISTATS 2024, arXiv:2310.14975) | Uses an involutive doubling/halving step-size selector costing 1.8–3.3 gradients/step and stalling when $\epsilon_{\text{rev}} \neq \epsilon_{\text{fwd}}$ on steep quartic walls. Benchmarked head-to-head in Tables 1–4 (`AutoMALA (2024)`). |
+| **DCS** | *Diffeomorphic Coordinate Transformation* (Brešar & Mijatović, 2026) | Uses polynomial radial shrinkage; our coordinate-wise $\text{arcsinh}$ avoids cross-coordinate dimensional coupling. |
 
 ---
 
@@ -313,9 +300,9 @@ mcmc-robust/
 │   ├── diagnostics/           # ArviZ 1.3 metrics, folded R-hat, ESS/grad, mcse_q99
 │   ├── integrations.py        # PyMCModelTarget, sample_pymc_model, JaxArcsinhTransform
 │   └── bench/                 # Unified 5-benchmark CLI, SOTA runner, publication plot
-├── formal/                    # Lean 4 formal verification proofs (lake build)
+├── formal/                    # Lean 4 formal verification proofs (26 theorems, lake build)
 ├── benchmarks/                # Unified CLI runner (run_benchmarks.py)
-├── tests/unit/                # 790 unit tests passing with -W error
+├── tests/unit/                # 810 unit & integration tests passing with -W error
 ├── reports/                   # Grounded CSV/JSON benchmark data & publication figures
 ├── example.py                 # Standalone 10-second comparison script
 └── pyproject.toml             # Python >= 3.13 configuration (ruff, mypy, pre-commit)

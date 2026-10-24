@@ -112,6 +112,10 @@ class Sampler(ABC):
             result: Result of the transition step just completed.
         """
 
+    def finalize_adaptation(self) -> float:
+        """Finalizes warmup adaptation and freezes the post-warmup step size."""
+        return self.step_size
+
     def sample(
         self,
         x0: np.ndarray,
@@ -151,6 +155,8 @@ class Sampler(ABC):
             res = self.step(state, target, rng)
             if adapt and t < burn_in:
                 self.adapt(t, res)
+                if t == burn_in - 1:
+                    self.finalize_adaptation()
             state = res.state
             results.append(res)
             if t >= burn_in:

@@ -336,8 +336,8 @@ def sample_pymc_model(
 class JaxArcsinhTransform:
     r"""Pure JAX Coordinate-Wise Arcsinh Diffeomorphism for BlackJAX and XLA.
 
-    Defines the coordinate diffeomorphism:
-        $$z_i = \operatorname{arcsinh}(x_i / R_i), \quad x_i = R_i \sinh(z_i)$$
+    Defines the translation-equivariant coordinate diffeomorphism:
+        $$z_i = \operatorname{arcsinh}\!\left(\frac{x_i - \mu_i}{R_i}\right), \quad x_i = \mu_i + R_i \sinh(z_i)$$
     with Jacobian factor $dx_i / dz_i = R_i \cosh(z_i)$ and log-determinant:
         $$\log |\det J(z)| = \sum_{i=1}^d \log(R_i \cosh(z_i))$$
 
@@ -348,6 +348,8 @@ class JaxArcsinhTransform:
     Parameters:
         radius: Coordinate scale parameter $R > 0$. Either a scalar or 1D array of shape `(d,)`.
         dim: Dimensionality of the target space. Optional if `radius` is an array.
+        scales: Optional alias for `radius`.
+        location: Coordinate centering parameter $\mu \in \mathbb{R}^d$ (default: `0.0`).
     """
 
     def __init__(
@@ -355,6 +357,7 @@ class JaxArcsinhTransform:
         radius: float | Sequence[float] | np.ndarray | jnp.ndarray = 3.0,
         dim: int | None = None,
         scales: float | Sequence[float] | np.ndarray | jnp.ndarray | None = None,
+        location: float | Sequence[float] | np.ndarray | jnp.ndarray = 0.0,
     ) -> None:
         effective_radius = scales if scales is not None else radius
         r_arr = jnp.asarray(effective_radius, dtype=jnp.float64)
@@ -371,13 +374,27 @@ class JaxArcsinhTransform:
         else:
             raise ValueError(f"Radius must be scalar or 1D array, got shape {r_arr.shape}")
 
+        loc_arr = jnp.asarray(location, dtype=jnp.float64)
+        if loc_arr.ndim == 0:
+            if self.radius.ndim == 1:
+                self.location = jnp.full((self.d,), loc_arr, dtype=jnp.float64)
+            else:
+                self.location = loc_arr
+        elif loc_arr.ndim == 1:
+            self.location = loc_arr
+            if self.radius.ndim == 0:
+                self.d = int(loc_arr.shape[0])
+                self.radius = jnp.full((self.d,), self.radius, dtype=jnp.float64)
+        else:
+            raise ValueError(f"Location must be scalar or 1D array, got shape {loc_arr.shape}")
+
     def forward(self, x: jnp.ndarray) -> jnp.ndarray:
         r"""Maps primal coordinates $x \in \mathbb{R}^d$ to transformed coordinates $z \in \mathbb{R}^d$."""
-        return jnp.arcsinh(x / self.radius)
+        return jnp.arcsinh((x - self.location) / self.radius)
 
     def inverse(self, z: jnp.ndarray) -> jnp.ndarray:
         r"""Maps transformed coordinates $z \in \mathbb{R}^d$ back to primal coordinates $x \in \mathbb{R}^d$."""
-        return self.radius * jnp.sinh(z)
+        return self.location + self.radius * jnp.sinh(z)
 
     def log_jacobian_det(self, z: jnp.ndarray) -> jnp.ndarray:
         r"""Computes the log-determinant of the Jacobian $\log |\det J(z)| = \sum_i \log(R_i \cosh(z_i))$."""
@@ -389,7 +406,7 @@ class JaxArcsinhTransform:
     ) -> Callable[[jnp.ndarray], jnp.ndarray]:
         r"""Wraps a primal log-density function $\log \pi_X(x)$ into the transformed log-density $\log \pi_Z(z)$.
 
-        $$\log \pi_Z(z) = \log \pi_X(R \sinh(z)) + \sum_{i=1}^d \log(R_i \cosh(z_i))$$
+        $$\log \pi_Z(z) = \log \pi_X(\mu + R \sinh(z)) + \sum_{i=1}^d \log(R_i \cosh(z_i))$$
         """
 
         def transformed_logdensity(z: jnp.ndarray) -> jnp.ndarray:
@@ -405,9 +422,9 @@ class JaxArcsinhTransform:
         min_scale: float = 0.1,
         max_scale: float = 100.0,
     ) -> JaxArcsinhTransform:
-        r"""Estimates coordinate scales $R_i$ from sample IQR via semi-interquartile range.
+        r"""Estimates coordinate locations $\mu_i$ and normal-consistent scales $R_i$ from sample IQR.
 
-        $$R_i = \operatorname{clip}(0.5 \cdot \operatorname{IQR}(x_i), R_{\min}, R_{\max})$$
+        $$\mu_i = \operatorname{median}(x_i), \quad R_i = \operatorname{clip}\!\left(\frac{\operatorname{IQR}(x_i - \mu_i)}{1.3489795}, R_{\min}, R_{\max}\right)$$
         """
         arr = np.asarray(samples, dtype=np.float64)
         if arr.ndim == 1:
@@ -415,11 +432,13 @@ class JaxArcsinhTransform:
         elif arr.ndim > 2:
             arr = arr.reshape(-1, arr.shape[-1])
 
-        q25 = np.percentile(arr, 25.0, axis=0)
-        q75 = np.percentile(arr, 75.0, axis=0)
-        iqr = np.maximum(q75 - q25, 1e-6)
-        scales = np.clip(0.5 * iqr, min_scale, max_scale)
-        return cls(radius=scales)
+        loc = np.median(arr, axis=0)
+        centered = arr - loc
+        q25 = np.percentile(centered, 25.0, axis=0)
+        q75 = np.percentile(centered, 75.0, axis=0)
+        iqr_scale = np.maximum((q75 - q25) / 1.3489795, 1e-6)
+        scales = np.clip(iqr_scale, min_scale, max_scale)
+        return cls(radius=scales, location=loc)
 
     def scan_nuts(
         self,

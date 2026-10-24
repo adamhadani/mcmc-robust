@@ -150,9 +150,7 @@ class AutoMALA(Sampler):
     ) -> tuple[int, np.ndarray, float, np.ndarray, np.ndarray, float, int]:
         """Runs Algorithm 2 forward from (x, p) returning (k_level, x*, lp*, g*, p*, delta_H, grad_evals)."""
         grad_evals = 0
-        x_cur, lp_cur, g_cur, p_cur, dh_cur, r_cur = self._leapfrog_one_step(
-            x, lp_x, g_x, p, k_x, eps0, s, target
-        )
+        x_cur, lp_cur, g_cur, p_cur, dh_cur, r_cur = self._leapfrog_one_step(x, lp_x, g_x, p, k_x, eps0, s, target)
         grad_evals += 1
 
         if a < r_cur < b:
@@ -268,11 +266,7 @@ class AutoMALA(Sampler):
         if g_x is None:
             raise ValueError("AutoMALA step requires cached grad_log_prob in ChainState")
 
-        s = (
-            self._preconditioner
-            if self._preconditioner is not None
-            else np.ones(d, dtype=np.float64)
-        )
+        s = self._preconditioner if self._preconditioner is not None else np.ones(d, dtype=np.float64)
         # Sample momentum p ~ N(0, M) where M = diag(1 / s^2)
         p = rng.normal(size=d) / s
         k_x = self._kinetic_energy(p, s)

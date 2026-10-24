@@ -199,9 +199,18 @@ class TransformedSamplerAdapter(Sampler):
         return self.step_size
 
 
-def make_stereographic_mala(step_size: float = 0.1, dim: int = 2, scale: float = 1.0) -> Sampler:
-    """Instantiates Stereographic MALA with spherical retraction."""
-    transform = StereographicTransform(d=dim, scale=scale)
+def make_stereographic_mala(
+    step_size: float = 0.1,
+    dim: int = 2,
+    scale: float | None = None,
+) -> Sampler:
+    """Instantiates Stereographic MALA with spherical retraction.
+
+    By default, sets projection radius ``scale = sqrt(dim)`` following
+    Yang, Latuszynski, & Roberts (2024, Annals of Statistics).
+    """
+    resolved_scale = float(np.sqrt(dim)) if scale is None else float(scale)
+    transform = StereographicTransform(d=dim, scale=resolved_scale)
     base_mala = MALA(step_size=step_size)
     return TransformedSamplerAdapter(base_mala, transform, spherical_retraction=True)
 

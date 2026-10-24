@@ -160,14 +160,36 @@ def main(argv: list[str] | None = None) -> int:
     if choice in ("1", "all"):
         run_benchmark_1(output_dir=out_path, quick=quick, seed=seed)
 
-    if choice in ("2", "all"):
-        run_regime_benchmark("heavy_tails", output_dir=out_path, quick=quick, seed=seed, benchmark_num=2)
-
-    if choice in ("3", "all"):
-        run_regime_benchmark("roughness", output_dir=out_path, quick=quick, seed=seed, benchmark_num=3)
-
-    if choice in ("4", "all"):
-        run_regime_benchmark("dual_pathology", output_dir=out_path, quick=quick, seed=seed, benchmark_num=4)
+    if choice == "all":
+        print("\n" + "=" * 70)
+        print("Executing Benchmarks 2-4: All Target Regimes (Benign, Roughness, Heavy Tails, Dual)")
+        print("=" * 70)
+        dims = (2, 10) if quick else (2, 10, 50)
+        budget = 150 if quick else 3000
+        n_chains = 2 if quick else 4
+        samplers = ("mala", "gentle_mala", "unified_robust") if quick else BenchmarkConfig.samplers
+        config = BenchmarkConfig(
+            regimes=("benign", "roughness", "heavy_tails", "dual_pathology"),
+            dimensions=dims,
+            samplers=samplers,
+            budget=budget,
+            n_chains=n_chains,
+            seed=seed,
+            output_dir=str(out_path),
+            quick=quick,
+        )
+        runner = BenchmarkRunner(config)
+        result = runner.run_all()
+        print(
+            f"Benchmarks 2-4 complete. Completed runs: {result.summary['completed_runs']}/{result.summary['total_runs']}"
+        )
+    else:
+        if choice == "2":
+            run_regime_benchmark("heavy_tails", output_dir=out_path, quick=quick, seed=seed, benchmark_num=2)
+        if choice == "3":
+            run_regime_benchmark("roughness", output_dir=out_path, quick=quick, seed=seed, benchmark_num=3)
+        if choice == "4":
+            run_regime_benchmark("dual_pathology", output_dir=out_path, quick=quick, seed=seed, benchmark_num=4)
 
     if choice in ("5", "all"):
         run_benchmark_5(output_dir=out_path, quick=quick, seed=seed)
@@ -178,22 +200,24 @@ def main(argv: list[str] | None = None) -> int:
         print("=" * 70)
         fig_dir = out_path / "figures"
         fig_dir.mkdir(parents=True, exist_ok=True)
-        generate_all_figures(
-            results_path=out_path / "benchmark_results.json"
-            if (out_path / "benchmark_results.json").exists()
-            else None,
-            sweep_path=out_path / "sweep_results.json" if (out_path / "sweep_results.json").exists() else None,
-            out_dir=fig_dir,
-            formats=("png", "pdf"),
-        )
-        # Ensure Figure 5 is explicitly rendered
-        plot_figure5_sota_nuts_comparison(
-            sota_path=out_path / "sota_comparison_results.csv"
-            if (out_path / "sota_comparison_results.csv").exists()
-            else None,
-            out_dir=fig_dir,
-            formats=("png", "pdf"),
-        )
+        has_bench = (out_path / "benchmark_results.json").exists() and (out_path / "sweep_results.json").exists()
+        has_sota = (out_path / "sota_comparison_results.csv").exists() or (
+            out_path / "sota_comparison_results.json"
+        ).exists()
+        if has_bench and has_sota:
+            generate_all_figures(
+                reports_dir=out_path,
+                out_dir=fig_dir,
+                formats=("png", "pdf"),
+            )
+        elif has_sota:
+            plot_figure5_sota_nuts_comparison(
+                reports_dir=out_path,
+                out_dir=fig_dir,
+                formats=("png", "pdf"),
+            )
+        else:
+            raise FileNotFoundError(f"Required benchmark artifacts not found in {out_path} for plotting.")
         print(f"Figures saved to {fig_dir}")
 
     print("\nBenchmark Suite Execution Finished Successfully.")

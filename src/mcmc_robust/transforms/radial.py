@@ -121,16 +121,17 @@ class RadialDiffeomorphicTransform(SpaceTransformation):
         if r <= self._radius:
             return gx.copy()
 
-        val, d1, d2 = self._phi(r)
-        u = x_arr / r
-        ug = float(np.dot(u, gx))
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            val, d1, d2 = self._phi(r)
+            u = x_arr / r
+            ug = float(np.dot(u, gx))
 
-        # Scalar curvature term of log-det Jacobian: d/dr log |det J|
-        kappa = (self.input_dim - 1) * (d1 / val - 1.0 / r) + (d2 / d1)
+            # Scalar curvature term of log-det Jacobian: d/dr log |det J|
+            kappa = (self.input_dim - 1) * (d1 / val - 1.0 / r) + (d2 / d1)
 
-        # Matrix-free Sherman-Morrison inversion:
-        # gy = J^{-T} (gx - kappa * u)
-        rad_comp = (ug - kappa) / d1
-        tan_scale = r / val
-        gy = tan_scale * gx + (rad_comp - tan_scale * ug) * u
+            # Matrix-free Sherman-Morrison inversion:
+            # gy = J^{-T} (gx - kappa * u)
+            rad_comp = (ug - kappa) / d1
+            tan_scale = r / val
+            gy = tan_scale * gx + (rad_comp - tan_scale * ug) * u
         return gy

@@ -46,6 +46,7 @@ class SweepRecord:
     burn_in_steps: int | None
     terminal_norm: float
     divergence_reason: str | None = None
+    norm_trajectory: list[float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Converts record to JSON-serializable dictionary."""
@@ -131,7 +132,9 @@ class StepSizeSweep:
         burn_in_steps: int | None = None
         diverged = False
         divergence_reason: str | None = None
-        terminal_norm = float(np.linalg.norm(x0))
+        initial_norm = float(np.linalg.norm(x0))
+        terminal_norm = initial_norm
+        traj: list[float] = [initial_norm]
 
         try:
             state = sampler.init_state(x0, target)
@@ -150,6 +153,8 @@ class StepSizeSweep:
 
                 current_norm = float(np.linalg.norm(primal))
                 terminal_norm = current_norm
+                if len(traj) <= 100:
+                    traj.append(current_norm)
 
                 if burn_in_steps is None and current_norm <= bulk_r:
                     burn_in_steps = step_idx
@@ -170,6 +175,7 @@ class StepSizeSweep:
             burn_in_steps=burn_in_steps,
             terminal_norm=terminal_norm,
             divergence_reason=divergence_reason,
+            norm_trajectory=traj,
         )
 
     def _analyze_stability_windows(self, records: list[SweepRecord]) -> dict[str, Any]:
@@ -243,14 +249,23 @@ class StepSizeSweep:
         json_path = os.path.join(self.config.output_dir, "sweep_results.json")
         csv_path = os.path.join(self.config.output_dir, "sweep_results.csv")
 
+        def _sanitize_json(obj: Any) -> Any:
+            if isinstance(obj, float):
+                return obj if np.isfinite(obj) else None
+            if isinstance(obj, dict):
+                return {k: _sanitize_json(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_sanitize_json(v) for v in obj]
+            return obj
+
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
+            json.dump(_sanitize_json(payload), f, indent=2)
 
         dicts = [r.to_dict() for r in records]
         if dicts:
-            fieldnames = list(dicts[0].keys())
+            fieldnames = [k for k in dicts[0].keys() if k != "norm_trajectory"]
             with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator="\n")
+                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore", lineterminator="\n")
                 writer.writeheader()
                 writer.writerows(dicts)
         else:
