@@ -32,7 +32,7 @@ Two implementations:
 | Funnels and hierarchical models | Not addressed | A coordinate-wise map cannot remove the coupling between a scale parameter and its children. Non-centre the model instead (REPORT §3.3, Table 2). |
 | `GentleMALA` (soft-capped drift damping for stiff targets) | Experimental | Faster burn-in on a quartic target, but a narrower stable step-size range than tamed MALA. No guarantee for the coordinate-wise mode it runs in (REPORT §3.1). |
 | First-order samplers with the transform (`UnifiedRobustSampler`, `AnisotropicTailMALA`) | Experimental | Not converged within the benchmark budgets (REPORT §3.2). |
-| Lean 4 formalisation (`formal/`) | Supporting lemmas | Scalar facts about the transform, the damping and the calibration clip. It does not verify the samplers (REPORT §4). |
+| Lean 4 formalisation (`formal/`) | Supporting lemmas, plus one structural theorem | Scalar facts about the transform, the damping and the calibration clip. A machine-checked theorem shows that no single coordinate map can suit both Gaussian and Cauchy coordinates. It does not verify the samplers (REPORT §4). |
 
 ## Results at a glance
 
