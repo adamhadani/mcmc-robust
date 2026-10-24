@@ -206,6 +206,39 @@ def t_mle_nu(pilot: np.ndarray, n_em: int = 30) -> np.ndarray:
     return out
 
 
+def tukey_h_mle(pilot: np.ndarray, mu: np.ndarray, r0: np.ndarray, h0: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Per-coordinate MLE of (R, h) for the heavy-tail Lambert W x Gaussian (Tukey-h) model
+    x = mu + R z exp(h z^2 / 2), z ~ N(0, 1), with mu fixed (Goerg 2015, Definition 2, delta = h).
+
+    log f(x) = -z^2/2 - log(2 pi)/2 - log R - h z^2/2 - log1p(h z^2), z = u exp(-W(h u^2)/2), u = (x - mu)/R.
+    Optimised over (log R, log h) by Nelder-Mead from (r0, h0); h is kept in [1e-3, 20].
+    """
+    from scipy import optimize, special
+
+    n, d = pilot.shape
+    r_out, h_out = np.empty(d), np.empty(d)
+    for j in range(d):
+        x = pilot[:, j] - mu[j]
+
+        def nll(theta: np.ndarray, x: np.ndarray = x) -> float:
+            log_r, log_h = theta
+            r, h = np.exp(log_r), np.exp(np.clip(log_h, np.log(1e-3), np.log(20.0)))
+            u = x / r
+            w = np.real(special.lambertw(h * u * u))
+            z2 = u * u * np.exp(-w)
+            return float(np.sum(0.5 * z2 + log_r + 0.5 * h * z2 + np.log1p(h * z2)))
+
+        res = optimize.minimize(
+            nll,
+            np.array([np.log(max(r0[j], 1e-8)), np.log(np.clip(h0[j], 2e-3, 10.0))]),
+            method="Nelder-Mead",
+            options={"xatol": 1e-6, "fatol": 1e-8, "maxiter": 2000},
+        )
+        r_out[j] = float(np.exp(res.x[0]))
+        h_out[j] = float(np.exp(np.clip(res.x[1], np.log(1e-3), np.log(20.0))))
+    return r_out, h_out
+
+
 @dataclass
 class CalibrationRule:
     """How to turn Phase-1 draws into c_i. `kind` selects the heavy/light test and the alpha estimate.
@@ -215,6 +248,9 @@ class CalibrationRule:
                   rule in CoordinateWiseArcsinhTransform.calibrate_from_samples); c = kappa * alpha_hill.
     - "qr":       heavy iff q99/q75 > qr_thr; c = kappa * alpha_hill.
     - "tmle":     heavy iff t-MLE nu <= nu_thr; c = kappa * nu_mle.
+    - "lw_mle":   heavy iff t-MLE nu <= nu_thr; on heavy coordinates (R, c) are fitted jointly by the
+                  Tukey-h (Lambert W x Gaussian) MLE with mu = median, so that the pullback of the Phase-1
+                  draws is as close to N(0, 1) as the family allows; R is returned and overrides the IQR rule.
     `force_all` marks every coordinate heavy (the light-tail cost arm); `c_mult` rescales c afterwards
     (the misspecification arms).
     """
@@ -233,7 +269,7 @@ class CalibrationRule:
         pilot = np.asarray(pilot, dtype=np.float64).reshape(-1, np.asarray(pilot).shape[-1])
         alpha_h = hill_alpha(pilot)
         qr = quantile_ratio(pilot)
-        if self.kind == "tmle":
+        if self.kind in ("tmle", "lw_mle"):
             alpha_est = t_mle_nu(pilot)
             heavy = alpha_est <= self.nu_thr
         else:
@@ -250,7 +286,17 @@ class CalibrationRule:
             heavy = np.ones_like(heavy, dtype=bool)
         alpha_c = np.clip(alpha_est, *self.alpha_clip)
         c = np.where(heavy, self.kappa * self.c_mult * alpha_c, np.inf)
-        return {"alpha_hill": alpha_h, "qratio": qr, "alpha_est": alpha_est, "heavy": heavy, "c": c}
+        out = {"alpha_hill": alpha_h, "qratio": qr, "alpha_est": alpha_est, "heavy": heavy, "c": c}
+        if self.kind == "lw_mle":
+            med = np.median(pilot, axis=0)
+            a = np.abs(pilot - med)
+            r0 = (np.quantile(pilot - med, 0.75, axis=0) - np.quantile(pilot - med, 0.25, axis=0)) / 1.3489795
+            r0 = np.where(r0 > 1e-8, r0, np.median(a, axis=0) / 0.6745)
+            r_fit, h_fit = tukey_h_mle(pilot, med, r0, 1.0 / alpha_c)
+            out["R_override"] = np.where(heavy, r_fit, np.nan)  # NaN: keep the IQR-rule R
+            out["c"] = np.where(heavy, self.c_mult / h_fit, np.inf)
+            out["h_mle"] = h_fit
+        return out
 
 
 # ---------------------------------------------------------------------------------------------
@@ -407,7 +453,10 @@ def sample_tukey_h_nuts(
         logdensity_fn, d, tune=tune, chains=chains, seed=seed, max_num_doublings=max_num_doublings
     )
     cal = rule.compute(p1.x_tail.reshape(-1, d))
-    tr = JaxTukeyHTransform.from_c(p1.arcsinh_transform.location, p1.arcsinh_transform.radius, cal["c"])
+    radius = np.asarray(p1.arcsinh_transform.radius)
+    if "R_override" in cal:
+        radius = np.where(np.isnan(cal["R_override"]), radius, cal["R_override"])
+    tr = JaxTukeyHTransform.from_c(p1.arcsinh_transform.location, radius, cal["c"])
     res = run_phase23(
         logdensity_fn,
         tr,

@@ -9,6 +9,9 @@ Arms:
   hmap_tmle_c0.25  hmap_tmle with c x 1/4 on heavy coordinates.
   hmap_tmle_c4     hmap_tmle with c x 4 on heavy coordinates.
   hmap_forced      Tukey-h on every coordinate, c = Hill alpha (what a pipeline without a light/heavy test does).
+  hmap_tmle_c0.125, hmap_tmle_c0.5   extra kappa values for the held-out kappa sweep (not in the main grid).
+  hmap_lwmle       heavy test as hmap_tmle; (R, c) fitted jointly by Tukey-h MLE (run after the main grid,
+                   results/grid_lwmle.json and the held-out kappa sweep).
 All Tukey-h arms reuse the arcsinh arm's Phase 1 (identical draws: same seed and key splits), and pay for it in
 their gradient count.
 
@@ -45,8 +48,14 @@ HMAP_ARMS = {
     "hmap_tmle_c0.25": CalibrationRule(kind="tmle", nu_thr=5.0, c_mult=0.25),
     "hmap_tmle_c4": CalibrationRule(kind="tmle", nu_thr=5.0, c_mult=4.0),
     "hmap_forced": CalibrationRule(kind="hill", force_all=True),
+    # kappa sweep (held-out seeds only; see FINDINGS.md): c = kappa * nu_hat on heavy coordinates
+    "hmap_tmle_c0.125": CalibrationRule(kind="tmle", nu_thr=5.0, c_mult=0.125),
+    "hmap_tmle_c0.5": CalibrationRule(kind="tmle", nu_thr=5.0, c_mult=0.5),
+    # joint (R, c) by Tukey-h / Lambert W x Gaussian MLE on heavy coordinates (added after the main grid)
+    "hmap_lwmle": CalibrationRule(kind="lw_mle", nu_thr=5.0),
 }
-ALL_ARMS = ["stock", "arcsinh", *HMAP_ARMS]
+# Arms of the main grid (results/grid_A.json, grid_B.json); the kappa sweep passes its arms explicitly.
+ALL_ARMS = ["stock", "arcsinh", "hmap_tmle", "hmap_qr", "hmap_tmle_c0.25", "hmap_tmle_c4", "hmap_forced"]
 
 
 def provenance() -> dict:
@@ -175,6 +184,7 @@ def main() -> None:
                 row.update(summarise(res.samples, res.grad_evals, res.divergences, key, target, wall))
                 row.update(nsteps_stats(res.n_steps))
                 row["c"] = [None if np.isinf(c) else float(c) for c in res.extra["c"]]
+                row["R"] = res.extra["R"]
                 row["n_heavy"] = int(np.sum(res.extra["heavy"]))
                 row["phase1_grads"] = res.phase1_grad_evals
                 data["rows"].append(row)
