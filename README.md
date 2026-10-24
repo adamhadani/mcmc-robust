@@ -230,26 +230,56 @@ uv run python -m mcmc_robust.bench.plot
 | **UnifiedRobustSampler** | `mcmc-robust` | 6,004 | 403.7 | 765.0 | 1.019 | **0.12741 (1.85x)** | **10 (1.7x vs Tamed)** | **0 (0 warmup)** |
 | **UnifiedRobustNUTS** | `mcmc-robust` | 62,131 | 4,697.1 | **3,502.7** | **1.002** | 0.05638 | **15 (2.7x vs NUTS)** | **0 (24 warmup)** |
 
-#### Table 5: Canonical Applied Bayesian (`posteriordb`-Style) Benchmark Suite (`reports/applied_benchmark_results.csv`)
-*Targets: 5 canonical applied Bayesian posteriors (`RadonHierarchicalTarget` $d=18$, `SparseHorseshoeLogisticTarget` $d=21$, `RobustStudentTRegressionTarget` $d=12$, `HierarchicalItemResponse2PLTarget` $d=22$, and `StochasticVolatilityLogReturnTarget` $d=22$, evaluated via `uv run python -m mcmc_robust.bench.applied_runner`).*
+#### Table 5: Applied Models on Simulated Data, PosteriorDB-Inspired (`reports/applied_benchmark_results.csv`)
+*Five models with the structure of standard applied posteriors, each fitted to **simulated** data, so they are not the PosteriorDB posteriors: a radon-style hierarchical regression (`RadonHierarchicalTarget`, $d=18$), sparse horseshoe logistic regression (`SparseHorseshoeLogisticTarget`, $d=21$), robust Student-$t$ regression with outliers (`RobustStudentTRegressionTarget`, $d=12$), a hierarchical 2PL IRT model (`HierarchicalItemResponse2PLTarget`, $d=22$) and AR(1) stochastic volatility (`StochasticVolatilityLogReturnTarget`, $d=22$). Every sampler runs $4 \times 1,000$ draws after $1,000$ warm-up steps with seed 42, and all NUTS variants share a maximum tree depth of 10. Generated with `uv run python -m mcmc_robust.bench.applied_runner`.*
 
-| Applied Model & Sampler | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | ESS/grad | Tail-ESS/grad | Post-Warmup Divs | Wall Time (s) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Radon ($d=18$):** BlackJAX NUTS (Stock) | 9,902 | 100.1 | 112.2 | 1.091 | 0.01011 | 0.01133 | 1 | 2.03s |
-| **Radon ($d=18$):** **BlackJAX NUTS + Arcsinh** | 5,856 | **139.3** | **132.5** | **1.044** | **0.02378** | **0.02262 (2.00x)** | 1 | 1.52s |
-| **Radon ($d=18$):** **UnifiedRobustNUTS** | 12,390 | 122.1 | 118.7 | 1.073 | 0.00985 | 0.00958 | **0** | **0.79s** |
-| **Horseshoe Logistic ($d=21$):** BlackJAX NUTS (Stock) | 22,711 | 66.8 | 82.0 | 1.278 | 0.00294 | 0.00361 | 27 | 3.26s |
-| **Horseshoe Logistic ($d=21$):** **BlackJAX NUTS + Arcsinh** | 33,806 | **102.3** | **91.5** | 1.177 | 0.00303 | 0.00271 | 19 | 3.56s |
-| **Horseshoe Logistic ($d=21$):** **UnifiedRobustNUTS** | 17,103 | 52.1 | 63.9 | **1.174** | **0.00305** | **0.00373** | **9 (-67%)** | **1.19s** |
-| **Student-$t$ Regression ($d=12$):** BlackJAX NUTS (Stock) | 3,872 | 205.1 | **163.6** | 1.035 | **0.05297** | **0.04226** | **0** | 2.89s |
-| **Student-$t$ Regression ($d=12$):** **BlackJAX NUTS + Arcsinh** | 4,689 | **213.0** | 151.9 | 1.067 | 0.04543 | 0.03239 | **0** | 2.96s |
-| **Student-$t$ Regression ($d=12$):** **UnifiedRobustNUTS** | 6,269 | 173.9 | 159.2 | **1.018** | 0.02774 | 0.02540 | **0** | **0.39s** |
-| **IRT-2PL ($d=22$):** BlackJAX NUTS (Stock) | 12,145 | 87.8 | 82.9 | 1.589 | 0.00723 | 0.00683 | 18 | 3.08s |
-| **IRT-2PL ($d=22$):** **BlackJAX NUTS + Arcsinh** | 12,419 | 120.7 | 126.7 | 1.116 | 0.00972 | 0.01020 (1.49x) | 7 | 3.49s |
-| **IRT-2PL ($d=22$):** **UnifiedRobustNUTS** | 10,611 | **127.9** | **131.4** | **1.060** | **0.01206** | **0.01238 (1.81x)** | **0** | **0.74s** |
-| **Stochastic Volatility ($d=22$):** BlackJAX NUTS (Stock) | 10,741 | **139.7** | 46.5 | 1.345 | **0.01301** | 0.00433 | **0** | 2.94s |
-| **Stochastic Volatility ($d=22$):** **BlackJAX NUTS + Arcsinh** | 9,668 | 108.9 | 98.3 | 1.114 | 0.01126 | **0.01017 (2.35x)** | **0** | 3.47s |
-| **Stochastic Volatility ($d=22$):** **UnifiedRobustNUTS** | 11,274 | 84.3 | **107.7** | **1.085** | 0.00748 | 0.00955 (2.20x) | **0** | **0.65s** |
+| Model | Sampler | Max $\widehat{R}$ | Converged | Min Bulk-ESS | Min Tail-ESS | Tail-ESS/grad ($\times 10^{-3}$) | Divergences | Grads | Wall time (s) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| Radon-style hierarchical ($d=18$) | MALA | 1.385 | no | 9 | 10 | 21.40 | 0 | 8,004 | 0.6 |
+| Radon-style hierarchical ($d=18$) | AutoMALA | 1.096 | no | 34 | 63 | 14.34 | 0 | 16,604 | 1.1 |
+| Radon-style hierarchical ($d=18$) | UnifiedRobustSampler | 1.304 | no | 11 | 11 | 11.52 | 0 | 8,004 | 1.1 |
+| Radon-style hierarchical ($d=18$) | BlackJAX NUTS (stock) | 1.019 | no | 295 | 250 | 12.14 | 10 | 151,503 | 12.5 |
+| Radon-style hierarchical ($d=18$) | BlackJAX NUTS + Arcsinh | 1.022 | no | 227 | 154 | 16.61 | 30 | 106,174 | 12.3 |
+| Radon-style hierarchical ($d=18$) | UnifiedRobustNUTS | 1.011 | no | 475 | 417 | 21.05 | 3 | 114,269 | 15.0 |
+| Horseshoe logistic ($d=21$) | MALA | 2.108 | no | 5 | 6 | 3.77 | 0 | 8,004 | 0.8 |
+| Horseshoe logistic ($d=21$) | AutoMALA | 1.584 | no | 7 | 6 | 1.40 | 0 | 21,012 | 2.0 |
+| Horseshoe logistic ($d=21$) | UnifiedRobustSampler | 1.412 | no | 8 | 11 | 3.39 | 0 | 8,004 | 1.5 |
+| Horseshoe logistic ($d=21$) | BlackJAX NUTS (stock) | 1.029 | no | 179 | 119 | 1.64 | 559 | 361,983 | 13.3 |
+| Horseshoe logistic ($d=21$) | BlackJAX NUTS + Arcsinh | 1.088 | no | 38 | 17 | 1.47 | 851 | 375,654 | 14.2 |
+| Horseshoe logistic ($d=21$) | UnifiedRobustNUTS | 1.011 | no | 365 | 306 | 2.59 | 122 | 455,219 | 73.5 |
+| Student-$t$ regression ($d=12$) | MALA | 1.045 | no | 151 | 211 | 43.06 | 0 | 8,004 | 0.6 |
+| Student-$t$ regression ($d=12$) | AutoMALA | 1.038 | no | 161 | 182 | 23.07 | 0 | 15,281 | 1.2 |
+| Student-$t$ regression ($d=12$) | UnifiedRobustSampler | 1.024 | no | 199 | 306 | 49.19 | 0 | 8,004 | 1.3 |
+| Student-$t$ regression ($d=12$) | BlackJAX NUTS (stock) | 1.002 | yes | 1,744 | 2,497 | 41.14 | 0 | 67,334 | 11.2 |
+| Student-$t$ regression ($d=12$) | BlackJAX NUTS + Arcsinh | 1.004 | yes | 1,637 | 2,300 | 37.35 | 0 | 70,234 | 11.2 |
+| Student-$t$ regression ($d=12$) | UnifiedRobustNUTS | 1.001 | yes | 2,267 | 2,793 | 41.61 | 0 | 71,254 | 11.0 |
+| IRT-2PL ($d=22$) | MALA | 1.259 | no | 13 | 14 | 7.20 | 0 | 8,004 | 0.8 |
+| IRT-2PL ($d=22$) | AutoMALA | 1.113 | no | 30 | 41 | 8.68 | 0 | 17,127 | 1.7 |
+| IRT-2PL ($d=22$) | UnifiedRobustSampler | 1.412 | no | 9 | 12 | 10.23 | 0 | 8,004 | 1.5 |
+| IRT-2PL ($d=22$) | BlackJAX NUTS (stock) | 1.013 | no | 337 | 460 | 9.54 | 38 | 185,666 | 12.7 |
+| IRT-2PL ($d=22$) | BlackJAX NUTS + Arcsinh | 1.124 | no | 22 | 8 | 7.21 | 106 | 211,194 | 13.9 |
+| IRT-2PL ($d=22$) | UnifiedRobustNUTS | 1.008 | yes | 397 | 556 | 11.84 | 38 | 175,595 | 28.6 |
+| Stochastic volatility ($d=22$) | MALA | 1.893 | no | 6 | 7 | 3.49 | 0 | 8,004 | 0.6 |
+| Stochastic volatility ($d=22$) | AutoMALA | 1.580 | no | 7 | 9 | 2.03 | 0 | 17,953 | 1.2 |
+| Stochastic volatility ($d=22$) | UnifiedRobustSampler | 1.551 | no | 7 | 7 | 2.07 | 0 | 8,004 | 1.6 |
+| Stochastic volatility ($d=22$) | BlackJAX NUTS (stock) | 1.018 | no | 137 | 225 | 3.65 | 0 | 263,446 | 11.5 |
+| Stochastic volatility ($d=22$) | BlackJAX NUTS + Arcsinh | 1.019 | no | 114 | 194 | 3.40 | 1 | 207,953 | 11.6 |
+| Stochastic volatility ($d=22$) | UnifiedRobustNUTS | 1.022 | no | 134 | 200 | 3.93 | 0 | 232,745 | 31.0 |
+
+How to read this table:
+- **Converged** means the largest rank-normalized split $\widehat{R}$ over all coordinates is at most 1.01 (Vehtari et al., 2021). Only 4 of the 30 runs meet it, so efficiency differences between unconverged runs are not evidence of an advantage.
+- **Min Bulk-ESS** and **Min Tail-ESS** are for the worst-mixing coordinate, usually a hierarchical scale. **Tail-ESS/grad** is the coordinate-mean Tail-ESS divided by all gradient evaluations, warm-up included.
+- **Divergences** counts post-warm-up divergent transitions only.
+- **Wall time** includes JAX JIT compilation for the two BlackJAX rows, while `UnifiedRobustNUTS` runs in NumPy, so it is not a like-for-like speed comparison.
+- `BlackJAX NUTS + Arcsinh` uses a fixed transform ($R = 2.5$, centred at the origin); `UnifiedRobustNUTS` learns its location and radii during warm-up.
+- Each cell is a single seed, so the table has no error bars.
+
+What the table shows:
+- The three first-order samplers (MALA, AutoMALA, `UnifiedRobustSampler`) do not converge on any of the five models within $2,000$ iterations per chain.
+- On the Student-$t$ regression, the only model where all three NUTS variants converge, their Tail-ESS/grad is similar ($37$–$42 \times 10^{-3}$) and `UnifiedRobustNUTS` has the highest worst-coordinate ESS.
+- `UnifiedRobustNUTS` has the highest worst-coordinate Bulk-ESS on four of the five models, the fewest divergences of the three NUTS variants on the horseshoe model ($122$ vs. $559$ for stock NUTS), and is the only sampler that converges on IRT-2PL. These are single-seed results with $\widehat{R}$ values close to the threshold.
+- The fixed-radius arcsinh wrapper is worse than stock NUTS on the horseshoe and IRT models (lower worst-coordinate ESS and more divergences), so a static transform is not a safe default for hierarchical models.
+- In wall time, `UnifiedRobustNUTS` ranges from parity to $5.5\times$ slower than BlackJAX NUTS, even though the BlackJAX times include compilation.
 
 ---
 
