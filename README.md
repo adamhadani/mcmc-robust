@@ -190,7 +190,7 @@ uv run python -m mcmc_robust.bench.plot
    Across all frameworks (`pymc`, `blackjax`, and `mcmc-robust`), `Divergences` in Tables 1–4 strictly counts **post-warmup divergent transitions** during the $4,000$ sampling draws, while transient warmup divergences during step-size/mass-matrix adaptation are recorded separately in `extra_stats["warmup_divergences"]`.
 
 #### Table 1: Sparse-Signal Regression with Cauchy Priors ($d=10$, $4 \times 1,000$ draws)
-*Target: Bayesian regression with $\beta_j \sim \text{Cauchy}(0, 1)$ and true signal $s = (5, -4, 3, 0, \dots, 0)$. Only the 3 active coefficients have non-zero design columns, so the other 7 posteriors equal their independent Cauchy prior: a unimodal product of 7 Cauchy and 3 near-Gaussian coordinates.*
+**Target:** Bayesian regression with $\beta_j \sim \text{Cauchy}(0, 1)$ and true signal $s = (5, -4, 3, 0, \dots, 0)$. Only the 3 active coefficients have non-zero design columns, so the other 7 posteriors equal their independent Cauchy prior: a unimodal product of 7 Cauchy and 3 near-Gaussian coordinates.
 
 | Sampler | Framework | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | ESS/grad | Tail-ESS/grad | Post-Warmup Divs | $q_{99}$ Rel Error |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -204,7 +204,7 @@ uv run python -m mcmc_robust.bench.plot
 | **UnifiedRobustNUTS** | `mcmc-robust` | 174,625 | **3,441.5** | **1,917.4** | **1.002** | 0.01971 | 0.01098 | **0 (0.0%)** | **8.1%** |
 
 #### Table 2: Hierarchical Funnels — Rubin's Eight-Schools & Neal's Funnel ($d=10$, $4 \times 1,000$ draws)
-*Targets: (2a) Rubin's (1981) Centered Eight-Schools ($\tau \sim \text{Half-Cauchy}(0, 5)$, exact ground truth $\mathbb{P}(\log\tau < -1) = 7.49\%$, $q_{0.05}(\log\tau) = -1.40$, from `EightSchoolsTarget.exact_moments_or_quantiles()`); (2b) Neal's Funnel ($v \sim \mathcal{N}(0, 3^2)$, exact ground truth $\mathbb{P}(v < -2) = 25.25\%$, $q_{0.05}(v) = -4.93$). The Langevin rows have $\widehat{R}$ between 1.9 and 3.0, so their neck statistics are not reliable.*
+**Targets:** (2a) Rubin's (1981) Centered Eight-Schools ($\tau \sim \text{Half-Cauchy}(0, 5)$, exact ground truth $\mathbb{P}(\log\tau < -1) = 7.49\%$, $q_{0.05}(\log\tau) = -1.40$, from `EightSchoolsTarget.exact_moments_or_quantiles()`); (2b) Neal's Funnel ($v \sim \mathcal{N}(0, 3^2)$, exact ground truth $\mathbb{P}(v < -2) = 25.25\%$, $q_{0.05}(v) = -4.93$). The Langevin rows have $\widehat{R}$ between 1.9 and 3.0, so their neck statistics are not reliable.
 
 | Target & Sampler | Framework | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | ESS/grad | Post-Warmup Divs | Neck Mass | Neck $q_{0.05}$ |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -222,7 +222,7 @@ uv run python -m mcmc_robust.bench.plot
 > **Why Funnel Neck Diagnostics Matter alongside Divergences:** A coordinate-wise diffeomorphism $\psi_i(x_i)$ has a diagonal Jacobian and does not algebraically eliminate the multiplicative cross-coordinate coupling $x_i \sim \mathcal{N}(0, e^v)$ of a centered funnel (non-centered reparameterization remains preferred whenever model structure allows). Inspecting the neck mass shows what the divergence counts alone hide. On Eight-Schools, PyMC NUTS (`148` post-warmup divergences) and BlackJAX NUTS (`68`) bounce off the neck at $\log\tau \approx -0.4$, recording **$0.0\%$ probability mass in $\log\tau < -1$** (true: $7.49\%$). `UnifiedRobustNUTS` cuts the divergences to `7`, but it records only $1.5\%$ neck mass, so most of that reduction comes from chains staying out of the neck rather than resolving it. On Neal's Funnel ($d=10$), BlackJAX NUTS stalls at $v_{\min} = -3.81$, capturing only **$5.0\%$** of the neck region $v < -2$ (true: $25.25\%$, $q_{0.05}(v) = -4.93$) at $\widehat{R} = 1.151$. `UnifiedRobustNUTS` reaches $v_{\min} = -6.43$ and recovers **$22.3\%$ neck mass** ($q_{0.05}(v) = -4.40$), but it is also unconverged ($\widehat{R} = 1.079$), has $34$ post-warm-up divergences against BlackJAX's $3$, and a lower ESS per gradient. Every number here is from a single seed.
 
 #### Table 3: High-Dimensional Heterogeneous Mixed Tails ($d=20$, $4 \times 1,000$ draws)
-*Target: 10 heavy-tailed coordinates ($\nu \in [1.2, 2.5]$) and 10 Gaussian coordinates ($\sigma_j = 1$).*
+**Target:** 10 heavy-tailed coordinates ($\nu \in [1.2, 2.5]$) and 10 Gaussian coordinates ($\sigma_j = 1$).
 
 | Sampler | Framework | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | Tail-ESS/grad | Tail Gain vs Standard | $q_{99}$ Rel Error |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -234,7 +234,7 @@ uv run python -m mcmc_robust.bench.plot
 | **UnifiedRobustNUTS** | `mcmc-robust` | 71,545 | **4,608.6** | **2,809.8** | **1.003** | 0.03927 | **2.34x** | **5.8%** |
 
 #### Table 4: Stiff Quartic Tail Return ($\|x_0\| = 10\sqrt{d}, d=10$, $4 \times 1,000$ draws)
-*Target: Quartic potential $U(x) = \frac{1}{4}\|x\|^4$ initialized far in the tail ($\|x_0\| = 31.62$).*
+**Target:** Quartic potential $U(x) = \frac{1}{4}\|x\|^4$ initialized far in the tail ($\|x_0\| = 31.62$).
 
 | Sampler | Framework | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | Tail-ESS/grad | Burn-in Grads to Bulk | Post-Warmup Divs |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -248,7 +248,7 @@ uv run python -m mcmc_robust.bench.plot
 | **UnifiedRobustNUTS** | `mcmc-robust` | 62,131 | 4,697.1 | **3,502.7** | **1.002** | 0.05638 | **15 (2.7x vs NUTS)** | **0 (24 warmup)** |
 
 #### Table 5: Applied Models on Simulated Data, PosteriorDB-Inspired (`reports/applied_benchmark_results.csv`)
-*Five models with the structure of standard applied posteriors, each fitted to **simulated** data, so they are not the PosteriorDB posteriors: a radon-style hierarchical regression (`RadonHierarchicalTarget`, $d=18$), sparse horseshoe logistic regression (`SparseHorseshoeLogisticTarget`, $d=21$), robust Student-$t$ regression with outliers (`RobustStudentTRegressionTarget`, $d=12$), a hierarchical 2PL IRT model (`HierarchicalItemResponse2PLTarget`, $d=22$) and AR(1) stochastic volatility (`StochasticVolatilityLogReturnTarget`, $d=22$). Every sampler runs $4 \times 1,000$ draws after $1,000$ warm-up steps with seed 42, and all NUTS variants share a maximum tree depth of 10. Generated with `uv run python -m mcmc_robust.bench.applied_runner`.*
+Five models with the structure of standard applied posteriors, each fitted to **simulated** data, so they are not the PosteriorDB posteriors: a radon-style hierarchical regression (`RadonHierarchicalTarget`, $d=18$), sparse horseshoe logistic regression (`SparseHorseshoeLogisticTarget`, $d=21$), robust Student-*t* regression with outliers (`RobustStudentTRegressionTarget`, $d=12$), a hierarchical 2PL IRT model (`HierarchicalItemResponse2PLTarget`, $d=22$) and AR(1) stochastic volatility (`StochasticVolatilityLogReturnTarget`, $d=22$). Every sampler runs $4 \times 1,000$ draws after $1,000$ warm-up steps with seed 42, and all NUTS variants share a maximum tree depth of 10. Generated with `uv run python -m mcmc_robust.bench.applied_runner`.
 
 | Model | Sampler | Max $\widehat{R}$ | Converged | Min Bulk-ESS | Min Tail-ESS | Tail-ESS/grad ($\times 10^{-3}$) | Divergences | Grads | Wall time (s) |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -264,12 +264,12 @@ uv run python -m mcmc_robust.bench.plot
 | Horseshoe logistic ($d=21$) | BlackJAX NUTS (stock) | 1.029 | no | 179 | 119 | 1.64 | 559 | 361,983 | 13.3 |
 | Horseshoe logistic ($d=21$) | BlackJAX NUTS + Arcsinh | 1.088 | no | 38 | 17 | 1.47 | 851 | 375,654 | 14.2 |
 | Horseshoe logistic ($d=21$) | UnifiedRobustNUTS | 1.011 | no | 365 | 306 | 2.59 | 122 | 455,219 | 73.5 |
-| Student-$t$ regression ($d=12$) | MALA | 1.045 | no | 151 | 211 | 43.06 | 0 | 8,004 | 0.6 |
-| Student-$t$ regression ($d=12$) | AutoMALA | 1.038 | no | 161 | 182 | 23.07 | 0 | 15,281 | 1.2 |
-| Student-$t$ regression ($d=12$) | UnifiedRobustSampler | 1.024 | no | 199 | 306 | 49.19 | 0 | 8,004 | 1.3 |
-| Student-$t$ regression ($d=12$) | BlackJAX NUTS (stock) | 1.002 | yes | 1,744 | 2,497 | 41.14 | 0 | 67,334 | 11.2 |
-| Student-$t$ regression ($d=12$) | BlackJAX NUTS + Arcsinh | 1.004 | yes | 1,637 | 2,300 | 37.35 | 0 | 70,234 | 11.2 |
-| Student-$t$ regression ($d=12$) | UnifiedRobustNUTS | 1.001 | yes | 2,267 | 2,793 | 41.61 | 0 | 71,254 | 11.0 |
+| Student-*t* regression ($d=12$) | MALA | 1.045 | no | 151 | 211 | 43.06 | 0 | 8,004 | 0.6 |
+| Student-*t* regression ($d=12$) | AutoMALA | 1.038 | no | 161 | 182 | 23.07 | 0 | 15,281 | 1.2 |
+| Student-*t* regression ($d=12$) | UnifiedRobustSampler | 1.024 | no | 199 | 306 | 49.19 | 0 | 8,004 | 1.3 |
+| Student-*t* regression ($d=12$) | BlackJAX NUTS (stock) | 1.002 | yes | 1,744 | 2,497 | 41.14 | 0 | 67,334 | 11.2 |
+| Student-*t* regression ($d=12$) | BlackJAX NUTS + Arcsinh | 1.004 | yes | 1,637 | 2,300 | 37.35 | 0 | 70,234 | 11.2 |
+| Student-*t* regression ($d=12$) | UnifiedRobustNUTS | 1.001 | yes | 2,267 | 2,793 | 41.61 | 0 | 71,254 | 11.0 |
 | IRT-2PL ($d=22$) | MALA | 1.259 | no | 13 | 14 | 7.20 | 0 | 8,004 | 0.8 |
 | IRT-2PL ($d=22$) | AutoMALA | 1.113 | no | 30 | 41 | 8.68 | 0 | 17,127 | 1.7 |
 | IRT-2PL ($d=22$) | UnifiedRobustSampler | 1.412 | no | 9 | 12 | 10.23 | 0 | 8,004 | 1.5 |
@@ -293,7 +293,7 @@ How to read this table:
 
 What the table shows:
 - The three first-order samplers (MALA, AutoMALA, `UnifiedRobustSampler`) do not converge on any of the five models within $2,000$ iterations per chain.
-- On the Student-$t$ regression, the only model where all three NUTS variants converge, their Tail-ESS/grad is similar ($37$–$42 \times 10^{-3}$) and `UnifiedRobustNUTS` has the highest worst-coordinate ESS.
+- On the Student-*t* regression, the only model where all three NUTS variants converge, their Tail-ESS/grad is similar ($37\text{–}42 \times 10^{-3}$) and `UnifiedRobustNUTS` has the highest worst-coordinate ESS.
 - `UnifiedRobustNUTS` has the highest worst-coordinate Bulk-ESS on four of the five models, the fewest divergences of the three NUTS variants on the horseshoe model ($122$ vs. $559$ for stock NUTS), and is the only sampler that converges on IRT-2PL. These are single-seed results with $\widehat{R}$ values close to the threshold.
 - The fixed-radius arcsinh wrapper is worse than stock NUTS on the horseshoe and IRT models (lower worst-coordinate ESS and more divergences), so a static transform is not a safe default for hierarchical models.
 - In wall time, `UnifiedRobustNUTS` ranges from parity to $5.5\times$ slower than BlackJAX NUTS, even though the BlackJAX times include compilation.
@@ -311,7 +311,7 @@ What the table shows:
 
 ### Lean 4 Mathematical Foundations (`formal/McmcRobustFormal.lean`)
 
-All 37 theorems and lemmas are formally verified sorry-free in Lean 4 with 0 linter warnings under `#lint`. They are statements about scalar building blocks (the transform, its derivatives, damping-step inequalities, the calibration clip, the Metropolis–Hastings acceptance identity and Student-$t$ score bounds); they do not formalise the samplers' transition kernels, the change-of-variables argument or NUTS itself:
+All 37 theorems and lemmas are formally verified sorry-free in Lean 4 with 0 linter warnings under `#lint`. They are statements about scalar building blocks (the transform, its derivatives, damping-step inequalities, the calibration clip, the Metropolis–Hastings acceptance identity and Student-*t* score bounds); they do not formalise the samplers' transition kernels, the change-of-variables argument or NUTS itself:
 
 ```bash
 cd formal && lake build
@@ -333,9 +333,9 @@ cd formal && lake build
 | `softCappedDriftStep_lt_bound` | Global step cap $\Delta_{\text{cap}}(r) < s \kappa_{\max} / \gamma$ for all $r \ge 0, h > 0$ | **Proved (0 sorries)** |
 | `softCapped_global_contraction_no_overshoot` | Global contraction $0 < r - \Delta_{\text{cap}}(r) < r$ for all $r \ge s \kappa_{\max} / \gamma$ | **Proved (0 sorries)** |
 | `mhAccept_bounds` / `mh_detailed_balance` | $0 \le \alpha(x,y) \le 1$ and the identity $\pi(x)q(x,y)\alpha(x,y) = \pi(y)q(y,x)\alpha(y,x)$ for positive reals (the algebra behind MH detailed balance, not a proof about a specific kernel) | **Proved (0 sorries)** |
-| `studentTNegLogKernel_nonneg` / `cauchyShrinkagePenalty_nonneg` | Non-negativity of Student-$t$ negative log-kernel and Cauchy/Horseshoe shrinkage penalty | **Proved (0 sorries)** |
-| `hasDerivAt_studentTNegLogKernel` / `studentTScore_zero` | Exact Student-$t$ score derivative $\frac{d}{dr}\frac{\nu+1}{2}\log(1+r^2/\nu) = \frac{(\nu+1)r}{\nu+r^2}$ | **Proved (0 sorries)** |
-| `studentTScore_mul_le` | Global virial bound $\|r \cdot s_\nu(r)\| \le \nu + 1$ for outlier-robust Student-$t$ likelihoods | **Proved (0 sorries)** |
+| `studentTNegLogKernel_nonneg` / `cauchyShrinkagePenalty_nonneg` | Non-negativity of Student-*t* negative log-kernel and Cauchy/Horseshoe shrinkage penalty | **Proved (0 sorries)** |
+| `hasDerivAt_studentTNegLogKernel` / `studentTScore_zero` | Exact Student-*t* score derivative $\frac{d}{dr}\frac{\nu+1}{2}\log(1+r^2/\nu) = \frac{(\nu+1)r}{\nu+r^2}$ | **Proved (0 sorries)** |
+| `studentTScore_mul_le` | Global virial bound $\|r \cdot s_\nu(r)\| \le \nu + 1$ for outlier-robust Student-*t* likelihoods | **Proved (0 sorries)** |
 | `calibratedRadius_ge_min` / `calibratedRadius_pos` / `calibratedRadius_le_max` | $0 < R_{\min} \le \min(R_{\max}, \max(R_{\min}, c\sigma)) \le R_{\max}$ for all $\sigma \in \mathbb{R}$ | **Proved (0 sorries)** |
 | `calibratedRadius_mono` | $c \ge 0 \land \sigma_1 \le \sigma_2 \implies R_{\text{cal}}(\sigma_1) \le R_{\text{cal}}(\sigma_2)$ | **Proved (0 sorries)** |
 | `calibrated_shifted_roundtrip_forward` / `_inverse` | Exact invertibility $\psi_{\mu, R_{\text{cal}}}(\phi_{\mu, R_{\text{cal}}}(x)) = x$ and $\phi_{\mu, R_{\text{cal}}}(\psi_{\mu, R_{\text{cal}}}(z)) = z$ for all $\mu, \sigma \in \mathbb{R}$ | **Proved (0 sorries)** |
@@ -418,7 +418,7 @@ cd formal && lake build
 7. **Betancourt, M. (2017).** *A conceptual introduction to Hamiltonian Monte Carlo.* arXiv preprint [arXiv:1701.02434](https://arxiv.org/abs/1701.02434).
 8. **Bou-Rabee, N., Carpenter, B., Kleppe, T. S., & Liu, S. (2025).** *The Within-Orbit Adaptive Leapfrog No-U-Turn Sampler (WALNUTS).* arXiv preprint [arXiv:2506.18746](https://arxiv.org/abs/2506.18746).
 9. **Biron-Lattes, M., Surjanovic, N., Syed, S., Campbell, T., & Bouchard-Côté, A. (2024).** *autoMALA: Locally adaptive Metropolis-adjusted Langevin algorithm.* Proceedings of the 27th International Conference on Artificial Intelligence and Statistics (AISTATS), PMLR 238, 4600–4608. [arXiv:2310.16782](https://arxiv.org/abs/2310.16782).
-10. **Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P. C. (2021).** *Rank-normalization, folding, and localization: An improved $\widehat{R}$ for assessing convergence of MCMC (with discussion).* Bayesian Analysis, 16(2), 667–718. [doi:10.1214/20-BA1221](https://doi.org/10.1214/20-BA1221).
+10. **Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P. C. (2021).** *Rank-normalization, folding, and localization: An improved* $\widehat{R}$ *for assessing convergence of MCMC (with discussion).* Bayesian Analysis, 16(2), 667–718. [doi:10.1214/20-BA1221](https://doi.org/10.1214/20-BA1221).
 11. **Rubin, D. B. (1981).** *Estimation in parallel randomized experiments.* Journal of Educational Statistics, 6(4), 377–401. [doi:10.3102/10769986006004377](https://doi.org/10.3102/10769986006004377).
 12. **Neal, R. M. (2003).** *Slice sampling.* The Annals of Statistics, 31(3), 705–767. [doi:10.1214/aos/1056562461](https://doi.org/10.1214/aos/1056562461).
 13. **Roberts, G. O., & Rosenthal, J. S. (2001).** *Optimal scaling for various Metropolis-Hastings algorithms.* Statistical Science, 16(4), 351–367. [doi:10.1214/ss/1015346320](https://doi.org/10.1214/ss/1015346320).
