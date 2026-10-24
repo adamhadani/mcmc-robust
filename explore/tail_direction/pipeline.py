@@ -75,8 +75,9 @@ def _compiled_runner(
     draws: int,
     chains: int,
     max_doublings: int,
+    dense: bool = False,
 ) -> Callable:
-    cache_key = (target_name, structure, w2, draws, chains, max_doublings)
+    cache_key = (target_name, structure, w2, draws, chains, max_doublings, dense)
     if cache_key in _COMPILED:
         return _COMPILED[cache_key]
 
@@ -85,7 +86,11 @@ def _compiled_runner(
         logdens_z = pullback(logdensity_x, structure, params)
         z_start = jax.vmap(forward)(x_start)
         warm = blackjax.window_adaptation(
-            blackjax.nuts, logdens_z, target_acceptance_rate=0.8, max_num_doublings=max_doublings
+            blackjax.nuts,
+            logdens_z,
+            is_mass_matrix_diagonal=not dense,
+            target_acceptance_rate=0.8,
+            max_num_doublings=max_doublings,
         )
         (state, ad), info = jax.vmap(lambda k, z: warm.run(k, z, num_steps=w2))(
             jax.random.split(key_p2, chains), z_start
@@ -135,10 +140,11 @@ def run_map(
     draws: int = 1000,
     chains: int = 4,
     max_doublings: int = 10,
+    dense: bool = False,
 ) -> dict:
     """Phase 2/3 window adaptation + sampling in the z-space of ``bmap``; ``pre_grads`` = Phase 1 cost."""
     _, _, key_p2, key_sample = keys_for(seed)
-    fn = _compiled_runner(target_name, logdensity_x, bmap.structure(), w2, draws, chains, max_doublings)
+    fn = _compiled_runner(target_name, logdensity_x, bmap.structure(), w2, draws, chains, max_doublings, dense)
     out = fn(bmap.param_tree(), jnp.asarray(x_start), key_p2, key_sample)
     out = jax.tree_util.tree_map(np.asarray, out)
     phase2 = int(chains + int(out["warm_steps"]))
@@ -169,8 +175,9 @@ def run_stock(
     draws: int = 1000,
     chains: int = 4,
     max_doublings: int = 10,
+    dense: bool = False,
 ) -> dict:
-    """Stock BlackJAX NUTS: identity map, ``tune`` window-adaptation steps, no Phase 1."""
+    """Stock BlackJAX NUTS: identity map, ``tune`` window-adaptation steps, no Phase 1 (dense: full metric)."""
     from .maps import Block
 
     ident = BlockMap(d=d, blocks=[Block("identity", tuple(range(d)), {})], label="stock")
@@ -186,4 +193,5 @@ def run_stock(
         draws=draws,
         chains=chains,
         max_doublings=max_doublings,
+        dense=dense,
     )

@@ -336,62 +336,104 @@ def chi_matrix(xc: np.ndarray, u: float = 0.9) -> np.ndarray:
     return co / np.maximum(np.sqrt(np.outer(cnt, cnt)), 1.0)
 
 
-def average_linkage(chi: np.ndarray, members: Sequence[int], tau: float) -> list[list[int]]:
-    """Agglomerative clustering on chi (similarity); merge while the best average-link chi > tau."""
-    clusters = [[i] for i in members]
+def _exceed(a: np.ndarray, u: float) -> np.ndarray:
+    return a > np.quantile(a, u)
+
+
+def cluster_radius(xs: np.ndarray, members: Sequence[int]) -> np.ndarray:
+    """Radius of a cluster in robustly standardised coordinates (|x_i| for a singleton)."""
+    return np.linalg.norm(xs[:, list(members)], axis=1)
+
+
+def cluster_chi(xs: np.ndarray, a: Sequence[int], b: Sequence[int], u: float) -> float:
+    """Co-exceedance of two clusters' radii: P(r_A > q_A(u), r_B > q_B(u)) / (1 - u) (empirical)."""
+    ea, eb = _exceed(cluster_radius(xs, a), u), _exceed(cluster_radius(xs, b), u)
+    return float(np.sum(ea & eb) / max(1.0, np.sqrt(np.sum(ea) * np.sum(eb))))
+
+
+def radius_linkage(xs: np.ndarray, u: float, tau: float) -> list[list[int]]:
+    """Agglomerative clustering: repeatedly merge the two clusters whose *radii* co-exceed most, while
+    that co-exceedance is above tau. Under independence between two clusters the statistic has the same
+    null (mean 1 - u) whatever the cluster sizes, while inside an elliptical block the radii of growing
+    sub-blocks become ever more tail-dependent (they share the mixing scale), so merging accelerates.
+    """
+    clusters = [[i] for i in range(xs.shape[1])]
+    ex = np.stack([_exceed(cluster_radius(xs, c), u) for c in clusters], axis=1).astype(np.float64)
     while len(clusters) > 1:
-        best, pair = -1.0, None
-        for a in range(len(clusters)):
-            for b in range(a + 1, len(clusters)):
-                v = float(np.mean(chi[np.ix_(clusters[a], clusters[b])]))
-                if v > best:
-                    best, pair = v, (a, b)
-        if pair is None or best <= tau:
+        cnt = ex.sum(axis=0)
+        chi = (ex.T @ ex) / np.maximum(np.sqrt(np.outer(cnt, cnt)), 1.0)
+        np.fill_diagonal(chi, -np.inf)
+        i, j = np.unravel_index(int(np.argmax(chi)), chi.shape)
+        if chi[i, j] <= tau:
             break
-        a, b = pair
-        clusters[a] = sorted(clusters[a] + clusters[b])
-        del clusters[b]
+        i, j = min(i, j), max(i, j)
+        clusters[i] = sorted(clusters[i] + clusters[j])
+        del clusters[j]
+        ex = np.delete(ex, j, axis=1)
+        ex[:, i] = _exceed(cluster_radius(xs, clusters[i]), u)
     return sorted(clusters, key=lambda c: c[0])
 
 
 @dataclass
 class DiagnosticConfig:
-    alpha_heavy: float = 4.0  # Hill tail index below this -> heavy coordinate
-    chi_u: float = 0.9  # co-exceedance level
-    tau: float = 0.3  # average-link chi threshold for a tail-dependent block
+    # Defaults chosen on pilot seeds 100-109 by pilot_tune.py (results/pilot_tune.json).
+    chi_u: float = 0.8  # exceedance level for co-occurrence
+    tau: float = 0.4  # merge clusters while radius co-exceedance > tau (null mean is 1 - chi_u)
+    alpha_single: float = 3.5  # singleton is heavy if Hill index of |x_i| < this
+    alpha_block: float = 6.0  # multi-coordinate cluster is heavy if Hill index of its radius < this
+    alpha_global: float | None = 6.0  # if set: Hill index of the full radius above this -> all light
     hill_k_frac: float = 0.1
 
 
 def tail_diagnostic(x: np.ndarray, cfg: DiagnosticConfig) -> dict:
-    """Phase 1 diagnostic: heavy/light per coordinate, then tail-dependence blocks among heavy ones."""
+    """Phase 1 diagnostic -> partition {tail-dependent heavy blocks, independent heavy coords, light coords}.
+
+    1. Robustly standardise (coordinate median, IQR scale).
+    2. Cluster coordinates by co-exceedance of cluster radii (``radius_linkage``).
+    3. Each cluster is heavy if the Hill index of its radius is below a size-dependent threshold.
+    Heavy clusters of size >= 2 get a whitened radial map, heavy singletons a coordinate-wise arcsinh,
+    and all light coordinates one whitened affine block.
+    """
     n, d = x.shape
     xc = x - np.median(x, axis=0)
-    alphas = np.array([hill_alpha(xc[:, i], cfg.hill_k_frac) for i in range(d)])
-    heavy = [i for i in range(d) if alphas[i] < cfg.alpha_heavy]
-    light = [i for i in range(d) if i not in heavy]
-    chi = chi_matrix(xc, cfg.chi_u)
-    blocks = average_linkage(chi, heavy, cfg.tau) if heavy else []
-    dep_blocks = [b for b in blocks if len(b) >= 2]
-    singles = [b[0] for b in blocks if len(b) == 1]
-    # The task's other suggestion, logged for comparison: Hill index of the Mahalanobis-free radius
-    rad = np.linalg.norm(xc / robust_scale(xc), axis=1)
-    off = chi[np.triu_indices(d, 1)]
-    if heavy and not light and len(dep_blocks) == 1 and len(dep_blocks[0]) == d:
+    xs = xc / robust_scale(xc)
+    alpha_radius = float(hill_alpha(np.linalg.norm(xs, axis=1), cfg.hill_k_frac))
+    if cfg.alpha_global is not None and alpha_radius > cfg.alpha_global:
+        clusters = [list(range(d))]  # gate: no heavy tail anywhere -> one light cluster
+    else:
+        clusters = radius_linkage(xs, cfg.chi_u, cfg.tau)
+    dep_blocks, singles, light, cl_alpha = [], [], [], []
+    for c in clusters:
+        a = hill_alpha(cluster_radius(xs, c), cfg.hill_k_frac)
+        cl_alpha.append(float(a))
+        thr = cfg.alpha_single if len(c) == 1 else cfg.alpha_block
+        if a < thr:
+            (dep_blocks.append(c) if len(c) >= 2 else singles.append(c[0]))
+        else:
+            light.extend(c)
+    light = sorted(light)
+    heavy = sorted([i for b in dep_blocks for i in b] + singles)
+    if not light and len(dep_blocks) == 1 and not singles:
         choice = "radial"
-    elif heavy and not light and not dep_blocks:
+    elif not light and not dep_blocks:
         choice = "coord"
+    elif not heavy:
+        choice = "affine"
     else:
         choice = "composite"
+    chi = chi_matrix(xc, cfg.chi_u)
+    off = chi[np.triu_indices(d, 1)]
     return {
-        "alpha_hill": [float(a) for a in alphas],
+        "clusters": clusters,
+        "cluster_alpha": cl_alpha,
         "heavy": heavy,
         "light": light,
         "dep_blocks": dep_blocks,
         "singles": singles,
         "choice": choice,
-        "chi_mean_offdiag": float(np.mean(off)) if off.size else float("nan"),
-        "alpha_hill_radius": hill_alpha(rad, cfg.hill_k_frac),
-        "alpha_hill_marginal_median": float(np.median(alphas)),
+        "alpha_hill_marginal": [float(hill_alpha(xs[:, i], cfg.hill_k_frac)) for i in range(d)],
+        "alpha_hill_radius": float(hill_alpha(np.linalg.norm(xs, axis=1), cfg.hill_k_frac)),
+        "chi_pair_mean_offdiag": float(np.mean(off)) if off.size else float("nan"),
         "n_draws": int(n),
     }
 
@@ -411,9 +453,7 @@ def coord_params(x: np.ndarray, min_radius: float = 0.1, max_radius: float = 100
 def radial_R(k: int, rule: str) -> float:
     if rule == "sqrtk":
         return float(np.sqrt(k))
-    if rule == "1.5":
-        return 1.5
-    raise ValueError(rule)
+    return float(rule)  # a constant radius in whitened (Gaussian-consistent) units, e.g. "1.5"
 
 
 def build_map(x: np.ndarray, plan: dict, radial_rule: str, label: str) -> BlockMap:
