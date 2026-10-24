@@ -1,0 +1,22 @@
+[PASS] B1 alpha=0.5 lam=0.5: t-pullback slope a=0.250000 (alpha*lam=0.25); Gaussian pullback growth rate 1.00000 vs 2a/alpha=1.00000
+[PASS] B1 alpha=0.5 lam=1.0: t-pullback slope a=0.500000 (alpha*lam=0.5); Gaussian pullback growth rate 2.00000 vs 2a/alpha=2.00000
+[PASS] B1 alpha=0.5 lam=2.0: t-pullback slope a=1.000000 (alpha*lam=1.0); Gaussian pullback growth rate 4.00000 vs 2a/alpha=4.00000
+[PASS] B1 alpha=1.0 lam=0.5: t-pullback slope a=0.500000 (alpha*lam=0.5); Gaussian pullback growth rate 1.00000 vs 2a/alpha=1.00000
+[PASS] B1 alpha=1.0 lam=1.0: t-pullback slope a=1.000000 (alpha*lam=1.0); Gaussian pullback growth rate 2.00000 vs 2a/alpha=2.00000
+[PASS] B1 alpha=1.0 lam=2.0: t-pullback slope a=2.000000 (alpha*lam=2.0); Gaussian pullback growth rate 4.00000 vs 2a/alpha=4.00000
+[PASS] B1 alpha=3.0 lam=0.5: t-pullback slope a=1.500000 (alpha*lam=1.5); Gaussian pullback growth rate 1.00000 vs 2a/alpha=1.00000
+[PASS] B1 alpha=3.0 lam=1.0: t-pullback slope a=3.000000 (alpha*lam=3.0); Gaussian pullback growth rate 2.00000 vs 2a/alpha=2.00000
+[PASS] B1 alpha=3.0 lam=2.0: t-pullback slope a=6.000000 (alpha*lam=6.0); Gaussian pullback growth rate 4.00000 vs 2a/alpha=4.00000
+[PASS] B2 Cauchy envelope for sinh: min over z of U_C(z) - (z - log 2) = -7.105e-15 (>= 0 required)
+[PASS] B2 Gaussian lower bound for sinh: min over z of U_G(z) - bound = 2.142e+00; ratio U_G/bound at z=20: 8.00
+
+B3 window criterion: max over x in [x_lo, x] of psi_light / psi_heavy^2 (bounded <=> a common map exists)
+[PASS] B3 Gaussian vs Laplace: running max of ratio at x=1e1,1e3,1e8,1e30,1e100: 0.481, 0.499, 0.5, 0.5, 0.5
+[PASS] B3 Gaussian vs Weibull(k=3/2): running max of ratio at x=1e1,1e3,1e8,1e30,1e100: 0.226, 0.226, 0.226, 0.226, 0.226
+[PASS] B3 Gaussian vs Weibull(k=1/2): running max of ratio at x=1e1,1e3,1e8,1e30,1e100: 4.8, 468, 4.88e+07, 4.29e+29, 4.55e+99
+[PASS] B3 Gaussian vs Cauchy: running max of ratio at x=1e1,1e3,1e8,1e30,1e100: 3.84, 6.87e+03, 1.25e+13, 7.49e+55, 7.73e+194
+[PASS] B3 lognormal vs Cauchy: running max of ratio at x=1e1,1e3,1e8,1e30,1e100: 0.384, 0.412, 0.453, 0.485, 0.495
+[PASS] B3 Cauchy vs log-Cauchy: running max of ratio at x=1e1,1e3,1e8,1e30,1e100: 1.06, 1.06, 1.19, 2.42, 5.34
+[PASS] B3 constructive common map (Gaussian, Laplace): psi_i(g(t)) <= t^2 for both; min psi_i(g(t))/t = 2.000 (Gaussian), 1.391 (Laplace) on t in [2, 30]
+
+18/18 checks passed

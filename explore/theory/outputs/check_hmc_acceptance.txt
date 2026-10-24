@@ -1,0 +1,14 @@
+
+mean acceptance over 2000 momenta, eps=0.2, L=10
+pullback                   z0=1.0   z0=2.0   z0=3.0   z0=4.0   z0=6.0   z0=8.0
+arcsinh-Gaussian r=1.5      0.983    0.817    0.000    0.000    0.000    0.000
+arcsinh-Cauchy r=2.2        0.996    0.987    0.982    0.984    0.994    0.999
+h-Cauchy c=1                0.995    0.998    0.998    0.998    0.972    0.850
+h-Gaussian c=16             0.997    0.996    0.988    1.000    0.175    0.000
+
+mean acceptance over 2000 momenta, eps=0.5, L=10
+pullback                   z0=1.0   z0=2.0   z0=3.0   z0=4.0   z0=6.0   z0=8.0
+arcsinh-Gaussian r=1.5      0.729    0.015    0.000    0.000    0.000    0.000
+arcsinh-Cauchy r=2.2        0.699    0.667    0.647    0.618    0.632    0.652
+h-Cauchy c=1                0.965    0.918    0.695    0.691    0.855    0.980
+h-Gaussian c=16             0.988    0.965    0.919    0.203    0.000    0.000

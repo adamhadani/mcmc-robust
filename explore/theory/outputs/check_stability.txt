@@ -1,0 +1,34 @@
+E1 arcsinh pullback of N(m, sigma^2): Gaussian mass where eps^2 U'' >= 4
+    r   eps       s*        mass        Lean bracket on mass  2Phi(-sqrt2/eps)
+ 1.00  1.00   1.2985   1.941e-01   [1.573e-01, 2.207e-01]         1.573e-01  PASS
+ 1.00  0.70   1.9205   5.480e-02   [4.335e-02, 5.842e-02]         4.335e-02  PASS
+ 1.00  0.50   2.7493   5.973e-03   [4.678e-03, 6.170e-03]         4.678e-03  PASS
+ 1.00  0.30   4.6631   3.115e-06   [2.428e-06, 3.151e-06]         2.428e-06  PASS
+ 1.00  0.20   7.0363   1.974e-12   [1.537e-12, 1.984e-12]         1.537e-12  PASS
+ 1.50  1.00   1.0959   2.731e-01   [2.410e-01, 3.496e-01]         1.573e-01  PASS
+ 1.50  0.70   1.7789   7.526e-02   [6.300e-02, 8.553e-02]         4.335e-02  PASS
+ 1.50  0.50   2.6451   8.166e-03   [6.614e-03, 8.741e-03]         4.678e-03  PASS
+ 1.50  0.30   4.5984   4.257e-06   [3.363e-06, 4.366e-06]         2.428e-06  PASS
+ 1.50  0.20   6.9926   2.698e-12   [2.114e-12, 2.728e-12]         1.537e-12  PASS
+ 2.00  1.00   0.6704   5.026e-01   [4.795e-01, 1.000e+00]         1.573e-01  PASS
+ 2.00  0.70   1.5474   1.218e-01   [1.081e-01, 1.491e-01]         4.335e-02  PASS
+ 2.00  0.50   2.4892   1.280e-02   [1.079e-02, 1.431e-02]         4.678e-03  PASS
+ 2.00  0.30   4.5061   6.604e-06   [5.310e-06, 6.895e-06]         2.428e-06  PASS
+ 2.00  0.20   6.9310   4.179e-12   [3.303e-12, 4.262e-12]         1.537e-12  PASS
+
+E2 h-map pullback of N(m, sigma^2), r = R/sigma = 1: Gaussian mass where eps^2 U'' >= 4
+     c     eps=0.7     eps=0.5     eps=0.3
+   1.0   2.728e-01   1.417e-01   2.068e-02
+   4.0   3.775e-02   4.073e-03   4.280e-06
+  16.0   4.279e-05   1.126e-08   4.338e-20
+  64.0   3.600e-16   4.001e-30   3.240e-75
+
+E3 curvature at the centre, U''(0) (negative => bimodal pullback)
+  r=0.500: arcsinh-Gaussian U''(0)=-0.750, arcsinh-Cauchy U''(0)=-0.500
+  r=0.707: arcsinh-Gaussian U''(0)=-0.500, arcsinh-Cauchy U''(0)=-0.000
+  r=1.000: arcsinh-Gaussian U''(0)=+0.000, arcsinh-Cauchy U''(0)=+1.000
+  r=1.500: arcsinh-Gaussian U''(0)=+1.250, arcsinh-Cauchy U''(0)=+3.500
+[PASS] E3 closed forms r=0.5: finite differences -0.750000, -0.500000 vs -0.750000, -0.500000
+[PASS] E3 closed forms r=1.5: finite differences 1.250000, 3.500000 vs 1.250000, 3.500000
+
+17/17 checks passed

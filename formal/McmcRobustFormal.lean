@@ -90,7 +90,8 @@ gradient-based MCMC samplers resolving roughness and flatness pathologies.
 11. **Leapfrog Stability Region of the Arcsinh Gaussian Pullback (§12)**: for
     $U(z) = r^2 \sinh^2 z / 2 - \log\cosh z$, $U''(z) = r^2 + 2 s^2 - \mathrm{sech}^2 z$ with
     $s = r \sinh z$; $\varepsilon^2 U'' \le 4$ when $s^2 \le 2/\varepsilon^2 - r^2/2$, and
-    $\varepsilon^2 U'' \ge 4$ when $s^2 \ge 2/\varepsilon^2 - r^2/2 + 1/2$.
+    $\varepsilon^2 U'' \ge 4$ when $s^2 \ge 2/\varepsilon^2 - r^2/2 + 1/2$. $U''$ is nondecreasing in
+    $|z|$, so the unstable set is a symmetric tail region, and $U''(0) = r^2 - 1$.
 
 Author: MCMC Robustness Research Team
 Toolchain: Lean 4 + Mathlib
@@ -1228,6 +1229,28 @@ theorem leapfrog_unstable_of_standardized_ge {r ε z : ℝ} (hε : 0 < ε)
     _ ≤ ε ^ 2 * (r ^ 2 + 2 * (r * sinh z) ^ 2 - (cosh z ^ 2)⁻¹) :=
         mul_le_mul_of_nonneg_left hcurv hε2.le
 
+/-- The curvature is nondecreasing in `|z|`, so the set where `ε² U'' ≥ 4` is exactly
+    `{|z| ≥ z*}` for some threshold `z*`, i.e. a symmetric tail region of the Gaussian. -/
+theorem arcsinhGaussCurv_mono_abs (r : ℝ) {z₁ z₂ : ℝ} (h : |z₁| ≤ |z₂|) :
+    arcsinhGaussCurv r z₁ ≤ arcsinhGaussCurv r z₂ := by
+  rw [arcsinhGaussCurv_eq, arcsinhGaussCurv_eq]
+  have hc : cosh z₁ ≤ cosh z₂ := cosh_le_cosh.mpr h
+  have hc1 := cosh_pos z₁
+  have hsq : cosh z₁ ^ 2 ≤ cosh z₂ ^ 2 := pow_le_pow_left₀ hc1.le hc 2
+  have hinv : (cosh z₂ ^ 2)⁻¹ ≤ (cosh z₁ ^ 2)⁻¹ := inv_anti₀ (by positivity) hsq
+  have hs1 : sinh z₁ ^ 2 = cosh z₁ ^ 2 - 1 := by rw [cosh_sq]; ring
+  have hs2 : sinh z₂ ^ 2 = cosh z₂ ^ 2 - 1 := by rw [cosh_sq]; ring
+  have hr : 0 ≤ r ^ 2 := sq_nonneg r
+  have hss : r ^ 2 * sinh z₁ ^ 2 ≤ r ^ 2 * sinh z₂ ^ 2 := by
+    rw [hs1, hs2]; exact mul_le_mul_of_nonneg_left (by linarith) hr
+  nlinarith [hss, hinv]
+
+/-- Curvature at the centre: `U''(0) = r² - 1`, so the arcsinh pullback of a Gaussian is bimodal
+    exactly when the transform scale is below the Gaussian scale (`R < σ`). -/
+theorem arcsinhGaussCurv_zero (r : ℝ) : arcsinhGaussCurv r 0 = r ^ 2 - 1 := by
+  unfold arcsinhGaussCurv
+  simp
+
 
 /-! ============================================================================
     PROPERTY 6: Axiom Audit & Linter Verification
@@ -1438,6 +1461,14 @@ theorem leapfrog_unstable_of_standardized_ge {r ε z : ℝ} (hε : 0 < ε)
 /-- info: 'McmcRobust.leapfrog_unstable_of_standardized_ge' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms leapfrog_unstable_of_standardized_ge
+
+/-- info: 'McmcRobust.arcsinhGaussCurv_mono_abs' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms arcsinhGaussCurv_mono_abs
+
+/-- info: 'McmcRobust.arcsinhGaussCurv_zero' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms arcsinhGaussCurv_zero
 
 #lint
 
