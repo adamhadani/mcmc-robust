@@ -64,22 +64,23 @@ def hmap_gauss_curv(z, r, c):
 
 
 print("\nE2 h-map pullback of N(m, sigma^2), r = R/sigma = 1: Gaussian mass where eps^2 U'' >= 4")
-print(f"{'c':>6s} " + " ".join(f"{'eps=' + str(e):>11s}" for e in [0.7, 0.5, 0.3]))
+print("cells: mass (threshold s* in standard deviations)")
+print(f"{'c':>6s} " + " ".join(f"{'eps=' + str(e):>18s}" for e in [0.7, 0.5, 0.3]))
 for c in [1.0, 4.0, 16.0, 64.0]:
     row = []
     for eps in [0.7, 0.5, 0.3]:
         zg = np.linspace(0.0, np.sqrt(c * 40.0), 400_001)
         unstable = eps**2 * hmap_gauss_curv(zg, 1.0, c) >= 4
         if not unstable.any():
-            row.append(f"{'0':>11s}")
+            row.append(f"{'0':>18s}")
             continue
         first = np.argmax(unstable)
         # failure set must be a half-line on z >= 0 for the 2 Phi formula to apply
         if not unstable[first:].all():
-            row.append(f"{'non-monot.':>11s}")
+            row.append(f"{'non-monotone':>18s}")
             continue
         s_star = zg[first] * np.exp(zg[first] ** 2 / (2 * c))
-        row.append(f"{2 * special.ndtr(-s_star):11.3e}")
+        row.append(f"{2 * special.ndtr(-s_star):10.3e} ({s_star:5.2f})")
     print(f"{c:6.1f} " + " ".join(row))
 
 # ----------------------------------------------------------------------------- E3

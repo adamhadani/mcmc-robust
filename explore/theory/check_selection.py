@@ -34,13 +34,17 @@ samplers = {
 }
 
 print(f"{REPS} replicates per cell; P(>tau) is the fraction of replicates classified heavy at threshold tau")
-print(f"{'n':>6s} {'k':>5s} {'marginal':16s} {'mean':>6s} {'sd':>6s} {'P(>0.1)':>8s} {'P(>0.2)':>8s} {'P(>0.3)':>8s}")
+print(
+    f"{'n':>6s} {'k':>5s} {'marginal':16s} {'mean':>6s} {'sd':>6s} "
+    f"{'P(>0.1)':>8s} {'P(>0.2)':>8s} {'P(>0.3)':>8s} {'P(>0.4)':>8s}"
+)
 for n in [500, 2000, 20000]:
     for k in [int(np.sqrt(n)), n // 10]:
         for name, draw in samplers.items():
             est = np.array([hill(draw(n), k) for _ in range(REPS)])
             print(
                 f"{n:6d} {k:5d} {name:16s} {est.mean():6.3f} {est.std():6.3f} "
-                f"{np.mean(est > 0.1):8.2f} {np.mean(est > 0.2):8.2f} {np.mean(est > 0.3):8.2f}"
+                f"{np.mean(est > 0.1):8.2f} {np.mean(est > 0.2):8.2f} {np.mean(est > 0.3):8.2f} "
+                f"{np.mean(est > 0.4):8.2f}"
             )
         print()

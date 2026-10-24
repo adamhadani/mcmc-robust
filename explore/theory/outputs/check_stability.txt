@@ -17,11 +17,12 @@ E1 arcsinh pullback of N(m, sigma^2): Gaussian mass where eps^2 U'' >= 4
  2.00  0.20   6.9310   4.179e-12   [3.303e-12, 4.262e-12]         1.537e-12  PASS
 
 E2 h-map pullback of N(m, sigma^2), r = R/sigma = 1: Gaussian mass where eps^2 U'' >= 4
-     c     eps=0.7     eps=0.5     eps=0.3
-   1.0   2.728e-01   1.417e-01   2.068e-02
-   4.0   3.775e-02   4.073e-03   4.280e-06
-  16.0   4.279e-05   1.126e-08   4.338e-20
-  64.0   3.600e-16   4.001e-30   3.240e-75
+cells: mass (threshold s* in standard deviations)
+     c            eps=0.7            eps=0.5            eps=0.3
+   1.0  2.728e-01 ( 1.10)  1.417e-01 ( 1.47)  2.068e-02 ( 2.31)
+   4.0  3.775e-02 ( 2.08)  4.073e-03 ( 2.87)  4.280e-06 ( 4.60)
+  16.0  4.279e-05 ( 4.09)  1.126e-08 ( 5.71)  4.338e-20 ( 9.18)
+  64.0  3.600e-16 ( 8.15)  4.001e-30 (11.40)  3.240e-75 (18.35)
 
 E3 curvature at the centre, U''(0) (negative => bimodal pullback)
   r=0.500: arcsinh-Gaussian U''(0)=-0.750, arcsinh-Cauchy U''(0)=-0.500

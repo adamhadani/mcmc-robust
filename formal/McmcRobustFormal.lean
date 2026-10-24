@@ -78,7 +78,8 @@ gradient-based MCMC samplers resolving roughness and flatness pathologies.
 
 9. **Tukey h-Map (§10)**: $x = \mu + R z e^{z^2/(2c)}$ has derivative
    $R e^{z^2/(2c)} (1 + z^2/c) > 0$, log-Jacobian $\log R + z^2/(2c) + \log(1 + z^2/c)$, and is a
-   bijection of $\mathbb{R}$. Its Cauchy pullback has explicit two-sided Gaussian envelopes
+   bijection of $\mathbb{R}$; rescaling $z = \lambda w$ maps $(R, c)$ to $(R\lambda, c/\lambda^2)$,
+   so only $R^2 c$ is identifiable. Its Cauchy pullback has explicit two-sided Gaussian envelopes
    proportional to $e^{-z^2/(2c)}$, valid for all $z$.
 
 10. **Impossibility of a Common Tail Map (§11)**: if a differentiable increasing map $g \to \infty$
@@ -824,6 +825,23 @@ theorem hMap_bijective (μ : ℝ) {R c : ℝ} (hR : 0 < R) (hc : 0 < c) :
     Function.Bijective (hMap μ R c) :=
   ⟨(hMap_strictMono μ hR hc).injective, hMap_surjective μ hR hc⟩
 
+/-- Rescaling invariance of the h-map: `hMap μ R c (λ w) = hMap μ (R λ) (c / λ²) w` for `λ ≠ 0`.
+    A linear change of the latent coordinate (e.g. an adapted diagonal mass matrix) maps
+    `(R, c)` to `(R λ, c / λ²)`, so only `R² c` is identifiable. -/
+theorem hMap_rescale (μ R c : ℝ) {l : ℝ} (hl : l ≠ 0) (w : ℝ) :
+    hMap μ R c (l * w) = hMap μ (R * l) (c / l ^ 2) w := by
+  unfold hMap
+  have harg : (l * w) ^ 2 / (2 * c) = w ^ 2 / (2 * (c / l ^ 2)) := by
+    rcases eq_or_ne c 0 with h0 | h0
+    · simp [h0]
+    · field_simp
+  rw [harg]; ring
+
+/-- The invariant of `hMap_rescale`: `(R λ)² (c / λ²) = R² c`. -/
+theorem hMap_rescale_invariant (R c : ℝ) {l : ℝ} (hl : l ≠ 0) :
+    (R * l) ^ 2 * (c / l ^ 2) = R ^ 2 * c := by
+  field_simp
+
 /-- `π` times the density of `z` when `x = r z exp(z² / (2c)) ~ Cauchy(0, 1)`:
     `π p_z(z) = (dx/dz) / (1 + x²)`. -/
 def hMapCauchyPullback (r c z : ℝ) : ℝ :=
@@ -1381,6 +1399,14 @@ theorem arcsinhGaussCurv_zero (r : ℝ) : arcsinhGaussCurv r 0 = r ^ 2 - 1 := by
 /-- info: 'McmcRobust.hMap_bijective' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms hMap_bijective
+
+/-- info: 'McmcRobust.hMap_rescale' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMap_rescale
+
+/-- info: 'McmcRobust.hMap_rescale_invariant' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMap_rescale_invariant
 
 /-- info: 'McmcRobust.hMapCauchyPullback_eq' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
