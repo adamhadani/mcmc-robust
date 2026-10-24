@@ -1,15 +1,17 @@
-"""Unit tests for pure-JAX 3-phase adaptive UnifiedRobustNUTS (sample_blackjax_unified_nuts)."""
+"""Unit tests for pure-JAX 3-phase adaptive UnifiedRobustNUTS and Vanilla-vs-JAX algorithmic parity."""
 
 from __future__ import annotations
 
 import jax
 
 jax.config.update("jax_enable_x64", True)
+import blackjax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from xarray import DataTree
 
+from mcmc_robust.core.state import ChainState, StepResult
 from mcmc_robust.diagnostics.convergence import compute_split_rhat
 from mcmc_robust.diagnostics.ess import compute_bulk_ess
 from mcmc_robust.integrations import (
@@ -19,7 +21,10 @@ from mcmc_robust.integrations import (
     sample_blackjax_unified_nuts,
 )
 from mcmc_robust.jax_unified_nuts import arviz_from_samples
-
+from mcmc_robust.samplers.novel.nuts import UnifiedRobustNUTS
+from mcmc_robust.targets.benign import DiagonalGaussian
+from mcmc_robust.targets.heavy_tailed import MultivariateStudentTTarget
+from mcmc_robust.transforms.coordinate_arcsinh import CoordinateWiseArcsinhTransform
 
 # =============================================================================
 # 1. Scale & Location Calibration Tests (calibrate_jax_arcsinh_transform)
@@ -67,9 +72,6 @@ def test_calibrate_jax_arcsinh_transform_location_and_heterogeneous_scales() -> 
 @pytest.mark.unit
 def test_calibrate_jax_arcsinh_transform_bounds_and_zero_variance() -> None:
     """Verify [min_radius, max_radius] clipping holds even on constant zero-variance and extreme inputs."""
-    # Coordinate 0: constant (zero variance -> clipped to min_radius)
-    # Coordinate 1: moderate dispersion
-    # Coordinate 2: huge dispersion (-> clipped to max_radius)
     rng = np.random.default_rng(99)
     n = 500
     col0 = np.full(n, 42.0, dtype=np.float64)
@@ -253,7 +255,7 @@ def test_sample_blackjax_unified_nuts_grad_accounting_and_arviz_datatree() -> No
     def iso_gauss_logdensity(x: jnp.ndarray) -> jnp.ndarray:
         return -0.5 * jnp.sum(x**2)
 
-    # 1. With 3-phase adaptation enabled (adapt_tail_scale=True, tune >= 40)
+    # 1. With 3-phase adaptation enabled (adapt_tail_scale=True, tune >= 20)
     res = sample_blackjax_unified_nuts(
         logdensity_fn=iso_gauss_logdensity,
         d=d,
@@ -297,3 +299,242 @@ def test_sample_blackjax_unified_nuts_grad_accounting_and_arviz_datatree() -> No
     assert res_no_p1.phase2_grad_evals > 0
     assert res_no_p1.sampling_grad_evals > 0
     assert res_no_p1.grad_evals == res_no_p1.phase2_grad_evals + res_no_p1.sampling_grad_evals
+
+
+# =============================================================================
+# 6. Vanilla-vs-JAX Algorithmic Parity Tests
+# =============================================================================
+
+
+@pytest.mark.unit
+def test_vanilla_vs_jax_transform_pointwise_and_pullback_grad_parity() -> None:
+    """Verify JaxArcsinhTransform matches CoordinateWiseArcsinhTransform to < 1e-13 across bulk and tails."""
+    d = 4
+    radii = np.array([0.8, 2.5, 12.0, 4.0], dtype=np.float64)
+    location = np.array([15.0, -20.0, 5.0, 0.0], dtype=np.float64)
+    mask = np.array([True, True, False, True], dtype=bool)
+
+    vanilla_tf = CoordinateWiseArcsinhTransform(d=d, radii=radii, location=location, mask=mask)
+    jax_tf = JaxArcsinhTransform(radii=radii, location=location, mask=mask, d=d)
+
+    # Student-t log-density for testing analytical pullback vs JAX autodiff
+    nu = 2.5
+
+    def student_t_logp_jax(x: jnp.ndarray) -> jnp.ndarray:
+        return -0.5 * (nu + d) * jnp.log1p(jnp.sum(((x - jnp.asarray(location)) / jnp.asarray(radii)) ** 2) / nu)
+
+    wrapped_logp_jax = jax_tf.wrap_logdensity(student_t_logp_jax)
+    autodiff_grad_z_fn = jax.grad(wrapped_logp_jax)
+    autodiff_grad_x_fn = jax.grad(student_t_logp_jax)
+
+    test_points = [
+        np.array([15.0, -20.0, 5.0, 0.0], dtype=np.float64),  # exact center
+        np.array([16.2, -18.5, 7.3, -1.1], dtype=np.float64),  # bulk
+        np.array([250.0, -500.0, 100.0, 800.0], dtype=np.float64),  # far tail
+        np.array([-1e5, 2e5, -3e4, -5e5], dtype=np.float64),  # extreme tail
+    ]
+
+    for x_np in test_points:
+        x_jax = jnp.asarray(x_np, dtype=jnp.float64)
+
+        # 1. Forward map z = phi(x)
+        z_vanilla, log_det_fwd_vanilla = vanilla_tf.forward(x_np)
+        z_jax = jax_tf.forward(x_jax)
+        np.testing.assert_allclose(np.asarray(z_jax), z_vanilla, atol=1e-13, rtol=1e-13)
+
+        # 2. Inverse map x = psi(z) and log |det J_psi(z)|
+        x_rec_vanilla, log_det_inv_vanilla = vanilla_tf.inverse(z_vanilla)
+        x_rec_jax = jax_tf.inverse(z_jax)
+        log_det_inv_jax = float(jax_tf.log_jacobian_det(z_jax))
+        np.testing.assert_allclose(np.asarray(x_rec_jax), x_rec_vanilla, atol=1e-12, rtol=1e-12)
+        assert abs(log_det_inv_jax - log_det_inv_vanilla) < 1e-13
+        assert abs(log_det_fwd_vanilla + log_det_inv_jax) < 1e-12
+
+        # 3. Pullback gradient nabla_z log pi_Z(z) parity: vanilla vs JaxArcsinhTransform.forward_grad vs jax.grad
+        grad_x_np = np.asarray(autodiff_grad_x_fn(x_jax), dtype=np.float64)
+        grad_z_vanilla = vanilla_tf.forward_grad(x_np, grad_x_np)
+        grad_z_jax_method = np.asarray(jax_tf.forward_grad(x_jax, grad_x_np), dtype=np.float64)
+        grad_z_autodiff = np.asarray(autodiff_grad_z_fn(z_jax), dtype=np.float64)
+
+        np.testing.assert_allclose(grad_z_jax_method, grad_z_vanilla, atol=1e-13, rtol=1e-13)
+        np.testing.assert_allclose(grad_z_autodiff, grad_z_vanilla, atol=1e-12, rtol=1e-12)
+
+
+@pytest.mark.unit
+def test_vanilla_vs_jax_phase1_calibration_exact_parity() -> None:
+    """Verify calibrate_jax_arcsinh_transform matches CoordinateWiseArcsinhTransform & UnifiedRobustNUTS Phase 1."""
+    rng = np.random.default_rng(2026)
+    d = 4
+    # Include off-center shifted coords, heavy-tailed coords, and a constant zero-variance coord
+    s0 = rng.normal(loc=35.0, scale=0.8, size=120)
+    s1 = -12.0 + 4.5 * rng.standard_cauchy(size=120)
+    s2 = np.full(120, 7.25, dtype=np.float64)  # zero variance -> fallback & min_radius clip
+    s3 = rng.normal(loc=100.0, scale=250.0, size=120)  # huge variance -> max_radius clip
+    pilot_samples = np.column_stack([s0, s1, s2, s3])
+
+    min_r = 0.15
+    max_r = 80.0
+    mult = 1.5
+
+    # 1. Shared static helper on CoordinateWiseArcsinhTransform
+    loc_vanilla, radii_vanilla = CoordinateWiseArcsinhTransform.compute_phase1_calibration(
+        pilot_samples,
+        min_radius=min_r,
+        max_radius=max_r,
+        scale_multiplier=mult,
+    )
+
+    # 2. Pure-JAX calibration function
+    jax_tf = calibrate_jax_arcsinh_transform(
+        pilot_samples=jnp.asarray(pilot_samples),
+        d=d,
+        min_radius=min_r,
+        max_radius=max_r,
+        scale_multiplier=mult,
+    )
+
+    np.testing.assert_allclose(np.asarray(jax_tf.location), loc_vanilla, atol=1e-12, rtol=1e-12)
+    np.testing.assert_allclose(np.asarray(jax_tf.radii), radii_vanilla, atol=1e-12, rtol=1e-12)
+
+    # 3. Verify UnifiedRobustNUTS.adapt in Phase 1 produces the exact same transform
+    nuts = UnifiedRobustNUTS(
+        step_size=0.1,
+        adapt_tail_scale=True,
+        warmup_steps=800,  # W1 = max(10, int(0.15 * 800)) = 120 == len(pilot_samples)
+        min_radius=min_r,
+        max_radius=max_r,
+    )
+    for idx in range(120):
+        dummy_state = ChainState(x=pilot_samples[idx], log_prob=0.0, grad_log_prob=np.zeros(d))
+        dummy_res = StepResult(state=dummy_state, accepted=True, accept_prob=0.8, stats={})
+        nuts.adapt(idx, dummy_res)
+
+    assert nuts.transform is not None
+    np.testing.assert_allclose(nuts.transform.location, np.asarray(jax_tf.location), atol=1e-12, rtol=1e-12)
+    np.testing.assert_allclose(nuts.transform.radii, np.asarray(jax_tf.radii), atol=1e-12, rtol=1e-12)
+
+
+@pytest.mark.unit
+def test_vanilla_vs_jax_single_leapfrog_step_parity() -> None:
+    """Verify a single leapfrog step in z-space matches between UnifiedRobustNUTS and BlackJAX velocity_verlet."""
+    d = 3
+    target = MultivariateStudentTTarget(d=d, nu=2.5)
+    radii = np.array([1.2, 2.8, 0.7], dtype=np.float64)
+    location = np.array([3.0, -4.0, 1.5], dtype=np.float64)
+    s_z = np.array([0.9, 1.4, 1.1], dtype=np.float64)
+    epsilon = 0.08
+
+    # Vanilla UnifiedRobustNUTS with gamma=0.0 (pure symplectic leapfrog in warped space)
+    nuts = UnifiedRobustNUTS(step_size=epsilon, gamma=0.0, radius=radii)
+    nuts._transform = CoordinateWiseArcsinhTransform(d=d, radii=radii, location=location)
+    nuts.set_preconditioner(s_z)
+    transform_vanilla = nuts._ensure_transform(d)
+
+    # Pure-JAX transform & wrapped Student-t logdensity
+    jax_tf = JaxArcsinhTransform(radii=radii, location=location, d=d)
+
+    def student_t_logp_jax(x: jnp.ndarray) -> jnp.ndarray:
+        diff = x - jnp.asarray(target.mu, dtype=jnp.float64)
+        inv_cov = jnp.asarray(np.linalg.inv(target._cov), dtype=jnp.float64)
+        quad = jnp.dot(diff, jnp.dot(inv_cov, diff))
+        return jnp.asarray(target._log_const, dtype=jnp.float64) - 0.5 * (target.nu + d) * jnp.log1p(quad / target.nu)
+
+    wrapped_logp_jax = jax_tf.wrap_logdensity(student_t_logp_jax)
+
+    # Initial phase-space state (z0, p0)
+    x0 = np.array([4.2, -2.5, 0.8], dtype=np.float64)
+    p0 = np.array([0.6, -0.9, 0.35], dtype=np.float64)
+    z0, _ = transform_vanilla.forward(x0)
+    _, log_det_inv0 = transform_vanilla.inverse(z0)
+    lp_x0, grad_x0 = target.log_prob_and_grad(x0)
+    lp_z0 = float(lp_x0 + log_det_inv0)
+    grad_z0 = transform_vanilla.forward_grad(x0, grad_x0)
+    h0 = -lp_z0 + nuts._kinetic_energy(p0, s_z)
+
+    # 1. Vanilla single leapfrog step via UnifiedRobustNUTS._build_tree(j=0, v=1)
+    z_next_v, p_next_v, grad_z_next_v, _, _, _, cand_v, _, _, _, _, _, _ = nuts._build_tree(
+        z=z0,
+        p=p0,
+        g_z=grad_z0,
+        v=1,
+        j=0,
+        epsilon=epsilon,
+        h0=h0,
+        s_z=s_z,
+        transform=transform_vanilla,
+        target=target,
+        rng=np.random.default_rng(0),
+    )
+
+    # 2. BlackJAX velocity_verlet single step with inverse_mass_matrix = s_z^2
+    inv_mass_jax = jnp.asarray(s_z**2, dtype=jnp.float64)
+    kinetic_energy_fn = lambda p: 0.5 * jnp.sum(inv_mass_jax * (p**2))  # noqa: E731
+    vv_step = blackjax.mcmc.integrators.velocity_verlet(wrapped_logp_jax, kinetic_energy_fn)
+    init_vv_state = blackjax.mcmc.integrators.IntegratorState(
+        position=jnp.asarray(z0, dtype=jnp.float64),
+        momentum=jnp.asarray(p0, dtype=jnp.float64),
+        logdensity=jnp.asarray(lp_z0, dtype=jnp.float64),
+        logdensity_grad=jnp.asarray(grad_z0, dtype=jnp.float64),
+    )
+    next_vv_state = vv_step(init_vv_state, epsilon)
+    x_next_jax = jax_tf.inverse(next_vv_state.position)
+
+    np.testing.assert_allclose(np.asarray(next_vv_state.position), z_next_v, atol=1e-13, rtol=1e-13)
+    np.testing.assert_allclose(np.asarray(next_vv_state.momentum), p_next_v, atol=1e-13, rtol=1e-13)
+    np.testing.assert_allclose(np.asarray(next_vv_state.logdensity_grad), grad_z_next_v, atol=1e-13, rtol=1e-13)
+    np.testing.assert_allclose(np.asarray(x_next_jax), cand_v.x, atol=1e-13, rtol=1e-13)
+    assert abs(float(next_vv_state.logdensity) - cand_v.lp_z) < 1e-13
+
+
+@pytest.mark.unit
+def test_vanilla_vs_jax_posterior_agreement() -> None:
+    """Verify UnifiedRobustNUTS and sample_blackjax_unified_nuts agree on posterior moments."""
+    d = 3
+    target = DiagonalGaussian(d=d, condition_number=16.0)
+    shift = np.array([12.0, -8.0, 5.0], dtype=np.float64)
+    target.mean = shift
+    stds = target.stds
+
+    # 1. Vanilla UnifiedRobustNUTS
+    vanilla_nuts = UnifiedRobustNUTS(
+        step_size=0.15,
+        max_depth=8,
+        adapt_step_size=True,
+        adapt_preconditioner=True,
+        adapt_tail_scale=True,
+        warmup_steps=200,
+    )
+    vanilla_samples, _ = vanilla_nuts.sample(
+        x0=np.zeros(d),
+        target=target,
+        n_steps=600,
+        burn_in=200,
+        rng=np.random.default_rng(42),
+        adapt=True,
+    )
+
+    # 2. Pure-JAX sample_blackjax_unified_nuts
+    mu_jax = jnp.asarray(shift, dtype=jnp.float64)
+    std_jax = jnp.asarray(stds, dtype=jnp.float64)
+
+    def diag_gauss_logp(x: jnp.ndarray) -> jnp.ndarray:
+        return -0.5 * jnp.sum(((x - mu_jax) / std_jax) ** 2)
+
+    jax_res = sample_blackjax_unified_nuts(
+        logdensity_fn=diag_gauss_logp,
+        d=d,
+        draws=300,
+        tune=200,
+        chains=2,
+        seed=42,
+    )
+
+    vanilla_mean = np.mean(vanilla_samples, axis=0)
+    jax_mean = np.mean(jax_res.samples, axis=(0, 1))
+    vanilla_std = np.std(vanilla_samples, axis=0)
+    jax_std = np.std(jax_res.samples, axis=(0, 1))
+
+    np.testing.assert_allclose(vanilla_mean, shift, atol=0.6)
+    np.testing.assert_allclose(jax_mean, shift, atol=0.6)
+    np.testing.assert_allclose(vanilla_mean, jax_mean, atol=0.7)
+    np.testing.assert_allclose(vanilla_std, jax_std, rtol=0.25)

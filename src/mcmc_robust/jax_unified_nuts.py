@@ -1,22 +1,40 @@
 r"""Pure-JAX 3-Phase Adaptive UnifiedRobustNUTS Kernel (`sample_blackjax_unified_nuts`).
 
 Implements a fully XLA-compiled (`jax.jit` + `jax.vmap` + `jax.lax.scan`) 3-phase adaptive
-MCMC pipeline combining the shift-equivariant coordinate-wise $\operatorname{arcsinh}$
-diffeomorphism (`JaxArcsinhTransform`) with BlackJAX's No-U-Turn Sampler (`blackjax.nuts`):
+MCMC pipeline that mirrors the native `UnifiedRobustNUTS` (`samplers/novel/nuts.py`) and
+`CoordinateWiseArcsinhTransform` (`transforms/coordinate_arcsinh.py`) architecture 1-to-1:
 
-1. **Phase 1 — Coordinate Location & Tail-Scale Calibration ($W_1 = \max(20, \lfloor 0.20 \cdot \text{tune} \rfloor)$)**:
-   Runs initial exploratory warmup in warped coordinates, pulls Phase 1 draws back to
-   primal $x$-space, and calibrates coordinate medians $\mu_i$ and clipped normal-consistent
-   scales $R_i = \min(R_{\max}, \max(R_{\min}, c \cdot \hat{\sigma}_i))$ (formally verified in
-   `formal/McmcRobustFormal.lean` §7).
-2. **Phase 2 & 3 — Joint Metric & Step-Size Window Adaptation ($W_2 = \max(20, \text{tune} - W_1)$)**:
-   Maps Phase 1 terminal states into the newly calibrated $z$-space (`z_start = transform.forward(x_p1_final)`),
-   then runs BlackJAX `window_adaptation` on the calibrated transformed log-density to jointly adapt
-   the diagonal inverse mass matrix $M^{-1}$ in $z$-space and the symplectic step size $h$.
-3. **Post-Warmup Production Sampling (`draws` steps across `chains`)**:
-   Executes `jax.jit` + `jax.vmap` + `jax.lax.scan` in calibrated $z$-space, pulls samples back to
-   primal $x$-space via `transform.inverse`, and records exact leapfrog gradient evaluations across
-   all phases (`grad_evals == phase1_grad_evals + phase2_grad_evals + sampling_grad_evals`).
+1. **Coordinate Diffeomorphism (`JaxArcsinhTransform` $\leftrightarrow$ `CoordinateWiseArcsinhTransform`)**:
+   - Forward map: $z_i = \operatorname{arcsinh}((x_i - \mu_i) / R_i)$ on masked coordinates (`mask[i] == True`).
+   - Inverse map: $x_i = \mu_i + R_i \sinh(z_i)$ with overflow-free log-Jacobian determinant
+     $\log |\det J_\psi(z)| = \sum_{i: m_i=1} (\log R_i + |z_i| - \log 2 + \operatorname{log1p}(e^{-2|z_i|}))$.
+   - Pullback gradient: $\nabla_{z_i} \log \pi_Z(z) = \sqrt{R_i^2 + (x_i - \mu_i)^2} \nabla_{x_i} \log \pi_X(x)
+     + (x_i - \mu_i) / \sqrt{R_i^2 + (x_i - \mu_i)^2}$.
+
+2. **Phase 1 — Coordinate Location & Tail-Scale Calibration ($W_1 = \max(10, \lfloor 0.15 \cdot \text{tune} \rfloor)$)**:
+   - Mirrors `UnifiedRobustNUTS.adapt` (`nuts.py` lines 666–698) and
+     `CoordinateWiseArcsinhTransform.compute_phase1_calibration`:
+     $$\mu_i = \operatorname{median}(x_{\cdot, i}), \qquad
+       R_i = \min\!\left(R_{\max},\, \max\!\left(R_{\min},\, c \cdot \hat{\sigma}_i\right)\right)$$
+     where $\hat{\sigma}_i = \operatorname{IQR}(x_{\cdot, i} - \mu_i) / 1.3489795$ when
+     $\hat{\sigma}_{\text{IQR}, i} > R_{\min}$, falling back to
+     $\max(\operatorname{MAD}(x_{\cdot, i} - \mu_i) / 0.67448975,\, q_{0.90}(|x_{\cdot, i} - \mu_i|))$.
+   - Formally verified in `formal/McmcRobustFormal.lean` §7 (`calibratedRadius_ge_min`,
+     `calibratedRadius_pos`, `calibratedRadius_le_max`, `calibratedRadius_mono`,
+     `calibrated_shifted_roundtrip_forward`, `calibrated_shifted_roundtrip_inverse`).
+
+3. **Phase 2 & 3 — Joint Metric & Step-Size Window Adaptation ($W_2 = \max(10, \text{tune} - W_1)$)**:
+   - Maps Phase 1 terminal primal positions into the newly calibrated $z$-space
+     (`z_start = transform.forward(x_p1_final)`), mirroring the Phase 1 $\to$ Phase 2 transition
+     in `UnifiedRobustNUTS.adapt`.
+   - Runs BlackJAX `window_adaptation` in calibrated $z$-space to jointly adapt the diagonal
+     inverse mass matrix $M^{-1}$ (Welford variance in $z$-space) and symplectic step size $h$
+     (Nesterov dual averaging targeting `target_accept`).
+
+4. **Post-Warmup Production Sampling (`draws` steps across `chains`)**:
+   - Executes `jax.jit` + `jax.vmap` + `jax.lax.scan` in calibrated $z$-space, transforms draws back
+     to primal $x$-space via `transform.inverse`, and records exact leapfrog gradient evaluations
+     (`grad_evals == phase1_grad_evals + phase2_grad_evals + sampling_grad_evals`).
 """
 
 from __future__ import annotations
@@ -110,11 +128,15 @@ def calibrate_jax_arcsinh_transform(
 ) -> JaxArcsinhTransform:
     r"""Calibrates shift-equivariant coordinate medians $\mu_i$ and clipped scales $R_i$ from pilot draws.
 
-    Implements the formally verified Phase 1 calibration map (`formal/McmcRobustFormal.lean` §7):
+    Implements the exact pure-JAX counterpart of
+    `CoordinateWiseArcsinhTransform.compute_phase1_calibration` (`transforms/coordinate_arcsinh.py`)
+    and `UnifiedRobustNUTS.adapt` (`samplers/novel/nuts.py`), matching the formally verified
+    Phase 1 calibration map (`formal/McmcRobustFormal.lean` §7):
         $$\mu_i = \operatorname{median}(x_{\cdot, i}), \qquad
           R_i = \min\!\left(R_{\max},\, \max\!\left(R_{\min},\, c \cdot \hat{\sigma}_i\right)\right)$$
-    where $\hat{\sigma}_i = \operatorname{IQR}(x_{\cdot, i} - \mu_i) / 1.3489795$ with normal-consistent
-    MAD and 90th-percentile fallbacks for near-degenerate coordinates.
+    where $\hat{\sigma}_i = \operatorname{IQR}(x_{\cdot, i} - \mu_i) / 1.3489795$ when
+    $\hat{\sigma}_{\text{IQR}, i} > R_{\min}$, falling back to
+    $\max(\operatorname{MAD}(x_{\cdot, i} - \mu_i) / 0.67448975,\, q_{0.90}(|x_{\cdot, i} - \mu_i|))$.
 
     Parameters:
         pilot_samples: Exploratory primal draws of shape `(n_samples, d)` or `(chains, draws, d)`.
@@ -122,7 +144,7 @@ def calibrate_jax_arcsinh_transform(
         mask: Optional boolean mask of shape `(d,)` selecting coordinates to warp (default: all `True`).
         min_radius: Strictly positive lower bound $R_{\min} > 0$ on calibrated radii.
         max_radius: Upper bound $R_{\max} \ge R_{\min}$ on calibrated radii.
-        scale_multiplier: Scale multiplier $c \ge 0$ applied to normal-consistent dispersion $\hat{\sigma}_i$.
+        scale_multiplier: Scale multiplier $c \ge 0$ applied to base dispersion $\hat{\sigma}_i$.
 
     Returns:
         Calibrated `JaxArcsinhTransform` with `.location`, `.radii`, and `.mask`.
@@ -149,23 +171,24 @@ def calibrate_jax_arcsinh_transform(
     if d is not None and int(d) != d_actual:
         raise ValueError(f"pilot_samples last dimension {d_actual} does not match d={d}")
 
+    # Exact parity with CoordinateWiseArcsinhTransform.compute_phase1_calibration
     med = jnp.median(arr, axis=0)
     centered = arr - med
     abs_centered = jnp.abs(centered)
 
-    q75 = jnp.percentile(centered, 75.0, axis=0)
-    q25 = jnp.percentile(centered, 25.0, axis=0)
+    q75, q25 = jnp.quantile(centered, jnp.array([0.75, 0.25], dtype=jnp.float64), axis=0)
     iqr_scale = (q75 - q25) / 1.3489795
     mad_scale = jnp.median(abs_centered, axis=0) / 0.67448975
-    q90_scale = jnp.percentile(abs_centered, 90.0, axis=0) / 1.6448536
+    q90_abs = jnp.quantile(abs_centered, 0.90, axis=0)
 
-    raw_sigma = jnp.where(iqr_scale > 1e-6, iqr_scale, jnp.maximum(mad_scale, q90_scale))
-    raw_sigma = jnp.where(jnp.isfinite(raw_sigma), raw_sigma, 1.0)
+    base_scale = jnp.where(iqr_scale > min_radius, iqr_scale, jnp.maximum(mad_scale, q90_abs))
+    base_scale = jnp.where(jnp.isfinite(base_scale), base_scale, 1.0)
     med_clean = jnp.where(jnp.isfinite(med), med, 0.0)
 
+    # Matches Lean 4 `calibratedRadius σ Rmin Rmax c := min Rmax (max Rmin (c * σ))`
     radii = jnp.minimum(
         jnp.float64(max_radius),
-        jnp.maximum(jnp.float64(min_radius), jnp.float64(scale_multiplier) * raw_sigma),
+        jnp.maximum(jnp.float64(min_radius), jnp.float64(scale_multiplier) * base_scale),
     )
 
     return JaxArcsinhTransform(
@@ -179,13 +202,13 @@ def calibrate_jax_arcsinh_transform(
 def _make_smooth_wall_logdensity(
     base_logdensity_z: Callable[[jnp.ndarray], jnp.ndarray],
     l_floor: float,
-    wall_scale: float = 10.0,
+    wall_scale: float = 5.0,
 ) -> Callable[[jnp.ndarray], jnp.ndarray]:
     r"""Constructs an exact $C^1$-smooth scalar log-density that is identical to `base_logdensity_z`
     throughout the posterior support ($\ell(z) \ge L_{\text{floor}}$) and smoothly attenuates
-    exponential wall stiffness in the zero-measure exterior ($\ell(z) < L_{\text{floor}}$).
+    exponential wall stiffness in the negligible-mass exterior ($\ell(z) < L_{\text{floor}}$).
 
-    Because `soft_logp` is a pure scalar function differentiated directly by JAX autodiff,
+    Because `soft_logp` is a pure scalar potential differentiated directly by JAX autodiff,
     the leapfrog force is the exact conservative gradient of the potential energy everywhere,
     preserving symplectic energy conservation across funnel neck reflections.
     """
@@ -232,11 +255,11 @@ def sample_blackjax_unified_nuts(
 ) -> JaxUnifiedNUTSResult:
     r"""Executes pure-JAX 3-phase adaptive `UnifiedRobustNUTS` using `JaxArcsinhTransform` and BlackJAX.
 
-    Three-Phase Schedule:
-        - **Phase 1** ($W_1 = \max(20, \lfloor 0.20 \cdot \text{tune} \rfloor)$ when `adapt_tail_scale=True`
-          and `tune >= 40`): Runs BlackJAX `window_adaptation` on initial `JaxArcsinhTransform`, pulls
+    Three-Phase Schedule (aligned 1-to-1 with `UnifiedRobustNUTS.adapt` in `samplers/novel/nuts.py`):
+        - **Phase 1** ($W_1 = \max(10, \lfloor 0.15 \cdot \text{tune} \rfloor)$ when `adapt_tail_scale=True`
+          and `tune >= 20`): Runs BlackJAX `window_adaptation` on initial `JaxArcsinhTransform`, pulls
           Phase 1 draws back to primal $x$-space, and calibrates `transform = calibrate_jax_arcsinh_transform(...)`.
-        - **Phase 2 & 3** ($W_2 = \max(20, \text{tune} - W_1)$): Maps Phase 1 terminal primal positions
+        - **Phase 2 & 3** ($W_2 = \max(10, \text{tune} - W_1)$): Maps Phase 1 terminal primal positions
           into the calibrated $z$-space (`z_start = transform.forward(x_p1_final)`), then runs BlackJAX
           `window_adaptation` on `transform.wrap_logdensity(logdensity_fn)` for $W_2$ steps to adapt
           the diagonal inverse mass matrix $M^{-1}$ in calibrated $z$-space and symplectic step size $h$.
@@ -326,7 +349,7 @@ def sample_blackjax_unified_nuts(
     else:
         init_x = 0.5 * jax.random.normal(key_init, shape=(chains, d_int), dtype=jnp.float64)
 
-    # Initial transform
+    # Initial transform (matches UnifiedRobustNUTS._ensure_transform)
     transform_init = JaxArcsinhTransform(
         radii=initial_radius,
         location=initial_location,
@@ -334,19 +357,20 @@ def sample_blackjax_unified_nuts(
         d=d_int,
     )
 
-    run_phase1 = bool(adapt_tail_scale and tune >= 40)
+    # Phase 1 horizon W1 = max(10, int(0.15 * tune)) matches UnifiedRobustNUTS.adapt (nuts.py line 666)
+    run_phase1 = bool(adapt_tail_scale and tune >= 20)
     phase1_grad_evals = 0
     phase2_grad_evals = 0
 
     if run_phase1:
-        w1_steps = max(20, int(0.20 * tune))
-        w2_steps = max(20, tune - w1_steps)
+        w1_steps = max(10, int(0.15 * tune))
+        w2_steps = max(10, tune - w1_steps)
 
         z0_batch = jax.vmap(transform_init.forward)(init_x)
         base_logp_z1 = transform_init.wrap_logdensity(raw_logdensity_fn)
         l_init_vals = jax.vmap(base_logp_z1)(z0_batch)
         l_ref1 = float(jnp.max(jnp.where(jnp.isfinite(l_init_vals), l_init_vals, -100.0)))
-        logdensity_z1 = _make_smooth_wall_logdensity(base_logp_z1, l_floor=l_ref1 - 45.0, wall_scale=10.0)
+        logdensity_z1 = _make_smooth_wall_logdensity(base_logp_z1, l_floor=l_ref1 - 25.0, wall_scale=5.0)
 
         warmup_p1 = blackjax.window_adaptation(
             blackjax.nuts,
@@ -360,7 +384,7 @@ def sample_blackjax_unified_nuts(
         # Exact Phase 1 gradient evaluations: 1 init eval per chain + sum of leapfrog steps
         phase1_grad_evals = int(chains + int(jnp.sum(info_p1.info.num_integration_steps)))
 
-        # Pull second half of Phase 1 draws back to primal x-space to calibrate transform
+        # Pull second half of Phase 1 draws back to primal x-space and calibrate location & radii
         half_idx = max(1, w1_steps // 2)
         z_p1_tail = info_p1.state.position[:, half_idx:, :]
         x_p1_tail = jax.vmap(jax.vmap(transform_init.inverse))(z_p1_tail)
@@ -380,13 +404,13 @@ def sample_blackjax_unified_nuts(
         x_p1_final = init_x
         pilot_x_for_ref = init_x
 
-    # Map starting positions into calibrated z-space
+    # Map Phase 1 terminal positions into calibrated z-space (Phase 2 & 3 entry)
     z_start_batch = jax.vmap(transform.forward)(x_p1_final)
     base_logp_z2 = transform.wrap_logdensity(raw_logdensity_fn)
     z_ref_pts = jax.vmap(transform.forward)(pilot_x_for_ref)
     l_ref2_vals = jax.vmap(base_logp_z2)(z_ref_pts)
     l_ref2 = float(jnp.max(jnp.where(jnp.isfinite(l_ref2_vals), l_ref2_vals, -100.0)))
-    logdensity_z2 = _make_smooth_wall_logdensity(base_logp_z2, l_floor=l_ref2 - 45.0, wall_scale=10.0)
+    logdensity_z2 = _make_smooth_wall_logdensity(base_logp_z2, l_floor=l_ref2 - 25.0, wall_scale=5.0)
 
     if w2_steps > 0:
         warmup_p2 = blackjax.window_adaptation(
@@ -403,32 +427,36 @@ def sample_blackjax_unified_nuts(
         # Exact Phase 2/3 gradient evaluations: 1 init eval per chain + sum of leapfrog steps
         phase2_grad_evals = int(chains + int(jnp.sum(info_p2.info.num_integration_steps)))
 
-        # Pool adapted step size and diagonal inverse mass matrix across chains via geometric mean
-        adapted_step_size = float(jnp.exp(jnp.mean(jnp.log(jnp.maximum(params_p2["step_size"], 1e-8)))))
-        adapted_inv_mass = jnp.exp(
-            jnp.mean(jnp.log(jnp.maximum(params_p2["inverse_mass_matrix"], 1e-12)), axis=0)
-        )
+        # Use conservative minimum adapted step size across chains so chains entering stiff regions
+        # (e.g. funnel necks) never experience step-size overshoot, while keeping per-chain mass matrices
+        adapted_step_size = float(jnp.min(jnp.maximum(params_p2["step_size"], 1e-6)))
+        chain_step_sizes = jnp.full((chains,), adapted_step_size, dtype=jnp.float64)
+        chain_inv_masses = jnp.maximum(params_p2["inverse_mass_matrix"], 1e-12)
+        adapted_inv_mass = jnp.exp(jnp.mean(jnp.log(chain_inv_masses), axis=0))
         sampling_init_states = state_p2
         init_sampling_evals = 0
     else:
         adapted_step_size = float(step_size)
+        chain_step_sizes = jnp.full((chains,), adapted_step_size, dtype=jnp.float64)
+        chain_inv_masses = jnp.ones((chains, d_int), dtype=jnp.float64)
         adapted_inv_mass = jnp.ones((d_int,), dtype=jnp.float64)
         sampling_init_states = jax.vmap(lambda z: blackjax.nuts.init(z, logdensity_z2))(z_start_batch)
         init_sampling_evals = int(chains)
 
     # Post-Warmup Production Sampling via jax.jit + jax.vmap + jax.lax.scan
-    nuts_kernel = blackjax.nuts(
-        logdensity_z2,
-        step_size=adapted_step_size,
-        inverse_mass_matrix=adapted_inv_mass,
-        max_num_doublings=max_num_doublings,
-        divergence_threshold=divergence_threshold,
-    ).step
-
     def _scan_single_chain(
         init_state: Any,
+        chain_ss: jnp.ndarray,
+        chain_inv_m: jnp.ndarray,
         chain_rng_key: Any,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        nuts_kernel = blackjax.nuts(
+            logdensity_z2,
+            step_size=chain_ss,
+            inverse_mass_matrix=chain_inv_m,
+            max_num_doublings=max_num_doublings,
+            divergence_threshold=divergence_threshold,
+        ).step
         step_keys = jax.random.split(chain_rng_key, draws)
 
         def _one_step(
@@ -449,7 +477,7 @@ def sample_blackjax_unified_nuts(
 
     sample_keys = jax.random.split(key_sample, chains)
     z_draws, div_draws, n_steps_draws, acc_draws, energy_draws = jax.jit(jax.vmap(_scan_single_chain))(
-        sampling_init_states, sample_keys
+        sampling_init_states, chain_step_sizes, chain_inv_masses, sample_keys
     )
 
     x_draws = jax.vmap(jax.vmap(transform.inverse))(z_draws)

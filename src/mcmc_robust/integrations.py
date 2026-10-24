@@ -423,16 +423,39 @@ class JaxArcsinhTransform:
     def inverse(self, z: jnp.ndarray) -> jnp.ndarray:
         r"""Maps transformed coordinates $z \in \mathbb{R}^d$ back to primal coordinates $x \in \mathbb{R}^d$."""
         z_arr = jnp.asarray(z, dtype=jnp.float64)
-        x_unwarped = self.location + self.radius * jnp.sinh(z_arr)
+        z_masked = jnp.where(self.mask, z_arr, 0.0)
+        x_unwarped = self.location + self.radius * jnp.sinh(z_masked)
         return jnp.where(self.mask, x_unwarped, z_arr)
 
     def log_jacobian_det(self, z: jnp.ndarray) -> jnp.ndarray:
-        r"""Computes the log-determinant of the Jacobian $\log |\det J(z)| = \sum_i \log(R_i \cosh(z_i))$."""
+        r"""Computes the log-determinant of the Jacobian $\log |\det J(z)| = \sum_i \log(R_i \cosh(z_i))$.
+
+        Matches `CoordinateWiseArcsinhTransform.inverse()[1]` (`transforms/coordinate_arcsinh.py`)
+        using the overflow-free identity $\log \cosh(z_i) = |z_i| - \log 2 + \operatorname{log1p}(e^{-2|z_i|})$.
+        """
         z_arr = jnp.asarray(z, dtype=jnp.float64)
-        abs_z = jnp.abs(z_arr)
+        z_masked = jnp.where(self.mask, z_arr, 0.0)
+        abs_z = jnp.abs(z_masked)
         log_cosh = abs_z - jnp.log(2.0) + jnp.log1p(jnp.exp(-2.0 * abs_z))
         terms = jnp.where(self.mask, jnp.log(self.radius) + log_cosh, 0.0)
         return jnp.sum(terms, axis=-1)
+
+    def forward_grad(self, x: jnp.ndarray | np.ndarray, grad_x: jnp.ndarray | np.ndarray) -> jnp.ndarray:
+        r"""Computes the analytical pullback gradient $\nabla_z \log \pi_Z(z)$ at $z = \phi(x)$.
+
+        Matches `CoordinateWiseArcsinhTransform.forward_grad` (`transforms/coordinate_arcsinh.py`)
+        and equals `jax.grad(self.wrap_logdensity(logdensity_fn))(z)` to machine precision:
+            $$\nabla_{z_i} \log \pi_Z(z) = \sqrt{R_i^2 + (x_i - \mu_i)^2} \, \nabla_{x_i} \log \pi_X(x)
+              + \frac{x_i - \mu_i}{\sqrt{R_i^2 + (x_i - \mu_i)^2}}$$
+        where $\sqrt{R_i^2 + (x_i - \mu_i)^2} = R_i \cosh(z_i)$ is evaluated via `jnp.hypot`
+        to avoid intermediate squaring overflow in the far tails.
+        """
+        x_arr = jnp.asarray(x, dtype=jnp.float64)
+        gx_arr = jnp.asarray(grad_x, dtype=jnp.float64)
+        xm = x_arr - self.location
+        scale = jnp.hypot(self.radius, xm)
+        gz_warped = scale * gx_arr + (xm / scale)
+        return jnp.where(self.mask, gz_warped, gx_arr)
 
     def wrap_logdensity(
         self,
