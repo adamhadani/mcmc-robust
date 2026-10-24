@@ -327,6 +327,28 @@ cd formal && lake build
 
 ---
 
+## 6. References
+
+1. **Power, S., & Vasdekis, G. (2025).** *Some aspects of robustness in modern Markov Chain Monte Carlo.* arXiv preprint [arXiv:2511.21563v1](https://arxiv.org/abs/2511.21563v1).
+2. **Brosse, N., Durmus, A., Moulines, É., & Sabanis, S. (2018).** *The tamed unadjusted Langevin algorithm.* Stochastic Processes and their Applications, 129(10), 3638–3663. [doi:10.1016/j.spa.2018.10.002](https://doi.org/10.1016/j.spa.2018.10.002).
+3. **Johnson, L. T., & Geyer, C. J. (2012).** *Variable transformation to obtain geometric ergodicity in the random-walk Metropolis algorithm.* The Annals of Statistics, 40(6), 3050–3076. [doi:10.1214/12-AOS1048](https://doi.org/10.1214/12-AOS1048).
+4. **Yang, K., Łatuszyński, K., & Roberts, G. O. (2024).** *Stereographic Markov Chain Monte Carlo.* The Annals of Statistics, 52(1), 1–28. [doi:10.1214/23-AOS2328](https://doi.org/10.1214/23-AOS2328).
+5. **Livingstone, S., & Zanella, G. (2022).** *The Barker proposal: Combining robustness and efficiency in gradient-based MCMC.* Journal of the Royal Statistical Society: Series B (Statistical Methodology), 84(2), 496–523. [doi:10.1111/rssb.12482](https://doi.org/10.1111/rssb.12482).
+6. **Hoffman, M. D., & Gelman, A. (2014).** *The No-U-Turn Sampler: Adaptively setting path lengths in Hamiltonian Monte Carlo.* Journal of Machine Learning Research, 15(1), 1593–1623. [jmlr.org/papers/v15/hoffman14a](https://jmlr.org/papers/v15/hoffman14a.html).
+7. **Betancourt, M. (2017).** *A conceptual introduction to Hamiltonian Monte Carlo.* arXiv preprint [arXiv:1701.02434](https://arxiv.org/abs/1701.02434).
+8. **Bou-Rabee, N., Carpenter, B., Marsden, M., & Torelli, J. (2025).** *Within-Orbit Adaptive Leapfrog No-U-Turn Sampler (WALNUTS).* arXiv preprint [arXiv:2506.18746](https://arxiv.org/abs/2506.18746).
+9. **Biron-Lattes, M., Surjanovic, N., Syed, S., Campbell, T., & Bouchard-Côté, A. (2024).** *autoMALA: Locally adaptive Metropolis-adjusted Langevin algorithm.* Proceedings of the 27th International Conference on Artificial Intelligence and Statistics (AISTATS), PMLR 238, 4600–4608. [arXiv:2310.14975](https://arxiv.org/abs/2310.14975).
+10. **Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P. C. (2021).** *Rank-normalization, folding, and localization: An improved $\widehat{R}$ for assessing convergence of MCMC (with discussion).* Bayesian Analysis, 16(2), 667–718. [doi:10.1214/20-BA1221](https://doi.org/10.1214/20-BA1221).
+11. **Rubin, D. B. (1981).** *Estimation in parallel randomized experiments.* Journal of Educational Statistics, 6(4), 377–401. [doi:10.3102/10769986006004377](https://doi.org/10.3102/10769986006004377).
+12. **Neal, R. M. (2003).** *Slice sampling.* The Annals of Statistics, 31(3), 705–767. [doi:10.1214/aos/1056562461](https://doi.org/10.1214/aos/1056562461).
+13. **Roberts, G. O., & Rosenthal, J. S. (2001).** *Optimal scaling for various Metropolis-Hastings algorithms.* Statistical Science, 16(4), 351–367. [doi:10.1214/ss/1015346320](https://doi.org/10.1214/ss/1015346320).
+14. **Roberts, G. O., & Tweedie, R. L. (1996).** *Exponential convergence of Langevin distributions and their discrete approximations.* Bernoulli, 2(4), 341–363. [doi:10.2307/3318418](https://doi.org/10.2307/3318418).
+15. **Bell, J., Łatuszyński, K., & Roberts, G. O. (2024).** *Adaptive heavy-tailed diffeomorphisms for geometrically ergodic Markov chain Monte Carlo.* Technical Report / Preprint.
+16. **Brešar, M., & Mijatović, A. (2026).** *Diffeomorphic coordinate transformation for heavy-tailed Markov Chain Monte Carlo (DCS).* Preprint.
+17. **The Mathlib Community (2020–2026).** *The Lean 4 mathematical library (`mathlib4`).* Proceedings of the 9th ACM SIGPLAN International Conference on Certified Programs and Proofs (CPP 2020), 367–381. [github.com/leanprover-community/mathlib4](https://github.com/leanprover-community/mathlib4).
+
+---
+
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
