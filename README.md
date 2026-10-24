@@ -335,7 +335,7 @@ cd formal && lake build
 | `mhAccept_bounds` / `mh_detailed_balance` | $0 \le \alpha(x,y) \le 1$ and the identity $\pi(x)q(x,y)\alpha(x,y) = \pi(y)q(y,x)\alpha(y,x)$ for positive reals (the algebra behind MH detailed balance, not a proof about a specific kernel) | **Proved (0 sorries)** |
 | `studentTNegLogKernel_nonneg` / `cauchyShrinkagePenalty_nonneg` | Non-negativity of Student-*t* negative log-kernel and Cauchy/Horseshoe shrinkage penalty | **Proved (0 sorries)** |
 | `hasDerivAt_studentTNegLogKernel` / `studentTScore_zero` | Exact Student-*t* score derivative $\frac{d}{dr}\frac{\nu+1}{2}\log(1+r^2/\nu) = \frac{(\nu+1)r}{\nu+r^2}$ | **Proved (0 sorries)** |
-| `studentTScore_mul_le` | Global virial bound $\Vert r \cdot s_\nu(r)\Vert \le \nu + 1$ for outlier-robust Student-*t* likelihoods | **Proved (0 sorries)** |
+| `studentTScore_mul_le` | Global virial bound $\vert r \cdot s_\nu(r)\vert \le \nu + 1$ for outlier-robust Student-*t* likelihoods | **Proved (0 sorries)** |
 | `calibratedRadius_ge_min` / `calibratedRadius_pos` / `calibratedRadius_le_max` | $0 < R_{\min} \le \min(R_{\max}, \max(R_{\min}, c\sigma)) \le R_{\max}$ for all $\sigma \in \mathbb{R}$ | **Proved (0 sorries)** |
 | `calibratedRadius_mono` | $c \ge 0 \land \sigma_1 \le \sigma_2 \implies R_{\text{cal}}(\sigma_1) \le R_{\text{cal}}(\sigma_2)$ | **Proved (0 sorries)** |
 | `calibrated_shifted_roundtrip_forward` / `_inverse` | Exact invertibility $\psi_{\mu, R_{\text{cal}}}(\phi_{\mu, R_{\text{cal}}}(x)) = x$ and $\phi_{\mu, R_{\text{cal}}}(\psi_{\mu, R_{\text{cal}}}(z)) = z$ for all $\mu, \sigma \in \mathbb{R}$ | **Proved (0 sorries)** |
