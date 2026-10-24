@@ -817,7 +817,9 @@ def run_blackjax_sampler(
         step_size: Optional fixed step size (if None, adapted during warmup).
         seed: Master random seed.
         x0: Optional initial state array of shape (n_chains, d) or (d,).
-        **kwargs: Additional sampler kwargs.
+        **kwargs: Additional sampler kwargs (``target_accept``, ``bulk_radius``,
+            ``num_integration_steps``, and for NUTS ``max_num_doublings``; BlackJAX's default
+            tree-depth cap of 10 doublings applies when it is omitted).
 
     Returns:
         Tuple of:
@@ -849,6 +851,10 @@ def run_blackjax_sampler(
     sampler_type_lower = sampler_type.lower()
     target_accept = float(kwargs.get("target_accept", 0.80))
     bulk_radius = float(kwargs.get("bulk_radius", 3.5))
+    # Forwarded to both window adaptation and sampling so the tree-depth cap is identical in each.
+    nuts_extra: dict[str, int] = {}
+    if kwargs.get("max_num_doublings") is not None:
+        nuts_extra["max_num_doublings"] = int(kwargs["max_num_doublings"])
 
     for c in range(n_chains):
         rng_key = jax.random.PRNGKey(seed + c * 10007)
@@ -858,7 +864,9 @@ def run_blackjax_sampler(
         if sampler_type_lower == "nuts":
             # NUTS with window adaptation
             if n_warmup > 0:
-                warmup = blackjax.window_adaptation(blackjax.nuts, logdensity_fn, target_acceptance_rate=target_accept)
+                warmup = blackjax.window_adaptation(
+                    blackjax.nuts, logdensity_fn, target_acceptance_rate=target_accept, **nuts_extra
+                )
                 (state, params), w_info = warmup.run(rng_warmup, init_pos, num_steps=n_warmup)
                 w_steps_arr = np.asarray(w_info.info.num_integration_steps, dtype=np.int64)
                 w_pos_arr = np.asarray(w_info.state.position, dtype=np.float64)
@@ -871,7 +879,8 @@ def run_blackjax_sampler(
                 w_steps_arr = np.zeros(0, dtype=np.int64)
                 w_pos_arr = np.zeros((0, d), dtype=np.float64)
 
-            step_fn = blackjax.nuts(logdensity_fn, **params).step
+            # Window adaptation already echoes extra parameters in `params`; merge to avoid duplicates.
+            step_fn = blackjax.nuts(logdensity_fn, **{**params, **nuts_extra}).step
 
             def one_step_nuts(carry: Any, subkey: Any) -> tuple[Any, tuple[Any, Any, Any]]:
                 cur_state = carry
@@ -1282,8 +1291,9 @@ def evaluate_chains_with_arviz(
         wall_clock_time: Wall-clock execution time in seconds.
 
     Returns:
-        Dictionary containing Bulk-ESS, Tail-ESS, split R-hat, ESS/grad, Tail-ESS/grad,
-        divergence rate, and quantile errors.
+        Dictionary containing coordinate-mean Bulk-ESS and Tail-ESS, worst-coordinate
+        (``min_*``) ESS, max split R-hat, ESS/grad, Tail-ESS/grad, divergence rate, and
+        quantile errors.
     """
     arr = np.asarray(samples, dtype=np.float64)
     if arr.ndim == 1:
@@ -1305,6 +1315,10 @@ def evaluate_chains_with_arviz(
 
         bulk_ess = float(np.nanmean(bulk_ess_res))
         tail_ess = float(np.nanmean(tail_ess_res))
+        # Worst coordinate: the mean can hide a poorly mixing (e.g. hierarchical scale) parameter.
+        # np.min propagates NaN, so a coordinate whose ESS is undefined makes the minimum undefined.
+        min_bulk_ess = float(np.min(bulk_ess_res))
+        min_tail_ess = float(np.min(tail_ess_res))
 
         # Split R-hat and Folded R-hat (Vehtari, Gelman, Simpson, Carpenter, & Bürkner 2021)
         if n_chains >= 2 and n_samples >= 4:
@@ -1336,6 +1350,8 @@ def evaluate_chains_with_arviz(
     metrics: dict[str, float] = {
         "bulk_ess": bulk_ess,
         "tail_ess": tail_ess,
+        "min_bulk_ess": min_bulk_ess,
+        "min_tail_ess": min_tail_ess,
         "split_rhat": split_rhat,
         "folded_rhat": folded_rhat,
         "combined_rhat": combined_rhat,

@@ -1,8 +1,19 @@
-"""Canonical PosteriorDB-style applied Bayesian inference target distributions."""
+"""Synthetic, PosteriorDB-inspired applied Bayesian target distributions.
+
+The five models mirror the structure of well-known applied posteriors (hierarchical
+regression, horseshoe logistic regression, robust regression, 2PL IRT, stochastic
+volatility), but their datasets are small and *simulated* from fixed data-generating
+parameters. They are not the PosteriorDB posteriors themselves.
+
+None of these targets has a closed-form posterior. ``sample_ground_truth`` therefore
+raises ``NotImplementedError`` (the same convention as ``PyMCModelTarget``), and
+``exact_moments_or_quantiles`` exposes the data-generating parameters under an explicit
+key rather than presenting them as posterior moments.
+"""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NoReturn
 
 import jax
 
@@ -29,8 +40,23 @@ def _stable_softplus(z: np.ndarray) -> np.ndarray:
     return np.logaddexp(0.0, z)
 
 
+def _raise_no_reference_posterior(target: TargetDistribution) -> NoReturn:
+    """Raises for simulated-data targets whose posterior has no closed form.
+
+    Returning draws around the data-generating parameters would silently score samplers
+    against a fabricated reference, so callers must obtain one from a long MCMC run instead.
+    """
+    raise NotImplementedError(
+        f"{type(target).__name__} has no closed-form posterior (simulated data); "
+        "estimate reference quantities with a long, converged MCMC run instead."
+    )
+
+
 class RadonHierarchicalTarget(TargetDistribution):
-    r"""Minnesota County Radon Hierarchical Linear Regression (`posteriordb: radon_county`).
+    r"""Hierarchical county-intercept regression modelled on the Gelman & Hill radon example.
+
+    Synthetic analogue of the PosteriorDB radon models: the data are simulated
+    (default 15 counties x 8 observations), not the Minnesota radon dataset.
 
     Default dimension `d = 18`:
     - $J = 15$ county-level intercepts $\alpha_{0:J-1} \in \mathbb{R}^J$
@@ -179,17 +205,14 @@ class RadonHierarchicalTarget(TargetDistribution):
         return jnp.float64(self._log_norm_const) + lp_priors + lp_alpha + lp_lik
 
     def sample_ground_truth(self, n: int, rng: np.random.Generator | None = None) -> np.ndarray:
-        if rng is None:
-            rng = np.random.default_rng(42)
-        center = np.concatenate([self.alpha_true, [self.mu_alpha_true, self.v_true, self.beta_floor_true]])
-        scales = np.full(self.d, 0.25, dtype=np.float64)
-        scales[self.n_counties + 1] = 0.45
-        return center[None, :] + rng.normal(size=(n, self.d)) * scales[None, :]
+        _raise_no_reference_posterior(self)
 
     def exact_moments_or_quantiles(self) -> dict[str, Any]:
-        center = np.concatenate([self.alpha_true, [self.mu_alpha_true, self.v_true, self.beta_floor_true]])
         return {
-            "mean": center,
+            "has_reference_posterior": False,
+            "data_generating_params": np.concatenate(
+                [self.alpha_true, [self.mu_alpha_true, self.v_true, self.beta_floor_true]]
+            ),
             "n_counties": self.n_counties,
             "n_obs": self.n_obs,
             "v_index": self.n_counties + 1,
@@ -210,6 +233,7 @@ class SparseHorseshoeLogisticTarget(TargetDistribution):
         $$y_i \mid \beta \sim \text{Bernoulli}(\sigma(x_i^T \beta)), \quad i = 0, \dots, N-1$$
     Only 2 of the $p = 10$ covariates carry true nonzero signal, combining heavy-tailed
     Half-Cauchy shrinkage slabs with acute funnel necks on inactive coordinates.
+    The design matrix and labels are simulated (default 80 observations).
     """
 
     def __init__(
@@ -334,17 +358,13 @@ class SparseHorseshoeLogisticTarget(TargetDistribution):
         return jnp.float64(self._log_prior_const) + lp_beta_cond + lp_u + lp_w + lp_lik
 
     def sample_ground_truth(self, n: int, rng: np.random.Generator | None = None) -> np.ndarray:
-        if rng is None:
-            rng = np.random.default_rng(42)
-        u_center = np.where(np.abs(self.beta_true) > 0.0, 0.5, -0.8)
-        center = np.concatenate([self.beta_true, u_center, [np.log(self.tau0)]])
-        return center[None, :] + rng.normal(0.0, 0.4, size=(n, self.d))
+        _raise_no_reference_posterior(self)
 
     def exact_moments_or_quantiles(self) -> dict[str, Any]:
-        u_center = np.where(np.abs(self.beta_true) > 0.0, 0.5, -0.8)
-        center = np.concatenate([self.beta_true, u_center, [np.log(self.tau0)]])
+        # Only the regression weights have data-generating values; the local and global
+        # log-scales are latent prior quantities with no "true" value to report.
         return {
-            "mean": center,
+            "has_reference_posterior": False,
             "beta_true": self.beta_true,
             "n_features": self.n_features,
             "n_active": self.n_active,
@@ -354,7 +374,7 @@ class SparseHorseshoeLogisticTarget(TargetDistribution):
 class RobustStudentTRegressionTarget(TargetDistribution):
     r"""Bayesian Robust Linear Regression with Student-$t$ Likelihood & Outlier Contamination.
 
-    Default dimension `d = 12` (`posteriordb: kilpisjarvi` style with gross outliers):
+    Default dimension `d = 12` (simulated data with gross outliers; not a PosteriorDB dataset):
     - Intercept $\beta_0 \in \mathbb{R}$
     - $p = 10$ regression slopes $\beta_{1:p} \in \mathbb{R}^p$ with heavy-tailed Cauchy priors
     - Unconstrained log observation scale $s = \log \sigma \in \mathbb{R}$
@@ -506,15 +526,12 @@ class RobustStudentTRegressionTarget(TargetDistribution):
         return lp_lik + lp_prior
 
     def sample_ground_truth(self, n: int, rng: np.random.Generator | None = None) -> np.ndarray:
-        if rng is None:
-            rng = np.random.default_rng(42)
-        center = np.concatenate([[self.beta0_true], self.beta_true, [self.log_sigma_true]])
-        return center[None, :] + rng.normal(0.0, 0.2, size=(n, self.d))
+        _raise_no_reference_posterior(self)
 
     def exact_moments_or_quantiles(self) -> dict[str, Any]:
-        center = np.concatenate([[self.beta0_true], self.beta_true, [self.log_sigma_true]])
         return {
-            "mean": center,
+            "has_reference_posterior": False,
+            "data_generating_params": np.concatenate([[self.beta0_true], self.beta_true, [self.log_sigma_true]]),
             "beta0_true": self.beta0_true,
             "beta_true": self.beta_true,
             "log_sigma_true": self.log_sigma_true,
@@ -523,7 +540,10 @@ class RobustStudentTRegressionTarget(TargetDistribution):
 
 
 class HierarchicalItemResponse2PLTarget(TargetDistribution):
-    r"""2-Parameter Logistic (2PL) Hierarchical Item Response Theory Model (`posteriordb: irt_2pl`).
+    r"""2-Parameter Logistic (2PL) Hierarchical Item Response Theory Model.
+
+    Synthetic analogue of the PosteriorDB `irt_2pl` model: responses are simulated
+    (default 10 students x 5 items), not the PosteriorDB dataset.
 
     Default dimension `d = 22`:
     - $I = 10$ student abilities $\theta_{0:I-1} \in \mathbb{R}^I$
@@ -679,15 +699,14 @@ class HierarchicalItemResponse2PLTarget(TargetDistribution):
         return jnp.float64(self._log_norm_const) + lp_priors + lp_lik
 
     def sample_ground_truth(self, n: int, rng: np.random.Generator | None = None) -> np.ndarray:
-        if rng is None:
-            rng = np.random.default_rng(42)
-        center = np.concatenate([self.theta_true, self.b_true, self.u_true, [self.mu_b_true, self.v_true]])
-        return center[None, :] + rng.normal(0.0, 0.35, size=(n, self.d))
+        _raise_no_reference_posterior(self)
 
     def exact_moments_or_quantiles(self) -> dict[str, Any]:
-        center = np.concatenate([self.theta_true, self.b_true, self.u_true, [self.mu_b_true, self.v_true]])
         return {
-            "mean": center,
+            "has_reference_posterior": False,
+            "data_generating_params": np.concatenate(
+                [self.theta_true, self.b_true, self.u_true, [self.mu_b_true, self.v_true]]
+            ),
             "n_students": self.n_students,
             "n_items": self.n_items,
         }
@@ -706,6 +725,7 @@ class StochasticVolatilityLogReturnTarget(TargetDistribution):
         $$h_0 \mid u_\phi, v \sim \mathcal{N}\!\left(0, \frac{e^{2v}}{1 - \phi^2}\right), \quad h_t \mid h_{t-1}, u_\phi, v \sim \mathcal{N}(\phi h_{t-1}, e^{2v})$$
         $$y_t \mid h_t \sim \mathcal{N}(0, e^{h_t}), \quad t = 0, \dots, T-1$$
     Exhibits strong temporal latent correlation coupled with a state-space scale funnel as $v \to -\infty$.
+    The return series is simulated (default T = 20), not a market dataset.
     """
 
     def __init__(
@@ -851,15 +871,12 @@ class StochasticVolatilityLogReturnTarget(TargetDistribution):
         return jnp.float64(self._log_norm_const) + lp_hyper + lp_latent + lp_lik
 
     def sample_ground_truth(self, n: int, rng: np.random.Generator | None = None) -> np.ndarray:
-        if rng is None:
-            rng = np.random.default_rng(42)
-        center = np.concatenate([self.h_true, [self.u_phi_true, self.v_true]])
-        return center[None, :] + rng.normal(0.0, 0.25, size=(n, self.d))
+        _raise_no_reference_posterior(self)
 
     def exact_moments_or_quantiles(self) -> dict[str, Any]:
-        center = np.concatenate([self.h_true, [self.u_phi_true, self.v_true]])
         return {
-            "mean": center,
+            "has_reference_posterior": False,
+            "data_generating_params": np.concatenate([self.h_true, [self.u_phi_true, self.v_true]]),
             "h_true": self.h_true,
             "phi_true": self.phi_true,
             "v_true": self.v_true,

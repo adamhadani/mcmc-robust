@@ -1,4 +1,4 @@
-"""Target distributions across five benchmark regimes and applied PosteriorDB models."""
+"""Target distributions across five benchmark regimes plus synthetic, PosteriorDB-inspired applied models."""
 
 from mcmc_robust.targets.applied import (
     HierarchicalItemResponse2PLTarget,
@@ -47,7 +47,7 @@ from mcmc_robust.targets.suite import (
 )
 
 __all__ = [
-    # Applied PosteriorDB-style models
+    # Applied models (simulated data, PosteriorDB-inspired)
     "RadonHierarchicalTarget",
     "SparseHorseshoeLogisticTarget",
     "RobustStudentTRegressionTarget",

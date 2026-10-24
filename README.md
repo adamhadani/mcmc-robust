@@ -32,7 +32,7 @@ Gradient-based Markov Chain Monte Carlo algorithms (MALA, HMC, NUTS) power moder
 │ • Quartic Potential Burn-In: 121.2x wider stable step-size window than standard MALA and 2.85x–6.50x   │
 │   faster median burn-in across step-size grids (5 steps vs. 17 for Globally Tamed MALA at h=0.15).     │
 │ • Benign Parity: 103.5% overall ESS/grad efficiency parity with tuned MALA on 50D Gaussians (0 tax).   │
-│ • Lean 4 Formal Verification: 26 machine-checked theorems (0 sorries, 0 warnings) covering shifted     │
+│ • Lean 4 Formal Verification: 31 machine-checked theorems (0 sorries, 0 warnings) covering shifted     │
 │   diffeomorphism invertibility, discrete basin bounds, global contraction, and MH detailed balance.    │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -318,13 +318,13 @@ To ensure scientific integrity, every baseline algorithm is cross-validated agai
 mcmc-robust/
 ├── src/mcmc_robust/
 │   ├── core/                  # Base samplers, state, target interface
-│   ├── targets/               # Analytic benchmarks (funnels, mixed tails, quartic)
+│   ├── targets/               # Analytic benchmarks + applied models on simulated data
 │   ├── samplers/novel/        # GentleMALA, AnisotropicTailMALA, UnifiedRobustNUTS
 │   ├── transforms/            # Coordinate-wise Arcsinh, Stereographic, Radial
 │   ├── diagnostics/           # ArviZ 1.3 metrics, folded R-hat, ESS/grad, mcse_q99
 │   ├── integrations.py        # PyMCModelTarget, sample_pymc_model, JaxArcsinhTransform
 │   └── bench/                 # Unified 5-benchmark CLI, SOTA runner, publication plot
-├── formal/                    # Lean 4 formal verification proofs (26 theorems, lake build)
+├── formal/                    # Lean 4 formal verification proofs (31 theorems, lake build)
 ├── benchmarks/                # Unified CLI runner (run_benchmarks.py)
 ├── tests/unit/                # 810 unit & integration tests passing with -W error
 ├── reports/                   # Grounded CSV/JSON benchmark data & publication figures

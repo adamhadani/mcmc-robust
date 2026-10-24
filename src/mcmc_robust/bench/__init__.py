@@ -12,7 +12,7 @@ __all__ = [
     "RunRecord",
     "BenchmarkResult",
     "BenchmarkRunner",
-    # Applied PosteriorDB Runner
+    # Applied runner (synthetic, PosteriorDB-inspired models)
     "AppliedBenchmarkConfig",
     "AppliedRunRecord",
     "AppliedBenchmarkResult",

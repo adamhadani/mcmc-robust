@@ -1,4 +1,15 @@
-"""Applied PosteriorDB-Style Bayesian Benchmark Runner (Track 3)."""
+"""Applied Bayesian benchmark runner over synthetic, PosteriorDB-inspired models (Track 3).
+
+Reporting policy:
+- Non-finite diagnostics (ESS, R-hat) are reported as ``null``, never replaced by defaults.
+- Every record carries ``converged`` (max split R-hat <= ``RHAT_CONVERGED``); efficiency
+  ratios from unconverged runs should not be quoted.
+- ``bulk_ess``/``tail_ess`` are coordinate means; ``min_bulk_ess``/``min_tail_ess`` are the
+  worst coordinate, which is what limits inference on hierarchical scale parameters.
+- All NUTS variants share one maximum tree depth (``AppliedBenchmarkConfig.max_depth``,
+  BlackJAX's default of 10 doublings).
+- ``wall_time_sec`` includes JAX JIT compilation for the BlackJAX samplers.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +19,7 @@ import json
 import os
 import time
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 import jax
@@ -44,6 +55,13 @@ APPLIED_SAMPLER_NAMES: tuple[str, ...] = (
 )
 
 
+#: Split R-hat threshold below which a run counts as converged (Vehtari et al. 2021).
+RHAT_CONVERGED: float = 1.01
+
+#: Maximum NUTS tree depth shared by every NUTS variant (BlackJAX's default ``max_num_doublings``).
+NUTS_MAX_DEPTH: int = 10
+
+
 def _sanitize_float(val: Any, default: float | None = None) -> float | None:
     """Converts value to RFC 8259-compliant finite float or default."""
     try:
@@ -53,24 +71,48 @@ def _sanitize_float(val: Any, default: float | None = None) -> float | None:
         return default
 
 
+def _per_grad(value: float | None, grad_evals: int) -> float | None:
+    """Normalises a finite metric by the gradient budget; propagates missing values."""
+    return None if value is None else value / grad_evals
+
+
+def _mean_of_finite(values: Sequence[float | None]) -> float | None:
+    """Mean over the finite entries, or None when there are none."""
+    finite = [v for v in values if v is not None]
+    return float(np.mean(finite)) if finite else None
+
+
 @dataclass(frozen=True)
 class AppliedBenchmarkConfig:
-    """Configuration for the applied PosteriorDB-style benchmark suite."""
+    """Configuration for the applied benchmark suite.
+
+    ``quick=True`` selects smoke-test sizes (see :meth:`resolved`); use it for CI, never for
+    reported results.
+    """
 
     targets: Sequence[str] = APPLIED_TARGET_NAMES
     samplers: Sequence[str] = APPLIED_SAMPLER_NAMES
-    n_chains: int = 2
-    n_samples: int = 120
-    n_warmup: int = 80
-    max_depth: int = 7
+    n_chains: int = 4
+    n_samples: int = 1000
+    n_warmup: int = 1000
+    max_depth: int = NUTS_MAX_DEPTH
     seed: int = 42
     output_dir: str = "reports"
     quick: bool = False
 
+    def resolved(self) -> AppliedBenchmarkConfig:
+        """Returns the effective configuration, applying smoke-test sizes when ``quick`` is set."""
+        if not self.quick:
+            return self
+        return replace(self, n_chains=2, n_samples=30, n_warmup=20)
+
 
 @dataclass
 class AppliedRunRecord:
-    """Metric record for a single (applied target, sampler) benchmark evaluation."""
+    """Metric record for a single (applied target, sampler) benchmark evaluation.
+
+    Diagnostics that ArviZ could not compute (non-finite) are stored as ``None``.
+    """
 
     target_name: str
     sampler_name: str
@@ -78,11 +120,14 @@ class AppliedRunRecord:
     n_chains: int
     n_samples: int
     n_warmup: int
-    bulk_ess: float
-    tail_ess: float
-    ess_per_grad: float
-    tail_ess_per_grad: float
-    split_rhat: float
+    bulk_ess: float | None
+    tail_ess: float | None
+    min_bulk_ess: float | None
+    min_tail_ess: float | None
+    ess_per_grad: float | None
+    tail_ess_per_grad: float | None
+    split_rhat: float | None
+    converged: bool
     divergences: int
     grad_evals: int
     wall_time_sec: float
@@ -104,7 +149,7 @@ class AppliedRunRecord:
 
 @dataclass
 class AppliedBenchmarkResult:
-    """Aggregate benchmark result container for the applied PosteriorDB suite."""
+    """Aggregate benchmark result container for the applied suite."""
 
     metadata: dict[str, Any]
     summary: dict[str, Any]
@@ -127,8 +172,13 @@ def _run_blackjax_arcsinh_nuts(
     init_positions: np.ndarray,
     radius: float = 2.5,
     target_accept: float = 0.80,
+    max_num_doublings: int = NUTS_MAX_DEPTH,
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    """Executes BlackJAX NUTS in JaxArcsinhTransform space with exact gradient accounting."""
+    """Executes BlackJAX NUTS in JaxArcsinhTransform space with exact gradient accounting.
+
+    The transform is static (fixed ``radius``, centred at the origin); no location or scale
+    is learned from the target.
+    """
     adapter = SOTATargetAdapter(target)
     raw_logdensity = adapter.jax_logdensity_fn()
     transform = JaxArcsinhTransform(radius=radius, dim=target.d)
@@ -149,11 +199,13 @@ def _run_blackjax_arcsinh_nuts(
             blackjax.nuts,
             transformed_logdensity,
             target_acceptance_rate=target_accept,
+            max_num_doublings=max_num_doublings,
         )
         (state, params), w_info = warmup.run(rng_warmup, init_z, num_steps=n_warmup)
         total_warmup_grads += int(jnp.sum(w_info.info.num_integration_steps))
 
-        step_fn = blackjax.nuts(transformed_logdensity, **params).step
+        # Window adaptation echoes `max_num_doublings` in `params`; merging keeps one value.
+        step_fn = blackjax.nuts(transformed_logdensity, **{**params, "max_num_doublings": max_num_doublings}).step
 
         def one_step(carry: Any, subkey: Any) -> tuple[Any, tuple[Any, Any, Any]]:
             next_state, info = step_fn(subkey, carry)
@@ -178,7 +230,7 @@ def _run_blackjax_arcsinh_nuts(
 
 
 class AppliedBenchmarkRunner:
-    """Runner evaluating reference and novel samplers across the 5 applied PosteriorDB targets."""
+    """Runner evaluating reference and novel samplers across the 5 applied targets."""
 
     def __init__(
         self,
@@ -188,32 +240,15 @@ class AppliedBenchmarkRunner:
         output_dir: str | None = None,
         seed: int | None = None,
     ) -> None:
-        if config is None:
-            is_quick = bool(quick) if quick is not None else False
-            config = AppliedBenchmarkConfig(
-                n_chains=2,
-                n_samples=30 if is_quick else 120,
-                n_warmup=20 if is_quick else 80,
-                max_depth=5 if is_quick else 7,
-                seed=42 if seed is None else seed,
-                output_dir="reports" if output_dir is None else output_dir,
-                quick=is_quick,
-            )
-        elif quick is not None or output_dir is not None or seed is not None:
-            is_quick = config.quick if quick is None else bool(quick)
-            config = AppliedBenchmarkConfig(
-                targets=config.targets,
-                samplers=config.samplers,
-                n_chains=config.n_chains,
-                n_samples=30 if (quick and config.n_samples == 120) else config.n_samples,
-                n_warmup=20 if (quick and config.n_warmup == 80) else config.n_warmup,
-                max_depth=5 if (quick and config.max_depth == 7) else config.max_depth,
-                seed=config.seed if seed is None else seed,
-                output_dir=config.output_dir if output_dir is None else output_dir,
-                quick=is_quick,
-            )
+        base = config if config is not None else AppliedBenchmarkConfig()
+        if quick is not None:
+            base = replace(base, quick=quick)
+        if output_dir is not None:
+            base = replace(base, output_dir=output_dir)
+        if seed is not None:
+            base = replace(base, seed=seed)
 
-        self.config: AppliedBenchmarkConfig = config
+        self.config: AppliedBenchmarkConfig = base.resolved()
         os.makedirs(self.config.output_dir, exist_ok=True)
 
     def run_single(self, target_name: str, sampler_name: str) -> AppliedRunRecord:
@@ -221,9 +256,9 @@ class AppliedBenchmarkRunner:
         target = TargetRegistry.create(target_name)
         d = target.d
         n_chains = self.config.n_chains
-        n_samples = 30 if (self.config.quick and self.config.n_samples > 40) else self.config.n_samples
-        n_warmup = 20 if (self.config.quick and self.config.n_warmup > 30) else self.config.n_warmup
-        max_depth = 5 if (self.config.quick and self.config.max_depth > 5) else self.config.max_depth
+        n_samples = self.config.n_samples
+        n_warmup = self.config.n_warmup
+        max_depth = self.config.max_depth
         seed = self.config.seed
 
         rng_init = np.random.default_rng(seed + 911)
@@ -291,6 +326,7 @@ class AppliedBenchmarkRunner:
                     n_warmup=n_warmup,
                     seed=seed,
                     x0=init_positions,
+                    max_num_doublings=max_depth,
                 )
             elif sampler_name == "BlackJAXNUTS + JaxArcsinhTransform":
                 samples, info = _run_blackjax_arcsinh_nuts(
@@ -301,6 +337,7 @@ class AppliedBenchmarkRunner:
                     seed=seed,
                     init_positions=init_positions,
                     radius=2.5,
+                    max_num_doublings=max_depth,
                 )
             elif sampler_name == "UnifiedRobustNUTS":
                 samples, info = run_mcmc_robust_sampler(
@@ -335,11 +372,11 @@ class AppliedBenchmarkRunner:
                 divergences=divergences,
                 wall_clock_time=wall_time,
             )
-            bulk_ess = _sanitize_float(metrics["bulk_ess"], default=float(n_chains)) or float(n_chains)
-            tail_ess = _sanitize_float(metrics["tail_ess"], default=float(n_chains)) or float(n_chains)
-            split_rhat = _sanitize_float(metrics["split_rhat"], default=1.0) or 1.0
-            ess_per_grad = float(bulk_ess / grad_evals)
-            tail_ess_per_grad = float(tail_ess / grad_evals)
+            # Keep non-finite diagnostics as None: substituting defaults (e.g. R-hat = 1.0)
+            # would report a failed run as a converged one.
+            bulk_ess = _sanitize_float(metrics["bulk_ess"])
+            tail_ess = _sanitize_float(metrics["tail_ess"])
+            split_rhat = _sanitize_float(metrics["split_rhat"])
 
             return AppliedRunRecord(
                 target_name=target_name,
@@ -350,9 +387,12 @@ class AppliedBenchmarkRunner:
                 n_warmup=n_warmup,
                 bulk_ess=bulk_ess,
                 tail_ess=tail_ess,
-                ess_per_grad=ess_per_grad,
-                tail_ess_per_grad=tail_ess_per_grad,
+                min_bulk_ess=_sanitize_float(metrics["min_bulk_ess"]),
+                min_tail_ess=_sanitize_float(metrics["min_tail_ess"]),
+                ess_per_grad=_per_grad(bulk_ess, grad_evals),
+                tail_ess_per_grad=_per_grad(tail_ess, grad_evals),
                 split_rhat=split_rhat,
+                converged=split_rhat is not None and split_rhat <= RHAT_CONVERGED,
                 divergences=divergences,
                 grad_evals=grad_evals,
                 wall_time_sec=wall_time,
@@ -367,11 +407,14 @@ class AppliedBenchmarkRunner:
                 n_chains=n_chains,
                 n_samples=n_samples,
                 n_warmup=n_warmup,
-                bulk_ess=0.0,
-                tail_ess=0.0,
-                ess_per_grad=0.0,
-                tail_ess_per_grad=0.0,
-                split_rhat=float("nan"),
+                bulk_ess=None,
+                tail_ess=None,
+                min_bulk_ess=None,
+                min_tail_ess=None,
+                ess_per_grad=None,
+                tail_ess_per_grad=None,
+                split_rhat=None,
+                converged=False,
                 divergences=0,
                 grad_evals=0,
                 wall_time_sec=wall_time,
@@ -388,13 +431,20 @@ class AppliedBenchmarkRunner:
 
         summary = self._compute_summary(records)
         metadata = {
-            "suite": "posteriordb_applied_bayesian_benchmarks",
+            "suite": "synthetic_posteriordb_inspired_applied_benchmarks",
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "quick": self.config.quick,
             "seed": self.config.seed,
             "n_chains": self.config.n_chains,
             "n_samples": self.config.n_samples,
             "n_warmup": self.config.n_warmup,
+            "nuts_max_depth": self.config.max_depth,
+            "rhat_converged_threshold": RHAT_CONVERGED,
+            "notes": [
+                "Datasets are simulated; these are not PosteriorDB posteriors.",
+                "Single seed per (target, sampler); ratios carry no error bars.",
+                "wall_time_sec includes JAX JIT compilation for BlackJAX samplers.",
+            ],
             "targets": list(self.config.targets),
             "samplers": list(self.config.samplers),
         }
@@ -409,17 +459,19 @@ class AppliedBenchmarkRunner:
             s_recs = [r for r in records if r.sampler_name == s_name and r.error is None]
             if s_recs:
                 by_sampler[s_name] = {
-                    "mean_bulk_ess": _sanitize_float(np.mean([r.bulk_ess for r in s_recs]), 0.0),
-                    "mean_tail_ess": _sanitize_float(np.mean([r.tail_ess for r in s_recs]), 0.0),
-                    "mean_ess_per_grad": _sanitize_float(np.mean([r.ess_per_grad for r in s_recs]), 0.0),
-                    "mean_tail_ess_per_grad": _sanitize_float(np.mean([r.tail_ess_per_grad for r in s_recs]), 0.0),
+                    "n_converged": sum(1 for r in s_recs if r.converged),
+                    "mean_bulk_ess": _mean_of_finite([r.bulk_ess for r in s_recs]),
+                    "mean_tail_ess": _mean_of_finite([r.tail_ess for r in s_recs]),
+                    "mean_ess_per_grad": _mean_of_finite([r.ess_per_grad for r in s_recs]),
+                    "mean_tail_ess_per_grad": _mean_of_finite([r.tail_ess_per_grad for r in s_recs]),
                     "total_divergences": int(sum(r.divergences for r in s_recs)),
                     "total_grad_evals": int(sum(r.grad_evals for r in s_recs)),
-                    "mean_wall_time_sec": _sanitize_float(np.mean([r.wall_time_sec for r in s_recs]), 0.0),
+                    "mean_wall_time_sec": _mean_of_finite([r.wall_time_sec for r in s_recs]),
                 }
         return {
             "total_runs": len(records),
             "successful_runs": sum(1 for r in records if r.error is None),
+            "converged_runs": sum(1 for r in records if r.converged),
             "sampler_aggregates": by_sampler,
         }
 
@@ -447,33 +499,38 @@ class AppliedBenchmarkRunner:
 
 
 def main() -> None:
-    """CLI entrypoint for the PosteriorDB-style applied benchmark suite."""
-    parser = argparse.ArgumentParser(description="Applied PosteriorDB-Style Bayesian Benchmark Runner")
-    parser.add_argument("--quick", action="store_true", help="Run quick benchmark configuration")
-    parser.add_argument("--n-chains", type=int, default=2, help="Number of chains per run")
-    parser.add_argument("--n-samples", type=int, default=120, help="Post-warmup draws per chain")
-    parser.add_argument("--n-warmup", type=int, default=80, help="Warmup steps per chain")
-    parser.add_argument("--seed", type=int, default=42, help="Master random seed")
+    """CLI entrypoint for the applied benchmark suite."""
+    defaults = AppliedBenchmarkConfig()
+    parser = argparse.ArgumentParser(description="Applied Bayesian benchmark runner (synthetic PosteriorDB-inspired)")
+    parser.add_argument("--quick", action="store_true", help="Smoke-test sizes (overrides chain/draw/warm-up counts)")
+    parser.add_argument("--n-chains", type=int, default=defaults.n_chains, help="Number of chains per run")
+    parser.add_argument("--n-samples", type=int, default=defaults.n_samples, help="Post-warmup draws per chain")
+    parser.add_argument("--n-warmup", type=int, default=defaults.n_warmup, help="Warmup steps per chain")
+    parser.add_argument("--seed", type=int, default=defaults.seed, help="Master random seed")
     parser.add_argument("--output-dir", type=str, default="reports", help="Output directory for JSON/CSV artifacts")
     args = parser.parse_args()
 
     config = AppliedBenchmarkConfig(
         n_chains=args.n_chains,
-        n_samples=30 if args.quick else args.n_samples,
-        n_warmup=20 if args.quick else args.n_warmup,
-        max_depth=5 if args.quick else 7,
+        n_samples=args.n_samples,
+        n_warmup=args.n_warmup,
         seed=args.seed,
         output_dir=args.output_dir,
         quick=args.quick,
     )
     runner = AppliedBenchmarkRunner(config=config)
+    cfg = runner.config
     print(
-        f"Running Applied PosteriorDB Benchmark Suite "
-        f"[quick={config.quick}, chains={config.n_chains}, draws={config.n_samples}, warmup={config.n_warmup}]..."
+        f"Running applied benchmark suite "
+        f"[quick={cfg.quick}, chains={cfg.n_chains}, draws={cfg.n_samples}, warmup={cfg.n_warmup}, "
+        f"nuts_max_depth={cfg.max_depth}]..."
     )
     result = runner.run_all()
-    print(f"Completed {result.summary['successful_runs']}/{result.summary['total_runs']} runs.")
-    print(f"Artifacts written to {config.output_dir}/applied_benchmark_results.{{json,csv}}")
+    print(
+        f"Completed {result.summary['successful_runs']}/{result.summary['total_runs']} runs "
+        f"({result.summary['converged_runs']} with split R-hat <= {RHAT_CONVERGED})."
+    )
+    print(f"Artifacts written to {cfg.output_dir}/applied_benchmark_results.{{json,csv}}")
 
 
 if __name__ == "__main__":

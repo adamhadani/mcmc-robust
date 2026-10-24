@@ -1,4 +1,4 @@
-"""Unified target registry for synthetic and applied PosteriorDB-style benchmark distributions."""
+"""Unified target registry for the synthetic benchmark suite and the applied (PosteriorDB-inspired) models."""
 
 from __future__ import annotations
 
@@ -15,17 +15,18 @@ from mcmc_robust.targets.applied import (
 )
 from mcmc_robust.targets.suite import TARGET_REGISTRY, get_target
 
+#: Applied target constructors keyed by name, including short aliases.
 APPLIED_TARGET_REGISTRY: dict[str, Callable[..., TargetDistribution]] = {
-    "radon_hierarchical": lambda **kwargs: RadonHierarchicalTarget(**kwargs),
-    "radon": lambda **kwargs: RadonHierarchicalTarget(**kwargs),
-    "sparse_horseshoe_logistic": lambda **kwargs: SparseHorseshoeLogisticTarget(**kwargs),
-    "horseshoe_logistic": lambda **kwargs: SparseHorseshoeLogisticTarget(**kwargs),
-    "robust_student_t_regression": lambda **kwargs: RobustStudentTRegressionTarget(**kwargs),
-    "student_t_regression": lambda **kwargs: RobustStudentTRegressionTarget(**kwargs),
-    "hierarchical_irt_2pl": lambda **kwargs: HierarchicalItemResponse2PLTarget(**kwargs),
-    "irt_2pl": lambda **kwargs: HierarchicalItemResponse2PLTarget(**kwargs),
-    "stochastic_volatility": lambda **kwargs: StochasticVolatilityLogReturnTarget(**kwargs),
-    "stochastic_volatility_log_return": lambda **kwargs: StochasticVolatilityLogReturnTarget(**kwargs),
+    "radon_hierarchical": RadonHierarchicalTarget,
+    "radon": RadonHierarchicalTarget,
+    "sparse_horseshoe_logistic": SparseHorseshoeLogisticTarget,
+    "horseshoe_logistic": SparseHorseshoeLogisticTarget,
+    "robust_student_t_regression": RobustStudentTRegressionTarget,
+    "student_t_regression": RobustStudentTRegressionTarget,
+    "hierarchical_irt_2pl": HierarchicalItemResponse2PLTarget,
+    "irt_2pl": HierarchicalItemResponse2PLTarget,
+    "stochastic_volatility": StochasticVolatilityLogReturnTarget,
+    "stochastic_volatility_log_return": StochasticVolatilityLogReturnTarget,
 }
 
 CANONICAL_APPLIED_TARGETS: tuple[str, ...] = (
@@ -72,7 +73,7 @@ class TargetRegistry:
 
     @classmethod
     def list_applied_targets(cls) -> list[str]:
-        """Returns canonical applied PosteriorDB-style target names."""
+        """Returns the default applied target names (one per model, no aliases)."""
         return list(CANONICAL_APPLIED_TARGETS)
 
 
