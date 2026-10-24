@@ -55,10 +55,10 @@ repos:
   - id: pytest
     name: pytest [tests impacted by the commit]
     # pytest-impacted (configured in pyproject.toml) runs only the tests whose imports reach a
-    # changed file; dependency or pytest-config changes (uv.lock, pyproject.toml, conftest.py) and
-    # reports/*.json select every test. Pre-commit stashes unstaged edits, so "unstaged" mode sees
+    # changed file; dependency or pytest-config changes (uv.lock, pyproject.toml, conftest.py),
+    # reports/*.json, README.md, REPORT.md, formal/*.lean and example.py select every test. Pre-commit stashes unstaged edits, so "unstaged" mode sees
     # exactly the staged changes. Run the full suite with `uv run pytest -v -W error`.
     entry: bash -ec "uv run pytest -v -W error --impacted"
     language: system
-    files: '\.(py|toml|lock|json|cfg|ini)$'
+    files: '\.(py|toml|lock|json|cfg|ini|md|lean)$'
     pass_filenames: false

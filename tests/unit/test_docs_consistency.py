@@ -1,0 +1,93 @@
+"""README.md and REPORT.md must agree with the committed results files.
+
+Every result number in the docs lives in a block between ``<!-- BEGIN GENERATED: name -->`` and
+``<!-- END GENERATED: name -->`` markers, rendered from ``reports/*.json`` by
+``python -m mcmc_robust.bench.render_docs``. These tests fail when a block has drifted from the
+data, when a ratio or percentage is typed by hand outside a block, or when a relative link is dead.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+from mcmc_robust.bench import render_docs
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+FIX_HINT = "Regenerate with: uv run python -m mcmc_robust.bench.render_docs --write"
+
+
+# --- the mechanism, on small synthetic documents ---------------------------------------------
+
+
+def test_update_text_replaces_only_block_bodies() -> None:
+    text = "intro 1.5x stays\n<!-- BEGIN GENERATED: demo -->\nold body\n<!-- END GENERATED: demo -->\noutro\n"
+    updated = render_docs.update_text(text, {"demo": "new body\n"})
+    assert (
+        updated == "intro 1.5x stays\n<!-- BEGIN GENERATED: demo -->\nnew body\n<!-- END GENERATED: demo -->\noutro\n"
+    )
+
+
+def test_update_text_is_idempotent() -> None:
+    text = "<!-- BEGIN GENERATED: demo -->\nold\n<!-- END GENERATED: demo -->\n"
+    once = render_docs.update_text(text, {"demo": "new\n"})
+    assert render_docs.update_text(once, {"demo": "new\n"}) == once
+
+
+def test_update_text_rejects_unknown_block() -> None:
+    text = "<!-- BEGIN GENERATED: nope -->\nx\n<!-- END GENERATED: nope -->\n"
+    with pytest.raises(KeyError, match="nope"):
+        render_docs.update_text(text, {"demo": "y\n"})
+
+
+def test_unsourced_numbers_ignores_generated_blocks_and_code() -> None:
+    text = (
+        "Prose with a 12.3× gain and 7.49% mass.\n"
+        "<!-- BEGIN GENERATED: demo -->\n2.5x and 40% inside a block\n<!-- END GENERATED: demo -->\n"
+        "```python\nratio = '3x'  # 50%\n```\n"
+        "Inline `4x` code is fine.\n"
+    )
+    assert render_docs.find_unsourced_numbers(text) == ["12.3×", "7.49%"]
+
+
+def test_unsourced_numbers_catches_latex_percent_and_ascii_x() -> None:
+    text = "Error fell to $`8.1\\%`$ with a 23.5x speed-up.\n"
+    assert render_docs.find_unsourced_numbers(text) == ["8.1\\%", "23.5x"]
+
+
+# --- the committed docs -----------------------------------------------------------------------
+
+
+def test_generated_blocks_match_committed_reports() -> None:
+    problems = render_docs.check(REPO_ROOT)
+    assert problems == [], "\n".join(problems) + "\n" + FIX_HINT
+
+
+def test_every_registered_block_appears_exactly_once_across_docs() -> None:
+    counts = dict.fromkeys(render_docs.BLOCKS, 0)
+    for name in render_docs.DOC_FILES:
+        for block in render_docs.find_blocks((REPO_ROOT / name).read_text()):
+            counts[block] += 1
+    assert {k: v for k, v in counts.items() if v != 1} == {}
+
+
+@pytest.mark.parametrize("doc", render_docs.DOC_FILES)
+def test_docs_contain_no_result_numbers_outside_generated_blocks(doc: str) -> None:
+    found = render_docs.find_unsourced_numbers((REPO_ROOT / doc).read_text())
+    assert found == [], f"{doc}: hand-typed ratios/percentages {found}; move them into a generated block"
+
+
+@pytest.mark.parametrize("doc", [*render_docs.DOC_FILES, "AGENTS.md"])
+def test_relative_links_in_docs_resolve(doc: str) -> None:
+    text = (REPO_ROOT / doc).read_text()
+    targets = re.findall(r"\]\(([^)\s]+)\)", text) + re.findall(r'src="([^"]+)"', text)
+    local = [t.split("#")[0] for t in targets if not re.match(r"[a-z]+:", t) and not t.startswith("#")]
+    missing = sorted({t for t in local if t and not (REPO_ROOT / t).exists()})
+    assert missing == [], f"{doc} links to missing files: {missing}"
+
+
+def test_reference_list_lives_only_in_report() -> None:
+    readme = (REPO_ROOT / "README.md").read_text()
+    assert not re.search(r"^#+ .*References", readme, flags=re.MULTILINE), "keep the reference list in REPORT.md only"

@@ -1,7 +1,8 @@
-"""MCMC Robustness Research & Benchmarking Suite.
+"""mcmc-robust: NUTS with calibrated coordinate-wise arcsinh transforms for heavy-tailed targets.
 
-Novel gradient-based MCMC samplers resolving roughness and flatness pathologies
-(UnifiedRobustNUTS, UnifiedRobustHMC, UnifiedRobustSampler, GentleMALA).
+The main entry points are `sample_blackjax_unified_nuts` (JAX/BlackJAX) and `UnifiedRobustNUTS`
+(NumPy). `GentleMALA`, `UnifiedRobustSampler` and `UnifiedRobustHMC` are experimental; see
+REPORT.md for what each component does and does not establish.
 """
 
 from mcmc_robust.integrations import (
