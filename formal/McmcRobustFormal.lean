@@ -94,6 +94,20 @@ gradient-based MCMC samplers resolving roughness and flatness pathologies.
     $\varepsilon^2 U'' \ge 4$ when $s^2 \ge 2/\varepsilon^2 - r^2/2 + 1/2$. $U''$ is nondecreasing in
     $|z|$, so the unstable set is a symmetric tail region, and $U''(0) = r^2 - 1$.
 
+12. **Tail Window of the h-Map Student-t Pullback (§13)**: the window is
+    $a z - b \le U(z) \le A z^2 + B$ on $[0, \infty)$ with $a > 0$. For $\nu, r, c > 0$ the
+    Student-t pullback $U_t(z) = \frac{\nu + 1}{2} \log(1 + x^2/\nu) - z^2/(2c) - \log(1 + z^2/c)$,
+    $x = r z e^{z^2/(2c)}$, satisfies $\frac{\nu}{4c} z^2 - b \le U_t(z) \le A z^2$ on all of
+    $\mathbb{R}$, so it lies in the window for every $\nu$; a location offset $\delta$ changes it
+    by at most $\frac{\nu + 1}{2} (\log 2 + \log(1 + \delta^2/\nu))$, and $z = \lambda w$ maps
+    $(r, c)$ to $(r\lambda, c/\lambda^2)$.
+
+13. **Tail-Matched Map Selection (§14)**: affine maps put Gaussian coordinates in the window and
+    h-maps put Student-t coordinates in it (Cauchy also directly from the §10 envelopes:
+    $|U_C(z) - z^2/(2c)| \le K$), so selecting the map per coordinate puts every coordinate of a
+    Gaussian / Student-t product in the window. By §11 the swapped maps put neither a Gaussian nor
+    a Cauchy coordinate in it, and no single map handles both.
+
 Author: MCMC Robustness Research Team
 Toolchain: Lean 4 + Mathlib
 -/
@@ -1271,6 +1285,432 @@ theorem arcsinhGaussCurv_zero (r : ℝ) : arcsinhGaussCurv r 0 = r ^ 2 - 1 := by
 
 
 /-! ============================================================================
+    §13. Tail Window of the h-Map Pullback of a Student-t Marginal
+    ============================================================================ -/
+
+/-- The tail window of a one-dimensional pullback potential: a linear lower envelope and a
+    quadratic upper envelope on `[0, ∞)`, `a z - b ≤ U(z) ≤ A z² + B` with `a > 0`. This is the
+    coordinate-wise growth condition assumed by published geometric-ergodicity theorems for HMC
+    and NUTS; §11 shows that no common map gives both envelopes to Gaussian and Cauchy marginals. -/
+def InTailWindow (U : ℝ → ℝ) : Prop :=
+  ∃ a b A B : ℝ, 0 < a ∧ ∀ z, 0 ≤ z → a * z - b ≤ U z ∧ U z ≤ A * z ^ 2 + B
+
+/-- Two quadratic envelopes give the window: if `κ z² - b ≤ U(z) ≤ A z² + B` on `[0, ∞)` with
+    `κ > 0`, then `U` is in the tail window, with `a = 1` and `b + 1 / (4κ)`. -/
+theorem inTailWindow_of_quadratic_bounds {U : ℝ → ℝ} {κ b A B : ℝ} (hκ : 0 < κ)
+    (hlo : ∀ z, 0 ≤ z → κ * z ^ 2 - b ≤ U z) (hhi : ∀ z, 0 ≤ z → U z ≤ A * z ^ 2 + B) :
+    InTailWindow U := by
+  refine ⟨1, b + 1 / (4 * κ), A, B, one_pos, fun z hz => ⟨?_, hhi z hz⟩⟩
+  have h := hlo z hz
+  have hsq : 0 ≤ κ * (z - 1 / (2 * κ)) ^ 2 := by positivity
+  have e : κ * (z - 1 / (2 * κ)) ^ 2 = κ * z ^ 2 - z + 1 / (4 * κ) := by field_simp; ring
+  linarith
+
+/-- The window survives a bounded perturbation: if `U` is in the window and `|V(z) - U(z)| ≤ K`
+    on `[0, ∞)`, then `V` is in the window. -/
+theorem inTailWindow_of_abs_sub_le {U V : ℝ → ℝ} {K : ℝ} (hU : InTailWindow U)
+    (h : ∀ z, 0 ≤ z → |V z - U z| ≤ K) : InTailWindow V := by
+  obtain ⟨a, b, A, B, ha, hw⟩ := hU
+  refine ⟨a, b + K, A, B + K, ha, fun z hz => ?_⟩
+  obtain ⟨h1, h2⟩ := hw z hz
+  obtain ⟨h3, h4⟩ := abs_le.mp (h z hz)
+  constructor <;> linarith
+
+/-- The window survives a positive rescaling `z = λ w` of the latent coordinate (for example an
+    adapted diagonal mass matrix): if `U` is in the window, so is `w ↦ U(λ w)`. -/
+theorem inTailWindow_comp_mul {U : ℝ → ℝ} (hU : InTailWindow U) {l : ℝ} (hl : 0 < l) :
+    InTailWindow (fun w => U (l * w)) := by
+  obtain ⟨a, b, A, B, ha, h⟩ := hU
+  refine ⟨a * l, b, A * l ^ 2, B, mul_pos ha hl, fun w hw => ?_⟩
+  obtain ⟨h1, h2⟩ := h (l * w) (mul_nonneg hl.le hw)
+  constructor
+  · calc a * l * w - b = a * (l * w) - b := by ring
+      _ ≤ U (l * w) := h1
+  · calc U (l * w) ≤ A * (l * w) ^ 2 + B := h2
+      _ = A * l ^ 2 * w ^ 2 + B := by ring
+
+/-- Pullback potential of a Student-t marginal with `ν` degrees of freedom under the h-map
+    `x = r z exp(z² / (2c))` (`r = R / s`, the map scale over the marginal scale), up to an
+    additive constant and in log form:
+    `U_t(z) = ((ν + 1) / 2) log(1 + x² / ν) - z² / (2c) - log(1 + z² / c)`. -/
+def hMapStudentTPotential (ν r c z : ℝ) : ℝ :=
+  (ν + 1) / 2 * log (1 + (r * z * exp (z ^ 2 / (2 * c))) ^ 2 / ν)
+    - z ^ 2 / (2 * c) - log (1 + z ^ 2 / c)
+
+/-- `hMapStudentTPotential` is the exact pullback potential: the Student-t negative log-kernel of
+    §7 at `x = hMap 0 r c z`, minus the h-map log-Jacobian of §10, plus the constant `log r`. -/
+theorem hMapStudentTPotential_eq_pullback (ν : ℝ) {r c : ℝ} (hr : 0 < r) (hc : 0 < c) (z : ℝ) :
+    hMapStudentTPotential ν r c z
+      = studentTNegLogKernel ν (hMap 0 r c z) - log (hMapDeriv r c z) + log r := by
+  rw [log_hMapDeriv hr hc]
+  unfold hMapStudentTPotential studentTNegLogKernel hMap
+  rw [zero_add]
+  ring
+
+/-- The centred Student-t h-map potential is even, `U_t(-z) = U_t(z)`, so its window on
+    `[0, ∞)` is also a window for the left tail. -/
+theorem hMapStudentTPotential_neg (ν r c z : ℝ) :
+    hMapStudentTPotential ν r c (-z) = hMapStudentTPotential ν r c z := by
+  unfold hMapStudentTPotential
+  rw [neg_sq, mul_neg, neg_mul, neg_sq]
+
+/-- Rescaling invariance of the Student-t pullback (the §10 `R² c` invariance): a linear change
+    `z = λ w` of the latent coordinate maps `(r, c)` to `(r λ, c / λ²)`. -/
+theorem hMapStudentTPotential_rescale (ν r c : ℝ) {l : ℝ} (hl : l ≠ 0) (w : ℝ) :
+    hMapStudentTPotential ν r c (l * w) = hMapStudentTPotential ν (r * l) (c / l ^ 2) w := by
+  unfold hMapStudentTPotential
+  have h1 : (l * w) ^ 2 / (2 * c) = w ^ 2 / (2 * (c / l ^ 2)) := by
+    rcases eq_or_ne c 0 with h0 | h0
+    · simp [h0]
+    · field_simp
+  have h2 : (l * w) ^ 2 / c = w ^ 2 / (c / l ^ 2) := by
+    rcases eq_or_ne c 0 with h0 | h0
+    · simp [h0]
+    · field_simp
+  rw [h1, h2, show r * (l * w) = r * l * w by ring]
+
+/-- Elementary bound behind the lower envelope: `exp q ≤ 1 + q exp q` for every real `q`,
+    equivalently `(1 - q) exp q ≤ 1`. -/
+theorem exp_le_one_add_mul_exp (q : ℝ) : exp q ≤ 1 + q * exp q := by
+  have h := mul_le_mul_of_nonneg_right (add_one_le_exp (-q)) (exp_pos q).le
+  rw [← exp_add, neg_add_cancel, exp_zero] at h
+  linarith
+
+/-- Squaring the h-map: `(r z exp(z² / (2c)))² = r² z² exp(z² / c)`. -/
+theorem hMap_sq (r c z : ℝ) :
+    (r * z * exp (z ^ 2 / (2 * c))) ^ 2 = r ^ 2 * z ^ 2 * exp (z ^ 2 / c) := by
+  have h : exp (z ^ 2 / c) = exp (z ^ 2 / (2 * c)) * exp (z ^ 2 / (2 * c)) := by
+    rw [← exp_add]; congr 1; ring
+  rw [h]; ring
+
+/-- Quadratic lower envelope of the Student-t h-map pullback, for all `z ∈ ℝ`:
+    `(ν / (4c)) z² + ((ν + 1) / 2) log m + log(ν / 4) + 1 - ν / 4 ≤ U_t(z)`
+    whenever `0 < m ≤ 1` and `m ν ≤ r² c` (e.g. `m = min 1 (r² c / ν)`). -/
+theorem hMapStudentTPotential_quadratic_lower {ν r c m : ℝ} (hν : 0 < ν) (hc : 0 < c)
+    (hm0 : 0 < m) (hm1 : m ≤ 1) (hmk : m * ν ≤ r ^ 2 * c) (z : ℝ) :
+    ν / (4 * c) * z ^ 2 + (ν + 1) / 2 * log m + log (ν / 4) + 1 - ν / 4
+      ≤ hMapStudentTPotential ν r c z := by
+  unfold hMapStudentTPotential
+  rw [hMap_sq]
+  obtain ⟨q, hqdef⟩ : ∃ q, q = z ^ 2 / c := ⟨_, rfl⟩
+  rw [← hqdef]
+  have hq : 0 ≤ q := by rw [hqdef]; positivity
+  have hEq := exp_pos q
+  have hp : m * q ≤ r ^ 2 * z ^ 2 / ν := by
+    rw [hqdef, mul_div_assoc', div_le_div_iff₀ hc hν]
+    nlinarith [mul_le_mul_of_nonneg_right hmk (sq_nonneg z)]
+  have hkey : m * exp q ≤ 1 + r ^ 2 * z ^ 2 * exp q / ν := by
+    have h1 := mul_le_mul_of_nonneg_left (exp_le_one_add_mul_exp q) hm0.le
+    have h2 := mul_le_mul_of_nonneg_right hp hEq.le
+    have e : r ^ 2 * z ^ 2 * exp q / ν = r ^ 2 * z ^ 2 / ν * exp q := by ring
+    rw [e]
+    nlinarith
+  have hL : log m + q ≤ log (1 + r ^ 2 * z ^ 2 * exp q / ν) := by
+    have h := log_le_log (mul_pos hm0 hEq) hkey
+    rwa [log_mul hm0.ne' hEq.ne', log_exp] at h
+  have hlog : log (1 + q) ≤ ν * (1 + q) / 4 - 1 - log (ν / 4) := by
+    have h := log_le_sub_one_of_pos (show 0 < (1 + q) * (ν / 4) by positivity)
+    rw [log_mul (by positivity) (by positivity)] at h
+    linarith
+  have hmul := mul_le_mul_of_nonneg_left hL (show 0 ≤ (ν + 1) / 2 by positivity)
+  have e1 : z ^ 2 / (2 * c) = q / 2 := by rw [hqdef]; ring
+  have e2 : ν / (4 * c) * z ^ 2 = ν / 4 * q := by rw [hqdef]; ring
+  rw [e1, e2]
+  nlinarith
+
+/-- Quadratic upper envelope of the Student-t h-map pullback, for all `z ∈ ℝ`:
+    `U_t(z) ≤ ((ν + 1) r² / (2ν) + ν / (2c)) z²`. -/
+theorem hMapStudentTPotential_quadratic_upper {ν r c : ℝ} (hν : 0 < ν) (hc : 0 < c) (z : ℝ) :
+    hMapStudentTPotential ν r c z ≤ ((ν + 1) * r ^ 2 / (2 * ν) + ν / (2 * c)) * z ^ 2 := by
+  unfold hMapStudentTPotential
+  rw [hMap_sq]
+  obtain ⟨q, hqdef⟩ : ∃ q, q = z ^ 2 / c := ⟨_, rfl⟩
+  rw [← hqdef]
+  have hq : 0 ≤ q := by rw [hqdef]; positivity
+  have hEq := exp_pos q
+  have hp : 0 ≤ r ^ 2 * z ^ 2 / ν := by positivity
+  have hpos : 0 < 1 + r ^ 2 * z ^ 2 / ν := by linarith
+  have h1 : 1 + r ^ 2 * z ^ 2 * exp q / ν ≤ (1 + r ^ 2 * z ^ 2 / ν) * exp q := by
+    have he := one_le_exp hq
+    have e : r ^ 2 * z ^ 2 * exp q / ν = r ^ 2 * z ^ 2 / ν * exp q := by ring
+    rw [e]; nlinarith
+  have hL : log (1 + r ^ 2 * z ^ 2 * exp q / ν) ≤ r ^ 2 * z ^ 2 / ν + q := by
+    calc log (1 + r ^ 2 * z ^ 2 * exp q / ν) ≤ log ((1 + r ^ 2 * z ^ 2 / ν) * exp q) :=
+          log_le_log (by positivity) h1
+      _ = log (1 + r ^ 2 * z ^ 2 / ν) + q := by rw [log_mul hpos.ne' hEq.ne', log_exp]
+      _ ≤ r ^ 2 * z ^ 2 / ν + q := by linarith [log_le_sub_one_of_pos hpos]
+  have hmul := mul_le_mul_of_nonneg_left hL (show 0 ≤ (ν + 1) / 2 by positivity)
+  have hlog : 0 ≤ log (1 + q) := log_nonneg (by linarith)
+  have e1 : z ^ 2 / (2 * c) = q / 2 := by rw [hqdef]; ring
+  have e2 : ((ν + 1) * r ^ 2 / (2 * ν) + ν / (2 * c)) * z ^ 2
+      = (ν + 1) / 2 * (r ^ 2 * z ^ 2 / ν + q) - q / 2 := by
+    rw [hqdef]; field_simp; ring
+  rw [e1, e2]
+  linarith
+
+/-- Positive window theorem for Student-t coordinates. For every `ν > 0`, scale ratio `r > 0`
+    and h-parameter `c > 0`, the pullback potential of a Student-t marginal under the h-map lies
+    in the tail window: there are `a > 0` and `b`, `A`, `B` with
+    `a z - b ≤ U_t(z) ≤ A z² + B` on `[0, ∞)`. -/
+theorem hMapStudentT_inTailWindow {ν r c : ℝ} (hν : 0 < ν) (hr : 0 < r) (hc : 0 < c) :
+    InTailWindow (hMapStudentTPotential ν r c) := by
+  set m := min 1 (r ^ 2 * c / ν) with hmdef
+  have hm0 : 0 < m := lt_min one_pos (by positivity)
+  have hm1 : m ≤ 1 := min_le_left _ _
+  have hmk : m * ν ≤ r ^ 2 * c := by
+    calc m * ν ≤ r ^ 2 * c / ν * ν := mul_le_mul_of_nonneg_right (min_le_right _ _) hν.le
+      _ = r ^ 2 * c := by field_simp
+  refine inTailWindow_of_quadratic_bounds (κ := ν / (4 * c))
+    (b := -((ν + 1) / 2 * log m + log (ν / 4) + 1 - ν / 4))
+    (A := (ν + 1) * r ^ 2 / (2 * ν) + ν / (2 * c)) (B := 0) (by positivity)
+    (fun z _ => ?_) (fun z _ => ?_)
+  · have h := hMapStudentTPotential_quadratic_lower hν hc hm0 hm1 hmk z
+    linarith
+  · have h := hMapStudentTPotential_quadratic_upper (r := r) hν hc z
+    linarith
+
+/-- Peetre-type bound for the Student-t log-kernel: shifting the argument by `δ` changes
+    `log(1 + u² / ν)` by at most `log 2 + log(1 + δ² / ν)`, uniformly in `u`. -/
+theorem abs_log_one_add_sq_shift_le {ν : ℝ} (hν : 0 < ν) (δ u : ℝ) :
+    |log (1 + (δ + u) ^ 2 / ν) - log (1 + u ^ 2 / ν)| ≤ log 2 + log (1 + δ ^ 2 / ν) := by
+  have hA : 0 < 1 + (δ + u) ^ 2 / ν := by positivity
+  have hB : 0 < 1 + u ^ 2 / ν := by positivity
+  have hD : 0 < 1 + δ ^ 2 / ν := by positivity
+  have hp : 0 ≤ u ^ 2 / ν := by positivity
+  have hd : 0 ≤ δ ^ 2 / ν := by positivity
+  have hs : 0 ≤ (δ + u) ^ 2 / ν := by positivity
+  have h1 : (δ + u) ^ 2 / ν ≤ 2 * (u ^ 2 / ν) + 2 * (δ ^ 2 / ν) := by
+    have h : (δ + u) ^ 2 ≤ 2 * u ^ 2 + 2 * δ ^ 2 := by nlinarith [sq_nonneg (δ - u)]
+    calc (δ + u) ^ 2 / ν ≤ (2 * u ^ 2 + 2 * δ ^ 2) / ν := by gcongr
+      _ = 2 * (u ^ 2 / ν) + 2 * (δ ^ 2 / ν) := by ring
+  have h2 : u ^ 2 / ν ≤ 2 * ((δ + u) ^ 2 / ν) + 2 * (δ ^ 2 / ν) := by
+    have h : u ^ 2 ≤ 2 * (δ + u) ^ 2 + 2 * δ ^ 2 := by nlinarith [sq_nonneg (2 * δ + u)]
+    calc u ^ 2 / ν ≤ (2 * (δ + u) ^ 2 + 2 * δ ^ 2) / ν := by gcongr
+      _ = 2 * ((δ + u) ^ 2 / ν) + 2 * (δ ^ 2 / ν) := by ring
+  have hup : 1 + (δ + u) ^ 2 / ν ≤ 2 * (1 + u ^ 2 / ν) * (1 + δ ^ 2 / ν) := by
+    nlinarith [mul_nonneg hp hd]
+  have hlo : 1 + u ^ 2 / ν ≤ 2 * (1 + (δ + u) ^ 2 / ν) * (1 + δ ^ 2 / ν) := by
+    nlinarith [mul_nonneg hs hd]
+  have l1 := log_le_log hA hup
+  have l2 := log_le_log hB hlo
+  rw [log_mul (by positivity) hD.ne', log_mul two_ne_zero hB.ne'] at l1
+  rw [log_mul (by positivity) hD.ne', log_mul two_ne_zero hA.ne'] at l2
+  rw [abs_le]
+  constructor <;> linarith
+
+/-- Pullback potential of a Student-t marginal under the h-map with a location offset
+    `δ = (μ - m) / s` (map centre minus marginal centre, in marginal scale units), up to an
+    additive constant: `((ν + 1) / 2) log(1 + (δ + r z exp(z² / (2c)))² / ν) - z² / (2c)
+    - log(1 + z² / c)`. -/
+def hMapStudentTOffsetPotential (ν δ r c z : ℝ) : ℝ :=
+  (ν + 1) / 2 * log (1 + (δ + r * z * exp (z ^ 2 / (2 * c))) ^ 2 / ν)
+    - z ^ 2 / (2 * c) - log (1 + z ^ 2 / c)
+
+/-- `hMapStudentTOffsetPotential` is the exact pullback potential through `x = hMap δ r c z`,
+    up to the constant `log r`; at `δ = 0` it is `hMapStudentTPotential`. -/
+theorem hMapStudentTOffsetPotential_eq_pullback (ν δ : ℝ) {r c : ℝ} (hr : 0 < r) (hc : 0 < c)
+    (z : ℝ) :
+    hMapStudentTOffsetPotential ν δ r c z
+      = studentTNegLogKernel ν (hMap δ r c z) - log (hMapDeriv r c z) + log r := by
+  rw [log_hMapDeriv hr hc]
+  unfold hMapStudentTOffsetPotential studentTNegLogKernel hMap
+  ring
+
+/-- A location offset is a bounded perturbation of the centred potential:
+    `|U_{t,δ}(z) - U_t(z)| ≤ ((ν + 1) / 2) (log 2 + log(1 + δ² / ν))` for all `z ∈ ℝ`. -/
+theorem hMapStudentTOffsetPotential_sub_le {ν : ℝ} (hν : 0 < ν) (δ r c z : ℝ) :
+    |hMapStudentTOffsetPotential ν δ r c z - hMapStudentTPotential ν r c z|
+      ≤ (ν + 1) / 2 * (log 2 + log (1 + δ ^ 2 / ν)) := by
+  have h := abs_log_one_add_sq_shift_le hν δ (r * z * exp (z ^ 2 / (2 * c)))
+  have e : hMapStudentTOffsetPotential ν δ r c z - hMapStudentTPotential ν r c z
+      = (ν + 1) / 2 * (log (1 + (δ + r * z * exp (z ^ 2 / (2 * c))) ^ 2 / ν)
+        - log (1 + (r * z * exp (z ^ 2 / (2 * c))) ^ 2 / ν)) := by
+    unfold hMapStudentTOffsetPotential hMapStudentTPotential; ring
+  have hk : 0 ≤ (ν + 1) / 2 := by positivity
+  rw [e, abs_mul, abs_of_nonneg hk]
+  exact mul_le_mul_of_nonneg_left h hk
+
+/-- Positive window theorem with a location offset: for every `ν > 0`, `r > 0`, `c > 0` and
+    offset `δ`, the Student-t h-map pullback potential lies in the tail window. -/
+theorem hMapStudentTOffset_inTailWindow {ν r c : ℝ} (hν : 0 < ν) (hr : 0 < r) (hc : 0 < c)
+    (δ : ℝ) : InTailWindow (hMapStudentTOffsetPotential ν δ r c) :=
+  inTailWindow_of_abs_sub_le (hMapStudentT_inTailWindow hν hr hc)
+    (fun z _ => hMapStudentTOffsetPotential_sub_le hν δ r c z)
+
+
+/-! ============================================================================
+    §14. Tail-Matched Map Selection: Gaussian, Cauchy and Student-t Coordinates
+    ============================================================================ -/
+
+/-- Light coordinates: the pullback potential of a standard Gaussian marginal under an affine map
+    `x = δ + r z` with `r > 0` (the identity is `δ = 0`, `r = 1`) lies in the tail window, by
+    `(r² / 4) z² - δ² / 2 - log r ≤ U_G(z) ≤ r² z² + δ² - log r`. -/
+theorem affineGauss_inTailWindow (δ : ℝ) {r : ℝ} (hr : 0 < r) :
+    InTailWindow (gaussPullbackPotential (fun z => δ + r * z) (fun _ => r)) := by
+  refine inTailWindow_of_quadratic_bounds (κ := r ^ 2 / 4) (b := δ ^ 2 / 2 + log r)
+    (A := r ^ 2) (B := δ ^ 2 - log r) (by positivity) (fun z _ => ?_) (fun z _ => ?_)
+  · simp only [gaussPullbackPotential]
+    nlinarith [sq_nonneg (2 * δ + r * z)]
+  · simp only [gaussPullbackPotential]
+    nlinarith [sq_nonneg (δ - r * z)]
+
+/-- The identity map on a standard Gaussian coordinate, `U_G(z) = z² / 2`, lies in the window. -/
+theorem identityGauss_inTailWindow : InTailWindow (gaussPullbackPotential id (fun _ => 1)) := by
+  have h := affineGauss_inTailWindow 0 one_pos
+  have e : (fun z : ℝ => (0 : ℝ) + 1 * z) = id := by funext z; simp
+  rwa [e] at h
+
+/-- The §10 Cauchy pullback density is `exp(-U_C)` for the §11 Cauchy pullback potential of the
+    h-map: `π p_z(z) = exp(-(log(1 + x²) - log(dx/dz)))` with `x = hMap 0 r c z`. -/
+theorem hMapCauchyPullback_eq_exp_neg {r c : ℝ} (hr : 0 < r) (hc : 0 < c) (z : ℝ) :
+    hMapCauchyPullback r c z
+      = exp (-cauchyPullbackPotential (hMap 0 r c) (hMapDeriv r c) z) := by
+  unfold hMapCauchyPullback cauchyPullbackPotential cauchyKernel
+  have h1 : 0 < 1 + hMap 0 r c z ^ 2 := by positivity
+  rw [neg_sub, exp_sub, exp_log (hMapDeriv_pos hr hc z), exp_log h1, div_eq_mul_inv]
+
+/-- Cauchy coordinates, from the §10 envelopes: the h-map Cauchy pullback potential is Gaussian
+    with variance `c` up to a bounded error, `|U_C(z) - z² / (2c)| ≤ K` for all `z ∈ ℝ`. -/
+theorem hMapCauchyPotential_sandwich {r c : ℝ} (hr : 0 < r) (hc : 0 < c) :
+    ∃ K, ∀ z, |cauchyPullbackPotential (hMap 0 r c) (hMapDeriv r c) z - z ^ 2 / (2 * c)| ≤ K := by
+  obtain ⟨k, hk⟩ : ∃ k, k = r ^ 2 * c := ⟨_, rfl⟩
+  have hkpos : 0 < k := by rw [hk]; positivity
+  obtain ⟨m, hm⟩ : ∃ m, m = min 1 (1 / k) := ⟨_, rfl⟩
+  obtain ⟨M, hM⟩ : ∃ M, M = max 1 (1 / k) := ⟨_, rfl⟩
+  obtain ⟨ρ, hρdef⟩ : ∃ ρ, ρ = min (exp (-1)) (k / (1 + k)) := ⟨_, rfl⟩
+  have hm0 : 0 < m := by rw [hm]; exact lt_min one_pos (by positivity)
+  have hm1 : m ≤ 1 := by rw [hm]; exact min_le_left _ _
+  have hmc : m * r ^ 2 * c ≤ 1 := by
+    calc m * r ^ 2 * c = m * k := by rw [hk]; ring
+      _ ≤ 1 / k * k := mul_le_mul_of_nonneg_right (by rw [hm]; exact min_le_right _ _) hkpos.le
+      _ = 1 := by field_simp
+  have hM1 : 1 ≤ M := by rw [hM]; exact le_max_left _ _
+  have hMc : 1 ≤ M * r ^ 2 * c := by
+    calc (1 : ℝ) = 1 / k * k := by field_simp
+      _ ≤ M * k := mul_le_mul_of_nonneg_right (by rw [hM]; exact le_max_right _ _) hkpos.le
+      _ = M * r ^ 2 * c := by rw [hk]; ring
+  have hρ : 0 < ρ := by rw [hρdef]; exact lt_min (exp_pos _) (by positivity)
+  have hρe : ρ * exp 1 ≤ 1 := by
+    calc ρ * exp 1 ≤ exp (-1) * exp 1 :=
+          mul_le_mul_of_nonneg_right (by rw [hρdef]; exact min_le_left _ _) (exp_pos _).le
+      _ = 1 := by rw [← exp_add]; simp
+  have hρc : ρ * (1 + r ^ 2 * c) ≤ r ^ 2 * c := by
+    rw [← hk]
+    calc ρ * (1 + k) ≤ k / (1 + k) * (1 + k) :=
+          mul_le_mul_of_nonneg_right (by rw [hρdef]; exact min_le_right _ _) (by positivity)
+      _ = k := by field_simp
+  have hrm : 0 < r * m := mul_pos hr hm0
+  have hrM : 0 < r * M / ρ := div_pos (mul_pos hr (by linarith)) hρ
+  refine ⟨|log (r * m)| + |log (r * M / ρ)|, fun z => ?_⟩
+  have hlo := hMapCauchyPullback_gauss_lower hr hc hm1 hmc z
+  have hhi := hMapCauchyPullback_gauss_upper hr hc hM1 hMc hρ hρe hρc z
+  rw [hMapCauchyPullback_eq_exp_neg hr hc] at hlo hhi
+  have h1 := log_le_log (by positivity) hlo
+  rw [log_mul hrm.ne' (exp_pos _).ne', log_exp, log_exp] at h1
+  have h2 := log_le_log (exp_pos _) hhi
+  rw [log_mul hrM.ne' (exp_pos _).ne', log_exp, log_exp] at h2
+  rw [abs_le]
+  constructor
+  · linarith [le_abs_self (log (r * M / ρ)), abs_nonneg (log (r * m))]
+  · linarith [neg_abs_le (log (r * m)), abs_nonneg (log (r * M / ρ))]
+
+/-- Cauchy coordinates in the window: the h-map Cauchy pullback potential lies in the tail
+    window (a consequence of the §10 Gaussian envelopes via `hMapCauchyPotential_sandwich`). -/
+theorem hMapCauchy_inTailWindow {r c : ℝ} (hr : 0 < r) (hc : 0 < c) :
+    InTailWindow (cauchyPullbackPotential (hMap 0 r c) (hMapDeriv r c)) := by
+  obtain ⟨K, hK⟩ := hMapCauchyPotential_sandwich hr hc
+  refine inTailWindow_of_quadratic_bounds (κ := 1 / (2 * c)) (b := K) (A := 1 / (2 * c))
+    (B := K) (by positivity) (fun z _ => ?_) (fun z _ => ?_)
+  · have h := (abs_le.mp (hK z)).1
+    have e : 1 / (2 * c) * z ^ 2 = z ^ 2 / (2 * c) := by ring
+    linarith
+  · have h := (abs_le.mp (hK z)).2
+    have e : 1 / (2 * c) * z ^ 2 = z ^ 2 / (2 * c) := by ring
+    linarith
+
+/-- Consistency of the Student-t result with the Cauchy case: at `ν = 1` the Student-t h-map
+    potential is the §11 Cauchy pullback potential of the h-map plus the constant `log r`. -/
+theorem hMapStudentTPotential_one_eq {r c : ℝ} (hr : 0 < r) (hc : 0 < c) (z : ℝ) :
+    hMapStudentTPotential 1 r c z
+      = cauchyPullbackPotential (hMap 0 r c) (hMapDeriv r c) z + log r := by
+  rw [hMapStudentTPotential_eq_pullback 1 hr hc]
+  unfold studentTNegLogKernel cauchyPullbackPotential
+  norm_num
+
+/-- §11 in window language: no increasing differentiable map `g → ∞` puts both the Gaussian and
+    the Cauchy pullback potentials in the tail window. -/
+theorem not_inTailWindow_gauss_and_cauchy {g g' : ℝ → ℝ} (hderiv : ∀ z, HasDerivAt g (g' z) z)
+    (hpos : ∀ z, 0 < g' z) (htop : Tendsto g atTop atTop) :
+    ¬ (InTailWindow (gaussPullbackPotential g g') ∧ InTailWindow (cauchyPullbackPotential g g')) := by
+  rintro ⟨⟨_, _, A, B, _, hG⟩, ⟨a, b, _, _, ha, hC⟩⟩
+  exact no_common_map_gaussian_cauchy ha hderiv hpos htop (fun z hz => (hC z hz).1)
+    (fun z hz => (hG z hz).2)
+
+/-- The h-map tends to `+∞` for `R > 0`, `c > 0`. -/
+theorem tendsto_hMap_atTop (μ : ℝ) {R c : ℝ} (hR : 0 < R) (hc : 0 < c) :
+    Tendsto (hMap μ R c) atTop atTop := by
+  have hlin : Tendsto (fun z : ℝ => μ + R * z) atTop atTop :=
+    tendsto_atTop_add_const_left _ _ (tendsto_id.const_mul_atTop hR)
+  refine tendsto_atTop_mono' _ ?_ hlin
+  filter_upwards [eventually_ge_atTop 0] with z hz
+  have he : 1 ≤ exp (z ^ 2 / (2 * c)) := one_le_exp (by positivity)
+  unfold hMap
+  nlinarith [mul_nonneg hR.le hz]
+
+/-- Misclassifying a light coordinate as heavy fails: the Gaussian pullback potential of the
+    h-map is not in the tail window (by §11, since its Cauchy pullback is). -/
+theorem hMapGauss_not_inTailWindow {r c : ℝ} (hr : 0 < r) (hc : 0 < c) :
+    ¬ InTailWindow (gaussPullbackPotential (hMap 0 r c) (hMapDeriv r c)) := fun h =>
+  not_inTailWindow_gauss_and_cauchy (hasDerivAt_hMap 0 r hc.ne') (hMapDeriv_pos hr hc)
+    (tendsto_hMap_atTop 0 hr hc) ⟨h, hMapCauchy_inTailWindow hr hc⟩
+
+/-- Misclassifying a heavy coordinate as light fails: the Cauchy pullback potential of an affine
+    map `x = δ + r z` is not in the tail window (by §11, since its Gaussian pullback is). -/
+theorem affineCauchy_not_inTailWindow (δ : ℝ) {r : ℝ} (hr : 0 < r) :
+    ¬ InTailWindow (cauchyPullbackPotential (fun z => δ + r * z) (fun _ => r)) := by
+  intro h
+  have hderiv : ∀ z, HasDerivAt (fun z => δ + r * z) r z := fun z => by
+    simpa using ((hasDerivAt_id z).const_mul r).const_add δ
+  have htop : Tendsto (fun z : ℝ => δ + r * z) atTop atTop :=
+    tendsto_atTop_add_const_left _ _ (tendsto_id.const_mul_atTop hr)
+  exact not_inTailWindow_gauss_and_cauchy hderiv (fun _ => hr) htop
+    ⟨affineGauss_inTailWindow δ hr, h⟩
+
+/-- Pullback potential of one coordinate of a product target under the tail-matched map, in
+    dimensionless form (offset `δ`, scale ratio `r`): a heavy (`true`) Student-t coordinate is
+    pulled back by the h-map `x = δ + r z exp(z² / (2c))`, a light (`false`) standard Gaussian
+    coordinate by the affine map `x = δ + r z`. -/
+def tailMatchedPotential : Bool → ℝ → ℝ → ℝ → ℝ → ℝ → ℝ
+  | true, ν, δ, r, c => hMapStudentTOffsetPotential ν δ r c
+  | false, _, δ, r, _ => gaussPullbackPotential (fun z => δ + r * z) (fun _ => r)
+
+/-- Selection theorem, per coordinate. Take a product target over `Fin n` whose coordinates are
+    Gaussian (`heavy i = false`) or Student-t with `ν i > 0` degrees of freedom
+    (`heavy i = true`), with any offsets `δ i`, scale ratios `r i > 0` and h-parameters
+    `c i > 0`. Choosing the map by tail class (affine for light, h-map for heavy) puts every
+    coordinate's pullback potential in the tail window. Contrast `no_common_map_gaussian_cauchy`:
+    no single increasing map does this even for one Gaussian and one Cauchy coordinate. -/
+theorem tailMatched_inTailWindow {n : ℕ} (heavy : Fin n → Bool) (ν δ r c : Fin n → ℝ)
+    (hν : ∀ i, heavy i = true → 0 < ν i) (hr : ∀ i, 0 < r i)
+    (hc : ∀ i, heavy i = true → 0 < c i) (i : Fin n) :
+    InTailWindow (tailMatchedPotential (heavy i) (ν i) (δ i) (r i) (c i)) := by
+  cases h : heavy i
+  · exact affineGauss_inTailWindow (δ i) (hr i)
+  · exact hMapStudentTOffset_inTailWindow (hν i h) (hr i) (hc i h) (δ i)
+
+/-- The selection is forced for a Gaussian and a Cauchy coordinate. With a common scale ratio
+    `r > 0` and `c > 0`: the matched maps (affine for the Gaussian, h-map for the Cauchy) put both
+    pullbacks in the tail window, while the swapped maps put neither in it. -/
+theorem tail_matched_selection_forced (δ : ℝ) {r c : ℝ} (hr : 0 < r) (hc : 0 < c) :
+    InTailWindow (gaussPullbackPotential (fun z => δ + r * z) (fun _ => r))
+      ∧ InTailWindow (cauchyPullbackPotential (hMap 0 r c) (hMapDeriv r c))
+      ∧ ¬ InTailWindow (gaussPullbackPotential (hMap 0 r c) (hMapDeriv r c))
+      ∧ ¬ InTailWindow (cauchyPullbackPotential (fun z => δ + r * z) (fun _ => r)) :=
+  ⟨affineGauss_inTailWindow δ hr, hMapCauchy_inTailWindow hr hc, hMapGauss_not_inTailWindow hr hc,
+    affineCauchy_not_inTailWindow δ hr⟩
+
+
+/-! ============================================================================
     PROPERTY 6: Axiom Audit & Linter Verification
     ============================================================================ -/
 
@@ -1495,6 +1935,114 @@ theorem arcsinhGaussCurv_zero (r : ℝ) : arcsinhGaussCurv r 0 = r ^ 2 - 1 := by
 /-- info: 'McmcRobust.arcsinhGaussCurv_zero' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms arcsinhGaussCurv_zero
+
+/-- info: 'McmcRobust.inTailWindow_of_quadratic_bounds' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms inTailWindow_of_quadratic_bounds
+
+/-- info: 'McmcRobust.inTailWindow_of_abs_sub_le' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms inTailWindow_of_abs_sub_le
+
+/-- info: 'McmcRobust.inTailWindow_comp_mul' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms inTailWindow_comp_mul
+
+/-- info: 'McmcRobust.hMapStudentTPotential_eq_pullback' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMapStudentTPotential_eq_pullback
+
+/-- info: 'McmcRobust.hMapStudentTPotential_neg' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMapStudentTPotential_neg
+
+/-- info: 'McmcRobust.hMapStudentTPotential_rescale' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMapStudentTPotential_rescale
+
+/-- info: 'McmcRobust.exp_le_one_add_mul_exp' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms exp_le_one_add_mul_exp
+
+/-- info: 'McmcRobust.hMap_sq' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMap_sq
+
+/-- info: 'McmcRobust.hMapStudentTPotential_quadratic_lower' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMapStudentTPotential_quadratic_lower
+
+/-- info: 'McmcRobust.hMapStudentTPotential_quadratic_upper' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMapStudentTPotential_quadratic_upper
+
+/-- info: 'McmcRobust.hMapStudentT_inTailWindow' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMapStudentT_inTailWindow
+
+/-- info: 'McmcRobust.abs_log_one_add_sq_shift_le' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms abs_log_one_add_sq_shift_le
+
+/-- info: 'McmcRobust.hMapStudentTOffsetPotential_eq_pullback' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMapStudentTOffsetPotential_eq_pullback
+
+/-- info: 'McmcRobust.hMapStudentTOffsetPotential_sub_le' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMapStudentTOffsetPotential_sub_le
+
+/-- info: 'McmcRobust.hMapStudentTOffset_inTailWindow' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMapStudentTOffset_inTailWindow
+
+/-- info: 'McmcRobust.affineGauss_inTailWindow' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms affineGauss_inTailWindow
+
+/-- info: 'McmcRobust.identityGauss_inTailWindow' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms identityGauss_inTailWindow
+
+/-- info: 'McmcRobust.hMapCauchyPullback_eq_exp_neg' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMapCauchyPullback_eq_exp_neg
+
+/-- info: 'McmcRobust.hMapCauchyPotential_sandwich' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMapCauchyPotential_sandwich
+
+/-- info: 'McmcRobust.hMapCauchy_inTailWindow' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMapCauchy_inTailWindow
+
+/-- info: 'McmcRobust.hMapStudentTPotential_one_eq' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMapStudentTPotential_one_eq
+
+/-- info: 'McmcRobust.not_inTailWindow_gauss_and_cauchy' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms not_inTailWindow_gauss_and_cauchy
+
+/-- info: 'McmcRobust.tendsto_hMap_atTop' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms tendsto_hMap_atTop
+
+/-- info: 'McmcRobust.hMapGauss_not_inTailWindow' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms hMapGauss_not_inTailWindow
+
+/-- info: 'McmcRobust.affineCauchy_not_inTailWindow' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms affineCauchy_not_inTailWindow
+
+/-- info: 'McmcRobust.tailMatched_inTailWindow' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms tailMatched_inTailWindow
+
+/-- info: 'McmcRobust.tail_matched_selection_forced' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms tail_matched_selection_forced
 
 #lint
 

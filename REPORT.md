@@ -76,7 +76,10 @@ This is the technical record for the code in this repository. Every result numbe
 
 **New, as far as a literature check found:**
 - **The method:** a closed-form arcsinh map per coordinate, calibrated by median and IQR during warm-up, followed by standard NUTS adaptation on the exact pullback. This is a concrete default answer to Power & Vasdekis's §4.3(iii)–(iv).
-- **A theorem, machine-checked in Lean (§4):** no single coordinate map can bring both a Gaussian and a Cauchy coordinate into the potential class that published ergodicity results for HMC and NUTS assume. So the map's shape has to be chosen per coordinate.
+- **Two theorems, machine-checked in Lean (§4):**
+  - No single coordinate map can bring both a Gaussian and a Cauchy coordinate into the potential class that published ergodicity results for HMC and NUTS assume.
+  - Choosing the map per coordinate (a Tukey h-map for Student-*t* coordinates, an affine map for Gaussian ones) brings every coordinate into that class.
+  - So the per-coordinate choice is both necessary and sufficient.
 
 **Not yet done:** a comparison with diffeomorphic MCMC. No public code for it was found (§5.2, §6).
 
@@ -318,15 +321,21 @@ d = 50, budget 3,000 gradients per chain, 4 chains, seed 42; "tail" starts at �
   - The theorem: no increasing differentiable map $g$ with $g \to \infty$ makes both the Cauchy pullback potential at least linear ($`U_C(z) \ge a z - b`$ with $a > 0$) and the Gaussian pullback potential at most quadratic ($`U_G(z) \le A z^2 + B`$).
   - Why it matters: published geometric-ergodicity results for HMC and NUTS assume a potential between these two bounds. So the transform's shape must be chosen per coordinate.
   - The arcsinh case: arcsinh satisfies the Cauchy side, and its Gaussian pullback has no quadratic bound (`arcsinh_gauss_pullback_not_quadratic`).
+- **Matched maps put every coordinate inside the window** (`hMapStudentT_inTailWindow`, `tailMatched_inTailWindow`).
+  - Under the h-map, the pullback potential of a Student-*t* marginal lies in the window $`a z - b \le U(z) \le A z^2 + B`$, for any $\nu > 0$ and any location offset.
+  - Under an affine map, a Gaussian's pullback potential does too.
+  - So choosing the map per coordinate (h-map for heavy-tailed coordinates, affine for Gaussian ones) puts every coordinate of such a product target inside the window.
+  - Swapping the two maps takes both coordinates out of it (`tail_matched_selection_forced`).
+  - Together with `no_common_map_gaussian_cauchy`, this says the selection is both necessary and sufficient for the window.
 - **Where leapfrog is unstable under arcsinh** (`leapfrog_stable_of_standardized_le`, `leapfrog_unstable_of_standardized_ge`). For a Gaussian coordinate pulled back by arcsinh, these bracket the region where the linear leapfrog stability condition $`\varepsilon^2 U'' \le 4`$ fails, in terms of the standardised coordinate.
 
 **Paper-level results, not machine-checked.** A write-up on the exploration branch, [`explore/tail-transform-theory`](https://github.com/adamhadani/mcmc-robust/blob/explore/tail-transform-theory/explore/theory/THEORY.md), relies on cited theorems. It covers:
 - which marginal tails each map handles;
-- a positive result: h-maps on Student-*t* coordinates combined with affine maps on Gaussian ones put a product target inside the class where HMC and NUTS are proved geometrically ergodic, for any tail index;
+- the step from the machine-checked window condition to geometric ergodicity of HMC and NUTS on the product target, via the published theorems (Durmus, Moulines & Saksman 2020; Gruffaz et al. 2026), which are cited, not formalised;
 - an open problem: the Laplace boundary, where arcsinh places heavy coordinates and no NUTS theorem applies.
 
 <!-- BEGIN GENERATED: lean-inventory -->
-76 theorems in `formal/McmcRobustFormal.lean`, listed under the file's own section headings:
+103 theorems in `formal/McmcRobustFormal.lean`, listed under the file's own section headings:
 
 | Section (as titled in the Lean file) | Theorems |
 | :--- | :--- |
@@ -341,6 +350,8 @@ d = 50, budget 3,000 gradients per chain, 4 chains, seed 42; "tail" starts at �
 | Tukey h-Map: Derivative, Log-Jacobian, Bijectivity and Gaussian Envelopes | `hasDerivAt_hMap`, `hMapDeriv_pos`, `log_hMapDeriv`, `hMap_strictMono`, `hMap_surjective`, `hMap_bijective`, `hMap_rescale`, `hMap_rescale_invariant`, `hMapCauchyPullback_eq`, `hMapCauchyPullback_gauss_lower`, `hMapCauchyPullback_gauss_upper` |
 | Impossibility of a Common Tail Map for Gaussian and Cauchy Marginals | `pullback_potential_difference`, `deriv_bound_of_cauchy_envelope`, `div_one_add_sq_le_arctan`, `cauchy_pullback_tail_bound`, `exp_growth_of_cauchy_pullback_envelope`, `gaussPullback_lower_of_cauchy_envelope`, `no_common_map_gaussian_cauchy`, `arcsinh_cauchy_pullback_linear_lower`, `arcsinh_gauss_pullback_not_quadratic`, `window_necessity` |
 | Leapfrog Stability Region of the Arcsinh Pullback of a Gaussian | `arcsinhGaussPotential_one_eq`, `hasDerivAt_arcsinhGaussPotential`, `hasDerivAt_arcsinhGaussGrad`, `arcsinhGaussCurv_eq`, `inv_cosh_sq_pos_le_one`, `leapfrog_stable_of_standardized_le`, `leapfrog_unstable_of_standardized_ge`, `arcsinhGaussCurv_mono_abs`, `arcsinhGaussCurv_zero` |
+| Tail Window of the h-Map Pullback of a Student-t Marginal | `inTailWindow_of_quadratic_bounds`, `inTailWindow_of_abs_sub_le`, `inTailWindow_comp_mul`, `hMapStudentTPotential_eq_pullback`, `hMapStudentTPotential_neg`, `hMapStudentTPotential_rescale`, `exp_le_one_add_mul_exp`, `hMap_sq`, `hMapStudentTPotential_quadratic_lower`, `hMapStudentTPotential_quadratic_upper`, `hMapStudentT_inTailWindow`, `abs_log_one_add_sq_shift_le`, `hMapStudentTOffsetPotential_eq_pullback`, `hMapStudentTOffsetPotential_sub_le`, `hMapStudentTOffset_inTailWindow` |
+| Tail-Matched Map Selection: Gaussian, Cauchy and Student-t Coordinates | `affineGauss_inTailWindow`, `identityGauss_inTailWindow`, `hMapCauchyPullback_eq_exp_neg`, `hMapCauchyPotential_sandwich`, `hMapCauchy_inTailWindow`, `hMapStudentTPotential_one_eq`, `not_inTailWindow_gauss_and_cauchy`, `tendsto_hMap_atTop`, `hMapGauss_not_inTailWindow`, `affineCauchy_not_inTailWindow`, `tailMatched_inTailWindow`, `tail_matched_selection_forced` |
 <!-- END GENERATED: lean-inventory -->
 
 ## 5. Results
