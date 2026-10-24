@@ -9,6 +9,8 @@ its exact log |det J_psi(z)|.
 - ``radial``:   x_B = mu + L (R sinhc(s) z_B),  s = ||z_B||,      log|det| = sum log L_ii + k log R
                 + (k - 1) log sinhc(s) + log cosh(s),   sinhc(s) = sinh(s)/s,  k = |B|.
 - ``coord``:    x_i = mu_i + R_i sinh(z_i)                         log|det| = sum (log R_i + log cosh z_i).
+- ``lincoord``: x_B = mu + A (R * sinh(z_B)), A any invertible matrix (an oracle tail frame in the held-out
+                rotated-product target),                          log|det| = log|det A| + sum (log R_i + log cosh z_i).
 
 The radial map is the radial arcsinh: the whitened radius r = ||L^{-1}(x - mu)|| is sent to
 s = arcsinh(r / R). A multivariate t with density ~ r^-(nu + k) becomes a density whose radius s has an
@@ -100,7 +102,7 @@ def radial_logdet_grad_coef_from_u(u: jnp.ndarray, k: int) -> jnp.ndarray:
 # Block map
 # ---------------------------------------------------------------------------------------------
 
-KINDS = ("identity", "affine", "radial", "coord")
+KINDS = ("identity", "affine", "radial", "coord", "lincoord")
 
 
 @dataclass
@@ -168,6 +170,8 @@ def make_fns(structure: tuple, params: tuple) -> tuple[Callable, Callable, Calla
             elif kind == "radial":
                 u = jnp.sum(zb * zb)
                 xb = p["mu"] + p["L"] @ (p["R"] * sinhc_from_u(u) * zb)
+            elif kind == "lincoord":
+                xb = p["mu"] + p["A"] @ (p["R"] * jnp.sinh(zb))
             else:  # coord
                 xb = p["mu"] + p["R"] * jnp.sinh(zb)
             x = x.at[ia].set(xb)
@@ -184,6 +188,8 @@ def make_fns(structure: tuple, params: tuple) -> tuple[Callable, Callable, Calla
             elif kind == "radial":
                 w = jax.scipy.linalg.solve_triangular(p["L"], xb - p["mu"], lower=True) / p["R"]
                 zb = asinhc_from_u(jnp.sum(w * w)) * w
+            elif kind == "lincoord":
+                zb = jnp.arcsinh(jnp.linalg.solve(p["A"], xb - p["mu"]) / p["R"])
             else:
                 zb = jnp.arcsinh((xb - p["mu"]) / p["R"])
             z = z.at[ia].set(zb)
@@ -206,6 +212,8 @@ def make_fns(structure: tuple, params: tuple) -> tuple[Callable, Callable, Calla
                     + (k - 1) * log_sinhc_from_u(u)
                     + log_cosh_from_u(u)
                 )
+            elif kind == "lincoord":
+                tot = tot + p["logabsdet_A"] + jnp.sum(jnp.log(p["R"]) + log_cosh_from_u(zb * zb))
             else:
                 tot = tot + jnp.sum(jnp.log(p["R"]) + log_cosh_from_u(zb * zb))
         return tot
@@ -244,6 +252,8 @@ def analytic_pullback_grad(grad_x: Callable, structure: tuple, params: tuple) ->
                 v = p["L"].T @ gb
                 jr_t_v = p["R"] * (sinhc_from_u(u) * v + radial_jac_c2_from_u(u) * zb * jnp.dot(zb, v))
                 ob = jr_t_v + radial_logdet_grad_coef_from_u(u, k) * zb
+            elif kind == "lincoord":
+                ob = p["R"] * jnp.cosh(zb) * (p["A"].T @ gb) + jnp.tanh(zb)
             else:
                 ob = p["R"] * jnp.cosh(zb) * gb + jnp.tanh(zb)
             out = out.at[ia].set(ob)
@@ -474,6 +484,18 @@ def build_map(x: np.ndarray, plan: dict, radial_rule: str, label: str) -> BlockM
         grp = tuple(sorted(plan["affine"]))
         mu, chol, _ = robust_scatter(x[:, list(grp)])
         blocks.append(Block("affine", grp, {"mu": mu, "L": chol}))
+    if plan.get("lincoord"):  # oracle tail frame: plan["lincoord"] = (idx, A)
+        idx, a_mat = plan["lincoord"]
+        grp = tuple(sorted(idx))
+        xb = x[:, list(grp)]
+        mu = np.median(xb, axis=0)
+        src = np.linalg.solve(a_mat, (xb - mu).T).T
+        r = np.minimum(100.0, np.maximum(0.1, 1.5 * robust_scale(src)))
+        blocks.append(
+            Block(
+                "lincoord", grp, {"mu": mu, "A": a_mat, "R": r, "logabsdet_A": np.asarray(np.linalg.slogdet(a_mat)[1])}
+            )
+        )
     if plan.get("identity"):
         grp = tuple(sorted(plan["identity"]))
         blocks.append(Block("identity", grp, {}))

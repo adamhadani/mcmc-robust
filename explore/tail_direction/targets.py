@@ -138,6 +138,59 @@ def rot_gauss(d: int = 20, cond: float = 100.0) -> Target:
     )
 
 
+# ---------------------------------------------------------------------------------------------
+# Held-out targets (added after the main run; not used to choose any threshold or R)
+# ---------------------------------------------------------------------------------------------
+
+
+def two_blocks() -> Target:
+    """Two independent elliptical blocks (4-d nu=1 and 4-d nu=2, each rotated, cond 25) + 4 Gaussians; d = 12."""
+    cov1, cov2 = rotated_cov(4, 25.0, seed=1), rotated_cov(4, 25.0, seed=2)
+    lp1, lp2 = _mvt_logdensity(1.0, cov1), _mvt_logdensity(2.0, cov2)
+    g_sd = np.geomspace(1.0, 3.0, 4)
+    g_sd_j = jnp.asarray(g_sd)
+
+    def lp(x: jnp.ndarray) -> jnp.ndarray:
+        return lp1(x[:4]) + lp2(x[4:8]) - 0.5 * jnp.sum((x[8:] / g_sd_j) ** 2)
+
+    marg = [("t", 1.0, float(np.sqrt(cov1[i, i]))) for i in range(4)]
+    marg += [("t", 2.0, float(np.sqrt(cov2[i, i]))) for i in range(4)]
+    marg += [("normal", float(g_sd[i])) for i in range(4)]
+    return Target(
+        name="two_blocks_d12",
+        d=12,
+        logdensity=lp,
+        marginals=marg,
+        oracle_plan={"radial": [list(range(4)), list(range(4, 8))], "affine": list(range(8, 12))},
+    )
+
+
+def rot_prod_cauchy(d: int = 10) -> Target:
+    """x = Q diag(s) u with u_j iid Cauchy: heavy tails along the rotated axes Q diag(s) (neither elliptical nor
+    axis-aligned). Each marginal x_i is exactly Cauchy with scale sum_j |Q_ij| s_j. The oracle composite uses the
+    true frame A = Q diag(s) with a coordinate-wise arcsinh in the source coordinates (block kind ``lincoord``).
+    """
+    rng = np.random.default_rng(5)
+    q, _ = np.linalg.qr(rng.normal(size=(d, d)))
+    s = np.geomspace(1.0, 5.0, d)
+    a_mat = q * s
+    a_inv = jnp.asarray(np.linalg.inv(a_mat))
+    log_det = float(np.linalg.slogdet(a_mat)[1])
+
+    def lp(x: jnp.ndarray) -> jnp.ndarray:
+        u = a_inv @ x
+        return -jnp.sum(jnp.log1p(u * u)) - d * np.log(np.pi) - log_det
+
+    scales = np.abs(q) @ s
+    return Target(
+        name=f"rot_prod_cauchy_d{d}",
+        d=d,
+        logdensity=lp,
+        marginals=[("t", 1.0, float(scales[i])) for i in range(d)],
+        oracle_plan={"lincoord": (list(range(d)), a_mat)},
+    )
+
+
 def make_target(name: str) -> Target:
     table = {
         "rot_t1_d10": lambda: rot_t(1.0, 10),
@@ -147,8 +200,12 @@ def make_target(name: str) -> Target:
         "prod_t_d10": lambda: product_t(10),
         "mixed_d15": mixed,
         "rot_gauss_d20": lambda: rot_gauss(20, 100.0),
+        "rot_t3_d10": lambda: rot_t(3.0, 10),
+        "two_blocks_d12": two_blocks,
+        "rot_prod_cauchy_d10": lambda: rot_prod_cauchy(10),
     }
     return table[name]()
 
 
 ALL_TARGETS = ["rot_t1_d10", "rot_t2_d10", "rot_t1_d20", "rot_t2_d20", "prod_t_d10", "mixed_d15", "rot_gauss_d20"]
+HELDOUT_TARGETS = ["rot_t3_d10", "two_blocks_d12", "rot_prod_cauchy_d10"]

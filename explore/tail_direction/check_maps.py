@@ -79,11 +79,23 @@ def build_test_map(d_r: int = 5, d_c: int = 5, d_a: int = 5, seed: int = 0) -> t
         a = rng.normal(size=(k, k))
         return np.linalg.cholesky(a @ a.T / k + 0.5 * np.eye(k))
 
-    d = d_r + d_c + d_a
+    d_l = 4
+    d = d_r + d_c + d_a + d_l
+    a_mat = rng.normal(size=(d_l, d_l)) + 2.0 * np.eye(d_l)  # general (non-triangular) frame
     blocks = [
         Block("radial", tuple(range(d_r)), {"mu": rng.normal(size=d_r), "L": chol(d_r), "R": np.asarray(1.3)}),
         Block("coord", tuple(range(d_r, d_r + d_c)), {"mu": rng.normal(size=d_c), "R": rng.uniform(0.2, 3.0, d_c)}),
-        Block("affine", tuple(range(d_r + d_c, d)), {"mu": rng.normal(size=d_a), "L": chol(d_a)}),
+        Block("affine", tuple(range(d_r + d_c, d_r + d_c + d_a)), {"mu": rng.normal(size=d_a), "L": chol(d_a)}),
+        Block(
+            "lincoord",
+            tuple(range(d_r + d_c + d_a, d)),
+            {
+                "mu": rng.normal(size=d_l),
+                "A": a_mat,
+                "R": rng.uniform(0.2, 3.0, d_l),
+                "logabsdet_A": np.asarray(np.linalg.slogdet(a_mat)[1]),
+            },
+        ),
     ]
     bm = BlockMap(d=d, blocks=blocks, label="test")
     cov = rotated_cov(d, 10.0, seed=3)

@@ -1,6 +1,7 @@
 """Summarise results/main.jsonl into results/summary.json and results/tables.md (the FINDINGS tables).
 
-Run: uv run python -m explore.tail_direction.summarise [IN.jsonl]
+Run: uv run python -m explore.tail_direction.summarise [IN.jsonl [OUT_SUFFIX]]
+(held-out run: ``summarise results/heldout.jsonl _heldout`` -> summary_heldout.json, tables_heldout.md)
 """
 
 from __future__ import annotations
@@ -12,10 +13,10 @@ from pathlib import Path
 
 import numpy as np
 
-from .targets import ALL_TARGETS, make_target
+from .targets import ALL_TARGETS, HELDOUT_TARGETS, make_target
 
 RES = Path(__file__).parent / "results"
-ARMS = ["stock", "coord", "whiten", "radial", "composite", "selected"]
+ARMS = ["stock", "stock_dense", "coord", "whiten", "radial", "composite", "selected"]
 ORACLE_LABEL = {
     "rot_t1_d10": "radial",
     "rot_t2_d10": "radial",
@@ -24,7 +25,13 @@ ORACLE_LABEL = {
     "prod_t_d10": "coord",
     "mixed_d15": "composite",
     "rot_gauss_d20": "affine",
+    "rot_t3_d10": "radial",
+    "two_blocks_d12": "composite",
+    "rot_prod_cauchy_d10": "composite",
 }
+# Targets whose composite arm uses an oracle frame the diagnostic cannot produce: the composite candidate is
+# excluded from the diagnostic's "best of" comparison there.
+ORACLE_ONLY_COMPOSITE = {"rot_prod_cauchy_d10"}
 # arm whose result represents each diagnostic label (for "affine", the composite map is the whiten map)
 LABEL_ARM = {"coord": "coord", "radial": "radial", "composite": "composite", "affine": "whiten"}
 
@@ -59,7 +66,10 @@ def roles(d: int, blocks: list[list[int]], singles: list[int]) -> list[str]:
 
 def main() -> None:
     src = Path(sys.argv[1]) if len(sys.argv) > 1 else RES / "main.jsonl"
+    suffix = sys.argv[2] if len(sys.argv) > 2 else ""
     rows = [json.loads(line) for line in src.read_text().splitlines() if line.strip()]
+    present = {r["target"] for r in rows}
+    targets = [t for t in ALL_TARGETS + HELDOUT_TARGETS if t in present]
     by = defaultdict(dict)  # (target, arm) -> seed -> row
     for r in rows:
         by[(r["target"], r["arm"])][r["seed"]] = r
@@ -72,7 +82,7 @@ def main() -> None:
         "| Tail-prob error, mean over coords and p | Mean MCSE |"
     )
     md.append("|---|---|---|---|---|---|---|---|---|")
-    for t in ALL_TARGETS:
+    for t in targets:
         summary["targets"][t] = {"arms": {}}
         for arm in ARMS:
             seeds = by.get((t, arm), {})
@@ -102,7 +112,7 @@ def main() -> None:
     md.append("\n### Table 2: paired per-seed tail-ESS/grad ratios, median [min, max] (seeds with ratio > 1)\n")
     md.append("| Target | Arm | vs stock | vs coord | Worst-coord tail-ESS/grad vs coord |")
     md.append("|---|---|---|---|---|")
-    for t in ALL_TARGETS:
+    for t in targets:
         teg = {arm: {s: r["tail_ess_per_grad"] for s, r in by.get((t, arm), {}).items()} for arm in ARMS}
         wst = {
             arm: {s: r["min_tail_ess"] / r["total_grad_evals"] for s, r in by.get((t, arm), {}).items()} for arm in ARMS
@@ -135,7 +145,7 @@ def main() -> None:
     )
     md.append("|---|---|---|---|---|---|---|---|")
     diag_rows = []
-    for t in ALL_TARGETS:
+    for t in targets:
         tgt = make_target(t)
         plan = tgt.oracle_plan
         o_blocks = [sorted(b) for b in plan.get("radial", [])]
@@ -148,7 +158,7 @@ def main() -> None:
             # candidate labels for this target: the three maps, with "affine" standing in for the composite
             # map when the oracle partition is all-light, and composite only where it differs from both
             cands = {"coord": "coord", "radial": "radial"}
-            if ORACLE_LABEL[t] == "composite":
+            if ORACLE_LABEL[t] == "composite" and t not in ORACLE_ONLY_COMPOSITE:
                 cands["composite"] = "composite"
             if ORACLE_LABEL[t] == "affine":
                 cands["affine"] = "whiten"
@@ -206,8 +216,8 @@ def main() -> None:
     md.append(
         f"\nPhase 1 draws reproduce the production calibration exactly in {sum(p1)}/{len(p1)} Phase-1 arm records."
     )
-    (RES / "summary.json").write_text(json.dumps(summary, indent=1))
-    (RES / "tables.md").write_text("\n".join(md) + "\n")
+    (RES / f"summary{suffix}.json").write_text(json.dumps(summary, indent=1))
+    (RES / f"tables{suffix}.md").write_text("\n".join(md) + "\n")
     print("\n".join(md))
 
 
