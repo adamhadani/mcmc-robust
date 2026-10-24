@@ -73,7 +73,9 @@ This is the technical record for the code in this repository. Every result numbe
 - a signed-log-like map for a single coordinate (Power & Vasdekis);
 - coordinate-wise tail layers inside flows (Hickling & Prangle; nutpie).
 
-**New, as far as a literature check found:** a closed-form arcsinh map per coordinate, calibrated by median and IQR during warm-up, followed by standard NUTS adaptation on the exact pullback. This is a concrete default answer to Power & Vasdekis's §4.3(iii)–(iv).
+**New, as far as a literature check found:**
+- **The method:** a closed-form arcsinh map per coordinate, calibrated by median and IQR during warm-up, followed by standard NUTS adaptation on the exact pullback. This is a concrete default answer to Power & Vasdekis's §4.3(iii)–(iv).
+- **A theorem, machine-checked in Lean (§4):** no single coordinate map can bring both a Gaussian and a Cauchy coordinate into the potential class that published ergodicity results for HMC and NUTS assume. So the map's shape has to be chosen per coordinate.
 
 **Not yet done:**
 - comparison with nutpie's flow adaptation;
@@ -123,6 +125,8 @@ The pullback tail is therefore Laplace-like. That is $\beta = 1$ in the class of
 ```
 
 which falls like $`-R_i^2 e^{2\lvert z_i\rvert} / (8\sigma_i^2)`$. That is doubly exponential, outside the class ($\beta > 2$).
+
+**This is unavoidable for any single map.** By `no_common_map_gaussian_cauchy` (§4), no map that gives a Cauchy coordinate an exponential tail can keep a Gaussian coordinate's pullback potential quadratically bounded.
 
 **Consequences for the implementation.**
 - The NUTS samplers transform every coordinate unless a mask is passed.
@@ -304,8 +308,26 @@ d = 50, budget 3,000 gradients per chain, 4 chains, seed 42; "tail" starts at �
 
 **Not covered:** no transition kernel, no change-of-variables argument and no NUTS property is formalised. `mh_detailed_balance` states $`a \min(1, b/a) = b \min(1, a/b)`$ for positive reals, the algebra behind detailed balance, not a fact about any sampler here.
 
+**What the tail-map sections prove.** These sections concern the coordinate maps themselves, not the samplers:
+
+- **The arcsinh envelope does not depend on calibration** (`arcsinhCauchyPullback_exp_envelope`). For a Cauchy marginal, every location error and every scale ratio give a pullback density between two multiples of $`e^{-\lvert z\rvert}`$. Only the constants depend on the calibration; the tail rate does not.
+- **The Tukey h-map gives a Gaussian envelope.** Let $`x = \mu + R z e^{z^2/(2c)}`$.
+  - The map is a smooth increasing bijection with an explicit log-Jacobian (`hMap_bijective`, `log_hMapDeriv`).
+  - It pulls a Cauchy marginal back to a density between two multiples of $`e^{-z^2/(2c)}`$ (`hMapCauchyPullback_gauss_lower`, `hMapCauchyPullback_gauss_upper`).
+  - Rescaling $z$ leaves the map unchanged as long as $`R^2 c`$ is fixed (`hMap_rescale_invariant`). So once the metric adapts, only $`R^2 c`$ matters.
+- **No single map can serve both a Gaussian and a Cauchy coordinate** (`no_common_map_gaussian_cauchy`).
+  - The theorem: no increasing differentiable map $g$ with $g \to \infty$ makes both the Cauchy pullback potential at least linear ($`U_C(z) \ge a z - b`$ with $a > 0$) and the Gaussian pullback potential at most quadratic ($`U_G(z) \le A z^2 + B`$).
+  - Why it matters: published geometric-ergodicity results for HMC and NUTS assume a potential between these two bounds. So the transform's shape must be chosen per coordinate.
+  - The arcsinh case: arcsinh satisfies the Cauchy side, and its Gaussian pullback has no quadratic bound (`arcsinh_gauss_pullback_not_quadratic`).
+- **Where leapfrog is unstable under arcsinh** (`leapfrog_stable_of_standardized_le`, `leapfrog_unstable_of_standardized_ge`). For a Gaussian coordinate pulled back by arcsinh, these bracket the region where the linear leapfrog stability condition $`\varepsilon^2 U'' \le 4`$ fails, in terms of the standardised coordinate.
+
+**Paper-level results, not machine-checked.** A write-up on the exploration branch, [`explore/tail-transform-theory`](https://github.com/adamhadani/mcmc-robust/blob/explore/tail-transform-theory/explore/theory/THEORY.md), relies on cited theorems. It covers:
+- which marginal tails each map handles;
+- a positive result: h-maps on Student-*t* coordinates combined with affine maps on Gaussian ones put a product target inside the class where HMC and NUTS are proved geometrically ergodic, for any tail index;
+- an open problem: the Laplace boundary, where arcsinh places heavy coordinates and no NUTS theorem applies.
+
 <!-- BEGIN GENERATED: lean-inventory -->
-37 theorems in `formal/McmcRobustFormal.lean`, listed under the file's own section headings:
+76 theorems in `formal/McmcRobustFormal.lean`, listed under the file's own section headings:
 
 | Section (as titled in the Lean file) | Theorems |
 | :--- | :--- |
@@ -316,6 +338,10 @@ d = 50, budget 3,000 gradients per chain, 4 chains, seed 42; "tail" starts at �
 | Metropolis-Hastings Kernel Reversibility (Detailed Balance) | `mhAccept_bounds`, `mh_detailed_balance` |
 | Applied Heavy-Tailed & Shrinkage Posterior Score Bounds | `studentTNegLogKernel_nonneg`, `hasDerivAt_studentTNegLogKernel`, `studentTScore_mul_le`, `cauchyShrinkagePenalty_nonneg`, `studentTScore_zero` |
 | Pure-JAX 3-Phase Scale & Location Calibration Bounds | `calibratedRadius_ge_min`, `calibratedRadius_pos`, `calibratedRadius_le_max`, `calibratedRadius_mono`, `calibrated_shifted_roundtrip_forward`, `calibrated_shifted_roundtrip_inverse` |
+| Tail Envelopes of Arcsinh Pullbacks of Cauchy Marginals | `one_add_sinh_sq`, `arcsinhCauchyPullback_eq_sech`, `half_exp_abs_le_cosh`, `cosh_le_exp_abs`, `sech_envelope`, `calibration_kernel_upper`, `calibration_kernel_lower`, `arcsinhCauchyPullback_envelope`, `arcsinhCauchyPullback_exp_envelope` |
+| Tukey h-Map: Derivative, Log-Jacobian, Bijectivity and Gaussian Envelopes | `hasDerivAt_hMap`, `hMapDeriv_pos`, `log_hMapDeriv`, `hMap_strictMono`, `hMap_surjective`, `hMap_bijective`, `hMap_rescale`, `hMap_rescale_invariant`, `hMapCauchyPullback_eq`, `hMapCauchyPullback_gauss_lower`, `hMapCauchyPullback_gauss_upper` |
+| Impossibility of a Common Tail Map for Gaussian and Cauchy Marginals | `pullback_potential_difference`, `deriv_bound_of_cauchy_envelope`, `div_one_add_sq_le_arctan`, `cauchy_pullback_tail_bound`, `exp_growth_of_cauchy_pullback_envelope`, `gaussPullback_lower_of_cauchy_envelope`, `no_common_map_gaussian_cauchy`, `arcsinh_cauchy_pullback_linear_lower`, `arcsinh_gauss_pullback_not_quadratic`, `window_necessity` |
+| Leapfrog Stability Region of the Arcsinh Pullback of a Gaussian | `arcsinhGaussPotential_one_eq`, `hasDerivAt_arcsinhGaussPotential`, `hasDerivAt_arcsinhGaussGrad`, `arcsinhGaussCurv_eq`, `inv_cosh_sq_pos_le_one`, `leapfrog_stable_of_standardized_le`, `leapfrog_unstable_of_standardized_ge`, `arcsinhGaussCurv_mono_abs`, `arcsinhGaussCurv_zero` |
 <!-- END GENERATED: lean-inventory -->
 
 ## 5. Results
@@ -586,6 +612,10 @@ Seed 42 only, 4 chains × 1,000 draws after 1,000 warm-up steps, NUTS tree depth
 - nutpie's flow adaptation;
 - diffeomorphic MCMC (Brešar & Mijatović, 2026);
 - posteriordb posteriors with reference draws.
+
+**Alternative transforms under exploration** (exploration branches, not part of the library):
+- a Tukey h-map, whose pullback of polynomial tails is Gaussian (§4);
+- whitened radial and block-structured maps for elliptical heavy tails.
 
 **Engineering:**
 - **Speed.** `UnifiedRobustNUTS` is a NumPy implementation and is slower per gradient than BlackJAX; the JAX pipeline is the faster path.
