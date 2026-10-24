@@ -13,9 +13,12 @@ Arms (every arm: BlackJAX NUTS with window adaptation, `tune` warm-up steps, `dr
 - `scale_mixture`: stock NUTS on the practitioner's non-centred Gaussian scale-mixture
   reparameterisation (`targets/scale_mixture.py`), t-family targets and Task 1 only. ESS and
   accuracy are measured on $x$; gradients are counted in the augmented space.
+- `tukey_h`: the same pipeline and Phase 1 with Tukey's h-map $x = \mu + R z e^{h z^2 / 2}$ instead
+  of arcsinh; $(R, h)$ by Tukey-h maximum likelihood, and $h = 0$ unless a likelihood-ratio test
+  rejects it (`calibrate_jax_tukey_h_transform`, default level). All targets.
 
-All arms run through `sample_blackjax_unified_nuts` (`transform_kind` "identity", "arcsinh" or
-"affine"), so they share the kernel, the vectorised chains and the gradient accounting.
+All arms run through `sample_blackjax_unified_nuts` (`transform_kind` "identity", "arcsinh",
+"affine" or "tukey_h"), so they share the kernel, the vectorised chains and the gradient accounting.
 
 Per-run metrics (one row per target x arm x seed): total gradients including warm-up;
 coordinate-mean and worst-coordinate bulk and tail ESS (ArviZ, via `evaluate_chains_with_arviz`);
@@ -98,6 +101,14 @@ ARMS: dict[str, ArmSpec] = {
         0.80,
         augmented=True,
         description="Stock NUTS on the non-centred Gaussian scale-mixture reparameterisation",
+    ),
+    "tukey_h": ArmSpec(
+        "tukey_h",
+        0.80,
+        description=(
+            "Same pipeline and Phase 1, Tukey h-map x = mu + R z exp(h z^2 / 2); (R, h) by Tukey-h maximum "
+            "likelihood, h = 0 unless a likelihood-ratio test rejects it"
+        ),
     ),
 }
 ARM_NAMES: tuple[str, ...] = tuple(ARMS)

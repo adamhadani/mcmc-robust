@@ -43,12 +43,17 @@ def test_quick_config_is_small_and_full_config_matches_the_protocol() -> None:
     assert full.seeds == tuple(range(10))
     assert (full.tune, full.draws, full.chains, full.max_num_doublings) == (500, 1000, 4, 10)
     assert full.targets == ar.ABLATION_TARGET_NAMES
-    assert set(full.arms) == {"stock", "stock_ta95", "arcsinh", "affine", "scale_mixture"}
+    assert set(full.arms) == {"stock", "stock_ta95", "arcsinh", "affine", "scale_mixture", "tukey_h"}
     assert full.tail_probs == (0.01, 0.99)
     assert ar.ARMS["stock"].target_accept == 0.80
     assert ar.ARMS["stock_ta95"].target_accept == 0.95
     assert ar.ARMS["arcsinh"].transform_kind == "arcsinh"
     assert ar.ARMS["affine"].transform_kind == "affine"
+    assert ar.ARMS["tukey_h"].transform_kind == "tukey_h"
+    assert ar.ARMS["tukey_h"].target_accept == 0.80
+    assert not ar.ARMS["tukey_h"].augmented
+    # The Tukey h-map arm runs on every target.
+    assert all(full.applies(make_ablation_target(t), "tukey_h") for t in ar.ABLATION_TARGET_NAMES)
     assert ar.ARMS["stock"].transform_kind == ar.ARMS["scale_mixture"].transform_kind == "identity"
 
 
