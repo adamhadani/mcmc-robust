@@ -176,8 +176,8 @@ def test_sample_blackjax_unified_nuts_multivariate_cauchy() -> None:
     def multivariate_cauchy_logdensity(x: jnp.ndarray) -> jnp.ndarray:
         return -0.5 * (nu + d) * jnp.log1p(jnp.sum(x**2) / nu)
 
-    # This test is about sampling, not the tail-alignment check, which is switched off explicitly: whether
-    # it fires on a target near its threshold varies between runs (it is tested in test_tail_alignment.py).
+    # A sampling test. Elliptical heavy tails are shared across coordinates, which the tail-alignment check
+    # flags (it warned on seeds 0-9 of this budget), so the check is off here; test_tail_alignment.py tests it.
     res = sample_blackjax_unified_nuts(
         logdensity_fn=multivariate_cauchy_logdensity,
         d=d,
@@ -227,8 +227,9 @@ def test_sample_blackjax_unified_nuts_centered_neals_funnel() -> None:
         lp_quad = -0.5 * jnp.exp(-jnp.clip(v, -50.0, 50.0)) * jnp.sum(rest**2)
         return lp_v + lp_det + lp_quad
 
-    # This test is about sampling, not the tail-alignment check, which is switched off explicitly: whether
-    # it fires on a target near its threshold varies between runs (it is tested in test_tail_alignment.py).
+    # A sampling test. The funnel's heavy tails are shared across coordinates through v, which the
+    # tail-alignment check flags (it warned on seeds 0-9 of this budget), so the check is off here;
+    # test_tail_alignment.py tests it.
     res = sample_blackjax_unified_nuts(
         logdensity_fn=neals_funnel_logdensity,
         d=d,
@@ -590,8 +591,9 @@ def test_sample_blackjax_unified_nuts_student_t_radial_quantiles_d20() -> None:
     def mvt_logdensity(x: jnp.ndarray) -> jnp.ndarray:
         return -0.5 * (nu + d) * jnp.log1p(jnp.sum(x**2) / nu)
 
-    # This test is about sampling, not the tail-alignment check, which is switched off explicitly: whether
-    # it fires on a target near its threshold varies between runs (it is tested in test_tail_alignment.py).
+    # A sampling test. Elliptical heavy tails are shared across coordinates, which the tail-alignment check
+    # flags (on seeds 0-9 of this budget, though close to its threshold), so the check is off here;
+    # test_tail_alignment.py tests it.
     res = sample_blackjax_unified_nuts(
         mvt_logdensity, d=d, draws=500, tune=400, chains=4, seed=1, check_tail_alignment=False
     )
