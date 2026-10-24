@@ -55,6 +55,12 @@ not a line-by-line port:
    - `"identity"`: no transform and no Phase 1; one BlackJAX `window_adaptation` of `tune` steps
      per chain in $x$-space, i.e. stock BlackJAX NUTS sharing this module's sampling code and
      gradient accounting.
+   - `"tukey_h"`: the same Phase 1 (under the initial arcsinh map), then Tukey's h-map
+     $x_i = \mu_i + R_i z_i e^{h_i z_i^2 / 2}$ (`JaxTukeyHTransform`) calibrated by
+     `calibrate_jax_tukey_h_transform`: $\mu_i$ the median, $(R_i, h_i)$ by Tukey-h maximum
+     likelihood, and $h_i = 0$ (affine) unless a likelihood-ratio test rejects $h_i = 0$ at level
+     `tukey_h_level`. A polynomial tail of index $\alpha$ pulls back to a Gaussian tail of variance
+     $1 / (\alpha h_i)$. Without Phase 1 nothing is tested and every $h_i = 0$.
 """
 
 from __future__ import annotations
@@ -83,8 +89,8 @@ from mcmc_robust.integrations import (
 )
 
 #: Coordinate transforms supported by `sample_blackjax_unified_nuts` (see the module docstring, item 5).
-TransformKind = Literal["arcsinh", "affine", "identity"]
-TRANSFORM_KINDS: tuple[str, ...] = ("arcsinh", "affine", "identity")
+TransformKind = Literal["arcsinh", "affine", "identity", "tukey_h"]
+TRANSFORM_KINDS: tuple[str, ...] = ("arcsinh", "affine", "identity", "tukey_h")
 
 
 def arviz_from_samples(
@@ -122,8 +128,10 @@ class JaxUnifiedNUTSResult:
         samples: Post-warmup draws in primal $x$-space, shape `(chains, draws, d)`.
         z_samples: Post-warmup draws in warped $z$-space, shape `(chains, draws, d)`.
         transform: Calibrated transform (`radii`, `location`, `mask`): a `JaxArcsinhTransform` by
-            default, a `JaxAffineTransform` for `transform_kind="affine"`, and a unit-scale,
-            zero-location `JaxAffineTransform` (the identity) for `transform_kind="identity"`.
+            default, a `JaxAffineTransform` for `transform_kind="affine"`, a unit-scale,
+            zero-location `JaxAffineTransform` (the identity) for `transform_kind="identity"`, and a
+            `JaxTukeyHTransform` (whose `h > 0` marks the coordinates the test found heavy) for
+            `transform_kind="tukey_h"`.
         step_size: Step size each chain sampled with, shape `(chains,)`.
         inverse_mass_matrix: Diagonal inverse mass matrix each chain sampled with in $z$-space,
             shape `(chains, d)`.
@@ -502,6 +510,7 @@ def sample_blackjax_unified_nuts(
     dim: int | None = None,
     step_size: float = 0.1,
     transform_kind: TransformKind = "arcsinh",
+    tukey_h_level: float = TUKEY_H_TEST_LEVEL,
 ) -> JaxUnifiedNUTSResult:
     r"""Runs 3-phase adaptive NUTS on the arcsinh-warped target with `JaxArcsinhTransform` and BlackJAX.
 
@@ -540,14 +549,17 @@ def sample_blackjax_unified_nuts(
         min_radius: Minimum allowable calibrated coordinate scale $R_{\min} > 0$ (default: `0.1`).
         max_radius: Maximum allowable calibrated coordinate scale $R_{\max} \ge R_{\min}$ (default: `100.0`).
         scale_multiplier: Multiplier $c > 0$ applied to normal-consistent IQR scale in Phase 1 (default: `1.5`).
+            Not used by `transform_kind="tukey_h"`, whose $R$ is fitted by maximum likelihood.
         mask: Optional boolean mask of shape `(d,)` indicating warped coordinates.
         max_num_doublings: Maximum NUTS binary tree depth (default: `10`).
         divergence_threshold: Maximum Hamiltonian energy error $\Delta H$ before divergence (default: `1000.0`).
         dim: Optional alias for `d`.
         step_size: Fallback step size when `tune == 0` (default: `0.1`).
-        transform_kind: `"arcsinh"` (default), `"affine"` (same calibration, no tail warping) or
-            `"identity"` (stock window-adapted NUTS in $x$-space, no Phase 1); see the module
-            docstring, item 5.
+        transform_kind: `"arcsinh"` (default), `"affine"` (same calibration, no tail warping),
+            `"identity"` (stock window-adapted NUTS in $x$-space, no Phase 1) or `"tukey_h"`
+            (Tukey h-map with a tested per-coordinate $h \ge 0$); see the module docstring, item 5.
+        tukey_h_level: Level of the per-coordinate test of $h = 0$ for `transform_kind="tukey_h"`
+            (default: `TUKEY_H_TEST_LEVEL`); see `calibrate_jax_tukey_h_transform`.
 
     Returns:
         `JaxUnifiedNUTSResult` containing primal `samples`, `z_samples`, calibrated `transform`,
@@ -605,18 +617,22 @@ def sample_blackjax_unified_nuts(
     else:
         init_x = 0.5 * jax.random.normal(key_init, shape=(chains, d_int), dtype=jnp.float64)
 
-    # Initial transform (matches UnifiedRobustNUTS._ensure_transform)
+    # Phase 1 horizon W1 = max(10, int(0.15 * tune)) matches UnifiedRobustNUTS.adapt (nuts.py line 666)
+    run_phase1 = bool(adapt_tail_scale and tune >= 20 and transform_kind != "identity")
+
+    # Initial transform (matches UnifiedRobustNUTS._ensure_transform). "tukey_h" runs Phase 1 under the
+    # initial arcsinh map, like "arcsinh"; without Phase 1 nothing is tested, so it keeps h = 0.
     transform_init: JaxCoordinateTransform
-    if transform_kind == "arcsinh":
+    if transform_kind == "arcsinh" or (transform_kind == "tukey_h" and run_phase1):
         transform_init = JaxArcsinhTransform(radii=initial_radius, location=initial_location, mask=mask, d=d_int)
+    elif transform_kind == "tukey_h":
+        transform_init = JaxTukeyHTransform(radii=initial_radius, location=initial_location, mask=mask, d=d_int)
     elif transform_kind == "affine":
         transform_init = JaxAffineTransform(radii=initial_radius, location=initial_location, mask=mask, d=d_int)
     else:
         transform_init = JaxAffineTransform(radii=1.0, location=0.0, d=d_int)
     calibrate = calibrate_jax_affine_transform if transform_kind == "affine" else calibrate_jax_arcsinh_transform
 
-    # Phase 1 horizon W1 = max(10, int(0.15 * tune)) matches UnifiedRobustNUTS.adapt (nuts.py line 666)
-    run_phase1 = bool(adapt_tail_scale and tune >= 20 and transform_kind != "identity")
     phase1_grad_evals = 0
     phase2_grad_evals = 0
 
@@ -643,14 +659,25 @@ def sample_blackjax_unified_nuts(
         half_idx = max(1, w1_steps // 2)
         z_p1_tail = info_p1.state.position[:, half_idx:, :]
         x_p1_tail = jax.vmap(jax.vmap(transform_init.inverse))(z_p1_tail)
-        transform: JaxCoordinateTransform = calibrate(
-            pilot_samples=x_p1_tail,
-            d=d_int,
-            mask=mask,
-            min_radius=min_radius,
-            max_radius=max_radius,
-            scale_multiplier=scale_multiplier,
-        )
+        transform: JaxCoordinateTransform
+        if transform_kind == "tukey_h":
+            transform = calibrate_jax_tukey_h_transform(
+                pilot_samples=x_p1_tail,
+                d=d_int,
+                mask=mask,
+                min_radius=min_radius,
+                max_radius=max_radius,
+                level=tukey_h_level,
+            ).transform
+        else:
+            transform = calibrate(
+                pilot_samples=x_p1_tail,
+                d=d_int,
+                mask=mask,
+                min_radius=min_radius,
+                max_radius=max_radius,
+                scale_multiplier=scale_multiplier,
+            )
         x_p1_final = jax.vmap(transform_init.inverse)(state_p1.position)
     else:
         w2_steps = tune
