@@ -303,3 +303,26 @@ def test_committed_aggregates_are_recomputable_from_rows() -> None:
             assert float(s["ratio_tail_ess_per_grad_median"]) == pytest.approx(ratio["median"])
             assert float(s["ratio_tail_ess_per_grad_q25"]) == pytest.approx(ratio["q25"])
             assert float(s["ratio_tail_ess_per_grad_q75"]) == pytest.approx(ratio["q75"])
+
+
+def test_provenance_dirty_flag_ignores_untracked_files(tmp_path: Path) -> None:
+    """git_dirty reports modified tracked files only; untracked files are counted separately."""
+    import subprocess
+
+    from mcmc_robust.bench.ablation_runner import collect_provenance
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "tracked.py").write_text("x = 1\n")
+    git("add", "tracked.py")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
+    (tmp_path / "notes.md").write_text("untracked\n")
+
+    prov = collect_provenance(repo=tmp_path)
+    assert prov["git_dirty"] is False
+    assert prov["git_untracked_files"] == 1
+
+    (tmp_path / "tracked.py").write_text("x = 2\n")
+    assert collect_provenance(repo=tmp_path)["git_dirty"] is True

@@ -343,10 +343,10 @@ def aggregate_rows(rows: Sequence[dict[str, Any]], baseline: str = BASELINE_ARM)
     return out
 
 
-def _git(*args: str) -> str | None:
-    repo = Path(__file__).resolve().parent
+def _git(*args: str, repo: Path | None = None) -> str | None:
+    where = repo if repo is not None else Path(__file__).resolve().parent
     try:
-        proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True, timeout=30)
+        proc = subprocess.run(["git", "-C", str(where), *args], capture_output=True, text=True, check=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
         return None
     return proc.stdout.strip()
@@ -359,12 +359,18 @@ def _version(dist: str) -> str:
         return "unknown"
 
 
-def collect_provenance() -> dict[str, Any]:
-    """Git state, platform and library versions of the process that produced the results."""
-    status = _git("status", "--porcelain")
+def collect_provenance(repo: Path | None = None) -> dict[str, Any]:
+    """Git state, platform and library versions of the process that produced the results.
+
+    `git_dirty` is true when tracked files differ from HEAD; untracked files (notes, scratch output) cannot
+    change the code that ran and are only counted, in `git_untracked_files`.
+    """
+    status = _git("status", "--porcelain", "--untracked-files=no", repo=repo)
+    untracked = _git("ls-files", "--others", "--exclude-standard", repo=repo)
     return {
-        "git_sha": _git("rev-parse", "HEAD"),
+        "git_sha": _git("rev-parse", "HEAD", repo=repo),
         "git_dirty": None if status is None else bool(status),
+        "git_untracked_files": None if untracked is None else len(untracked.splitlines()),
         "platform": platform.platform(),
         "machine": platform.machine(),
         "processor": platform.processor(),
