@@ -7,6 +7,7 @@ REPORT.md for what each component does and does not establish.
 
 from mcmc_robust.integrations import (
     BlackJAXAlgorithm,
+    JaxAffineTransform,
     JaxArcsinhTransform,
     PyMCModelTarget,
     as_blackjax_algorithm,
@@ -15,6 +16,7 @@ from mcmc_robust.integrations import (
 from mcmc_robust.jax_unified_nuts import (
     JaxUnifiedNUTSResult,
     arviz_from_samples,
+    calibrate_jax_affine_transform,
     calibrate_jax_arcsinh_transform,
     sample_blackjax_unified_nuts,
 )
@@ -35,6 +37,7 @@ __all__ = [
     "BlackJAXAlgorithm",
     "CoordinateWiseArcsinhTransform",
     "GentleMALA",
+    "JaxAffineTransform",
     "JaxArcsinhTransform",
     "JaxUnifiedNUTSResult",
     "NealsFunnelTarget",
@@ -44,6 +47,7 @@ __all__ = [
     "UnifiedRobustSampler",
     "arviz_from_samples",
     "as_blackjax_algorithm",
+    "calibrate_jax_affine_transform",
     "calibrate_jax_arcsinh_transform",
     "get_target",
     "sample_blackjax_unified_nuts",

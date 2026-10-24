@@ -28,6 +28,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from scipy import stats
 
 DOC_FILES: tuple[str, ...] = ("README.md", "REPORT.md")
@@ -91,6 +92,17 @@ _SWEEP_SAMPLERS: dict[str, str] = {
 }
 
 RHAT_CONVERGED = 1.01
+
+_ABLATION_TARGETS: dict[str, str] = {
+    "task1": "Task 1",
+    "task3": "Task 3",
+    "mvt_rot_nu1": "rotated t (ν = 1)",
+    "mvt_rot_nu2": "rotated t (ν = 2)",
+    "mvt_iso_nu2": "isotropic t (ν = 2)",
+    "rot_prod_cauchy": "rotated product of Cauchys",
+    "gauss_rot": "rotated Gaussian",
+    "gauss_aniso": "anisotropic Gaussian",
+}
 
 
 # --- block mechanics ---------------------------------------------------------------------------
@@ -181,6 +193,10 @@ class Reports:
     @cached_property
     def sweep(self) -> dict[str, Any]:
         return self._load("sweep_results.json")
+
+    @cached_property
+    def ablation(self) -> dict[str, Any]:
+        return self._load("ablation_results.json")
 
     def sota_rows(self, task_prefix: str, target_name: str | None = None) -> list[dict[str, Any]]:
         return [
@@ -591,7 +607,171 @@ def render_readme_headline(reports: Reports) -> str:
     return "\n".join(bullets) + "\n"
 
 
+# --- multi-seed ablation (reports/ablation_results.json) ---------------------------------------
+
+
+def _ablation_label(target: str) -> str:
+    return _ABLATION_TARGETS.get(target, target)
+
+
+def _ablation_by_seed(reports: Reports, target: str, arm: str) -> dict[int, dict[str, Any]]:
+    return {r["seed"]: r for r in reports.ablation["rows"] if r["target"] == target and r["arm"] == arm}
+
+
+def _paired_ratios(reports: Reports, target: str, arm: str, reference: str) -> list[float]:
+    """Per-seed tail-ESS/grad of ``arm`` divided by that of ``reference``, over seeds where both exist."""
+    a, b = _ablation_by_seed(reports, target, arm), _ablation_by_seed(reports, target, reference)
+    return [
+        a[s]["tail_ess_per_grad"] / b[s]["tail_ess_per_grad"]
+        for s in sorted(a.keys() & b.keys())
+        if a[s]["tail_ess_per_grad"] is not None and b[s]["tail_ess_per_grad"]
+    ]
+
+
+def _ablation_targets(reports: Reports) -> list[str]:
+    return list(dict.fromkeys(r["target"] for r in reports.ablation["rows"]))
+
+
+def _is_benign(target: str) -> bool:
+    return target.startswith("gauss")
+
+
+def _ablation_setup(reports: Reports) -> str:
+    cfg = reports.ablation["config"]
+    prov = reports.ablation.get("provenance", {})
+    when = f" (run {prov['timestamp_utc'][:10]}, commit {prov['git_sha'][:7]})" if "git_sha" in prov else ""
+    return (
+        f"{len(cfg['seeds'])} seeds per cell; each run has {cfg['chains']} chains × {cfg['draws']:,} draws after "
+        f"{cfg['tune']} warm-up steps. Every arm runs BlackJAX NUTS with window adaptation through "
+        "`sample_blackjax_unified_nuts`; arms differ only in the coordinate transform (or, for `scale_mixture`, in "
+        "the model's parameterisation), and share each seed's initial positions and random key, so ratios are "
+        f"paired by seed. Source: `reports/ablation_results.json`{when}."
+    )
+
+
+def render_ablation_table(reports: Reports) -> str:
+    cfg = reports.ablation["config"]
+    body = []
+    for target in _ablation_targets(reports):
+        arms = list(dict.fromkeys(r["arm"] for r in reports.ablation["rows"] if r["target"] == target))
+        for arm in arms:
+            runs = list(_ablation_by_seed(reports, target, arm).values())
+            if arm == "stock":
+                ratio_cell, wins = "1 (reference)", "–"
+            else:
+                ratios = _paired_ratios(reports, target, arm, "stock")
+                q25, med, q75 = np.percentile(ratios, [25, 50, 75])
+                ratio_cell = f"{med:.2f}× [{q25:.2f}, {q75:.2f}]"
+                wins = f"{sum(r > 1.0 for r in ratios)} of {len(ratios)}"
+            converged = sum(bool(r["converged"]) for r in runs)
+            errs = [r["tail_prob_abs_err"] for r in runs if r.get("tail_prob_abs_err") is not None]
+            body.append(
+                [
+                    _ablation_label(target),
+                    f"`{arm}`",
+                    ratio_cell,
+                    wins,
+                    f"{converged} of {len(runs)}",
+                    _int(float(np.median([r["total_grad_evals"] for r in runs]))),
+                    f"{float(np.median([r['divergences'] for r in runs])):g}",
+                    f"{float(np.median(errs)):.4f}" if errs else "n/a",
+                ]
+            )
+    header = [
+        "Target",
+        "Arm",
+        "Tail-ESS/grad vs stock, median [IQR]",
+        "Seeds better than stock",
+        "Seeds converged",
+        "Median gradients",
+        "Median divergences",
+        "Median tail-probability error",
+    ]
+    legend = "; ".join(f"**{_ablation_label(t)}**: {desc}" for t, desc in cfg.get("target_descriptions", {}).items())
+    arms = cfg.get("arm_settings", {})
+    arm_legend = "; ".join(f"`{a}`: {spec['description']}" for a, spec in arms.items() if "description" in spec)
+    note = (
+        "Tail-probability error is the mean over coordinates and p ∈ {0.01, 0.99} of |P̂(x_i < q_p) − p| at the "
+        "exact marginal quantile q_p; it is less noisy than a relative error on the 0.99 quantile."
+    )
+    parts = [_ablation_setup(reports), note]
+    if legend:
+        parts.append("Targets: " + legend + ".")
+    if arm_legend:
+        parts.append("Arms: " + arm_legend + ".")
+    return "\n\n".join(parts) + "\n\n" + _table(header, body, numeric_from=2)
+
+
+def _never_visits_a_tail(row: dict[str, Any]) -> bool:
+    """Some (coordinate, p) cell of the tail metric had no draw beyond the exact quantile."""
+    return bool(row.get("tail_prob_n_degenerate") or 0)
+
+
+def _nonzero(listing: str) -> str:
+    """Keep the "target: k of n seeds" entries with k > 0; "none" if there are none."""
+    kept = [part for part in listing.split("; ") if part and not part.split(": ", 1)[1].startswith("0 of ")]
+    return "; ".join(kept) if kept else "none"
+
+
+def render_ablation_findings(reports: Reports) -> str:
+    targets = _ablation_targets(reports)
+
+    def arms_of(target: str) -> set[str]:
+        return {r["arm"] for r in reports.ablation["rows"] if r["target"] == target}
+
+    def vs(arm: str, reference: str, verb: str) -> str:
+        parts = []
+        for t in targets:
+            if not {arm, reference} <= arms_of(t):
+                continue
+            ratios = _paired_ratios(reports, t, arm, reference)
+            if ratios:
+                wins = sum(r > 1.0 for r in ratios)
+                parts.append(
+                    f"{_ablation_label(t)} {float(np.median(ratios)):.1f}× ({verb} on {wins} of {len(ratios)} seeds)"
+                )
+        return "; ".join(parts)
+
+    def seeds_where(arm: str, predicate: Callable[[dict[str, Any]], bool]) -> str:
+        parts = []
+        for t in targets:
+            runs = list(_ablation_by_seed(reports, t, arm).values())
+            if runs:
+                parts.append(f"{_ablation_label(t)}: {sum(predicate(r) for r in runs)} of {len(runs)} seeds")
+        return "; ".join(parts)
+
+    bullets = [
+        "- **Arcsinh vs stock NUTS** (paired tail-ESS per gradient, median over seeds): "
+        + vs("arcsinh", "stock", "wins")
+        + ".",
+        "- **Rescaling alone** (`affine`: the same calibration without the arcsinh) vs stock: "
+        + vs("affine", "stock", "wins")
+        + ".",
+        "- **Reparameterising by hand** (`scale_mixture`, where the model is a Student-t scale mixture) vs `arcsinh`: "
+        + vs("scale_mixture", "arcsinh", "better than arcsinh")
+        + ".",
+        f"- **Seeds converged** (max R-hat at most {RHAT_CONVERGED}) with `arcsinh`: "
+        + seeds_where("arcsinh", lambda r: bool(r["converged"]))
+        + "; with `stock`: "
+        + seeds_where("stock", lambda r: bool(r["converged"]))
+        + ".",
+        "- **Seeds with any post-warm-up divergence** with `arcsinh`: "
+        + seeds_where("arcsinh", lambda r: r["divergences"] > 0)
+        + ".",
+        "- **Runs in which some coordinate never visits a tail** (no draw beyond its exact 0.01 or 0.99 quantile, "
+        "which R-hat cannot detect) with `arcsinh`: "
+        + _nonzero(seeds_where("arcsinh", _never_visits_a_tail))
+        + "; with `stock`: "
+        + _nonzero(seeds_where("stock", _never_visits_a_tail))
+        + ".",
+    ]
+    return "\n".join(bullets) + "\n"
+
+
 BLOCKS: dict[str, Callable[[Reports], str]] = {
+    "readme-ablation": render_ablation_findings,
+    "ablation-findings": render_ablation_findings,
+    "ablation-table": render_ablation_table,
     "readme-headline": render_readme_headline,
     "sota-task1": render_sota_task1,
     "sota-eight-schools": render_sota_eight_schools,

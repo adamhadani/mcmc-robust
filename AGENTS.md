@@ -41,7 +41,7 @@
 │   ├── diagnostics/           # Rank-normalised ESS and R-hat, accuracy metrics (KS, W1, quantile error), tracker
 │   ├── integrations.py        # PyMC bridge (PyMCModelTarget, sample_pymc_model) and JaxArcsinhTransform
 │   ├── jax_unified_nuts.py    # Pure-JAX 3-phase NUTS (sample_blackjax_unified_nuts, calibrate_jax_arcsinh_transform)
-│   └── bench/                 # Runners (sota_runner, applied_runner, sweep), CLI (python -m mcmc_robust.bench), plots,
+│   └── bench/                 # Runners (ablation_runner, sota_runner, applied_runner, sweep), CLI (python -m mcmc_robust.bench), plots,
 │                              #   render_docs (fills the generated blocks of README.md and REPORT.md from reports/)
 ├── tests/                     # unit/, e2e/ (tiers 1-4) and tier5_adversarial/, all run with -W error
 ├── benchmarks/                # Standalone CLI runner script (run_benchmarks.py)
@@ -92,6 +92,7 @@ uv run pre-commit run --all-files
 **Regenerating reported results.** The tables in `README.md` and `REPORT.md` come from these commands. Rerun them whenever a sampler change affects a reported number, then regenerate the docs, and commit the `reports/` files together with the regenerated blocks:
 
 ```bash
+uv run python -m mcmc_robust.bench.ablation_runner --full --workers 2  # Table A -> reports/ablation_results.json, ablation_*.csv
 uv run python -m mcmc_robust.bench.sota_runner --full   # Tables 1-4 -> reports/sota_comparison_results.{json,csv}
 uv run python -m mcmc_robust.bench.applied_runner       # Table 5   -> reports/applied_benchmark_results.{json,csv}
 uv run python -m mcmc_robust.bench.plot                 # figures   -> reports/figures/

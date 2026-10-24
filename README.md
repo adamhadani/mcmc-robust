@@ -28,13 +28,26 @@ Two implementations:
 
 | Component | Status | Evidence and limits |
 | :--- | :--- | :--- |
-| Calibrated arcsinh transform + NUTS | Main contribution | Helps on heavy tails that are aligned with the coordinate axes (REPORT §5, Tables 1 and 3). Rotated heavy tails and the cost on well-behaved targets are not yet in the committed benchmarks. |
+| Calibrated arcsinh transform + NUTS | Main contribution | Gains are largest on heavy tails aligned with the coordinate axes and smaller on rotated ones. When heavy tails lie along rotated directions without being elliptical, it can miss a tail entirely with no R-hat warning. It costs a little on a rotated Gaussian. Where the model is known to be a Student-t scale mixture, rewriting it by hand is better (REPORT §5.1). |
 | Funnels and hierarchical models | Not addressed | A coordinate-wise map cannot remove the coupling between a scale parameter and its children. Non-centre the model instead (REPORT §3.3, Table 2). |
 | `GentleMALA` (soft-capped drift damping for stiff targets) | Experimental | Faster burn-in on a quartic target, but a narrower stable step-size range than tamed MALA. No guarantee for the coordinate-wise mode it runs in (REPORT §3.1). |
 | First-order samplers with the transform (`UnifiedRobustSampler`, `AnisotropicTailMALA`) | Experimental | Not converged within the benchmark budgets (REPORT §3.2). |
 | Lean 4 formalisation (`formal/`) | Supporting lemmas | Scalar facts about the transform, the damping and the calibration clip. It does not verify the samplers (REPORT §4). |
 
 ## Results at a glance
+
+**Multi-seed ablation** (REPORT §5.1, Table A). The arms differ only in the coordinate transform or the model's parameterisation, and are paired by seed. This is the strongest evidence in the repository:
+
+<!-- BEGIN GENERATED: readme-ablation -->
+- **Arcsinh vs stock NUTS** (paired tail-ESS per gradient, median over seeds): Task 1 7.1× (wins on 10 of 10 seeds); Task 3 3.8× (wins on 10 of 10 seeds); rotated t (ν = 1) 5.2× (wins on 10 of 10 seeds); rotated t (ν = 2) 1.7× (wins on 10 of 10 seeds); isotropic t (ν = 2) 1.6× (wins on 10 of 10 seeds); rotated product of Cauchys 1.6× (wins on 7 of 10 seeds); rotated Gaussian 0.9× (wins on 0 of 10 seeds); anisotropic Gaussian 1.5× (wins on 10 of 10 seeds).
+- **Rescaling alone** (`affine`: the same calibration without the arcsinh) vs stock: Task 1 0.9× (wins on 4 of 10 seeds); Task 3 0.9× (wins on 4 of 10 seeds); rotated t (ν = 1) 1.9× (wins on 7 of 10 seeds); rotated t (ν = 2) 1.0× (wins on 6 of 10 seeds); isotropic t (ν = 2) 1.1× (wins on 8 of 10 seeds); rotated product of Cauchys 0.8× (wins on 4 of 10 seeds); rotated Gaussian 1.0× (wins on 4 of 10 seeds); anisotropic Gaussian 1.2× (wins on 10 of 10 seeds).
+- **Reparameterising by hand** (`scale_mixture`, where the model is a Student-t scale mixture) vs `arcsinh`: Task 1 0.2× (better than arcsinh on 0 of 10 seeds); Task 3 0.9× (better than arcsinh on 1 of 10 seeds); rotated t (ν = 1) 10.8× (better than arcsinh on 10 of 10 seeds); rotated t (ν = 2) 5.3× (better than arcsinh on 10 of 10 seeds); isotropic t (ν = 2) 2.5× (better than arcsinh on 10 of 10 seeds); rotated product of Cauchys 45.6× (better than arcsinh on 10 of 10 seeds).
+- **Seeds converged** (max R-hat at most 1.01) with `arcsinh`: Task 1: 9 of 10 seeds; Task 3: 10 of 10 seeds; rotated t (ν = 1): 2 of 10 seeds; rotated t (ν = 2): 10 of 10 seeds; isotropic t (ν = 2): 9 of 10 seeds; rotated product of Cauchys: 0 of 10 seeds; rotated Gaussian: 10 of 10 seeds; anisotropic Gaussian: 10 of 10 seeds; with `stock`: Task 1: 0 of 10 seeds; Task 3: 1 of 10 seeds; rotated t (ν = 1): 0 of 10 seeds; rotated t (ν = 2): 2 of 10 seeds; isotropic t (ν = 2): 4 of 10 seeds; rotated product of Cauchys: 0 of 10 seeds; rotated Gaussian: 10 of 10 seeds; anisotropic Gaussian: 10 of 10 seeds.
+- **Seeds with any post-warm-up divergence** with `arcsinh`: Task 1: 0 of 10 seeds; Task 3: 0 of 10 seeds; rotated t (ν = 1): 0 of 10 seeds; rotated t (ν = 2): 0 of 10 seeds; isotropic t (ν = 2): 0 of 10 seeds; rotated product of Cauchys: 4 of 10 seeds; rotated Gaussian: 0 of 10 seeds; anisotropic Gaussian: 4 of 10 seeds.
+- **Runs in which some coordinate never visits a tail** (no draw beyond its exact 0.01 or 0.99 quantile, which R-hat cannot detect) with `arcsinh`: rotated product of Cauchys: 10 of 10 seeds; with `stock`: Task 1: 1 of 10 seeds; rotated product of Cauchys: 8 of 10 seeds.
+<!-- END GENERATED: readme-ablation -->
+
+**Single-seed comparisons with PyMC NUTS and other samplers** (REPORT §5.2):
 
 <!-- BEGIN GENERATED: readme-headline -->
 - **Heavy tails, product form (REPORT Table 1).** On a d=10 regression in which 7 of the 10 coefficients sit at their independent Cauchy prior, `UnifiedRobustNUTS` has 23.5× the tail-ESS per gradient of BlackJAX NUTS and 4.3× that of PyMC NUTS (max R-hat 1.002 vs 1.037 and 1.013); its 99% quantile error is 8.1% against 45.3% and 41.6%.
@@ -140,6 +153,7 @@ Pull requests run only the tests a change can reach (`pytest-impacted`); see [AG
 - To regenerate the results and the docs:
 
 ```bash
+uv run python -m mcmc_robust.bench.ablation_runner --full --workers 2
 uv run python -m mcmc_robust.bench.sota_runner --full
 uv run python -m mcmc_robust.bench.applied_runner
 uv run python -m mcmc_robust.bench.render_docs --write

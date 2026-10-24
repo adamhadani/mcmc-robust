@@ -301,3 +301,62 @@ class HeterogeneousHeavyTailedTarget(TargetDistribution):
 
 # Alias
 HeterogeneousStudentTTarget = HeterogeneousHeavyTailedTarget
+
+
+class RotatedProductCauchyTarget(TargetDistribution):
+    r"""Rotated product of Cauchy variables: $x = A u$ with $A = Q \mathrm{diag}(s)$ and $u_j$ iid standard Cauchy.
+
+    The heavy tails lie along the columns of $A$, not the coordinate axes, and they are not elliptical:
+    one $u_j$ at a time is extreme. By stability of the Cauchy law, marginal $i$ is exactly
+    Cauchy$(0, \sum_j |A_{ij}|)$. $Q$ is the fixed-seed random orthogonal matrix of the QR factorisation
+    of a standard Gaussian matrix.
+    """
+
+    def __init__(self, d: int = 10, scales: Sequence[float] | None = None, rotation_seed: int = 0) -> None:
+        super().__init__(d=d)
+        s = np.geomspace(1.0, 5.0, self.d) if scales is None else np.asarray(scales, dtype=np.float64)
+        if s.shape != (self.d,) or np.any(s <= 0.0):
+            raise ValueError(f"scales must be {self.d} positive numbers")
+        q, _ = np.linalg.qr(np.random.default_rng(rotation_seed).normal(size=(self.d, self.d)))
+        self.A: np.ndarray = q * s
+        self._A_inv = np.linalg.inv(self.A)
+        self._log_norm = -float(np.linalg.slogdet(self.A)[1]) - self.d * float(np.log(np.pi))
+        self.marginal_scales: np.ndarray = np.sum(np.abs(self.A), axis=1)
+
+    def log_prob_and_grad(self, x: np.ndarray) -> tuple[float, np.ndarray]:
+        x_arr = self._validate_input(x)
+        u = self._A_inv @ x_arr
+        lp = self._log_norm - float(np.sum(np.log1p(u**2)))
+        return lp, self._A_inv.T @ (-2.0 * u / (1.0 + u**2))
+
+    def log_prob(self, x: np.ndarray) -> float:
+        return self.log_prob_and_grad(x)[0]
+
+    def grad_log_prob(self, x: np.ndarray) -> np.ndarray:
+        return self.log_prob_and_grad(x)[1]
+
+    def jax_log_prob(self, x: Any) -> Any:
+        """The same log density for JAX (used by `SOTATargetAdapter.jax_logdensity_fn`)."""
+        import jax
+
+        jax.config.update("jax_enable_x64", True)
+        import jax.numpy as jnp
+
+        u = jnp.asarray(self._A_inv) @ x
+        return self._log_norm - jnp.sum(jnp.log1p(u**2))
+
+    def sample_ground_truth(self, n: int, rng: np.random.Generator | None = None) -> np.ndarray:
+        gen = rng if rng is not None else np.random.default_rng()
+        return gen.standard_cauchy(size=(n, self.d)) @ self.A.T
+
+    def exact_moments_or_quantiles(self) -> dict[str, Any]:
+        def q(p: float) -> np.ndarray:
+            return self.marginal_scales * np.tan(np.pi * (p - 0.5))
+
+        return {
+            "q05": q(0.05),
+            "q50": np.zeros(self.d),
+            "q95": q(0.95),
+            "q99": q(0.99),
+            "marginal_scales": self.marginal_scales,
+        }

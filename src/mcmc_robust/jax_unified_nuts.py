@@ -47,13 +47,21 @@ not a line-by-line port:
      adapted parameters, transforms draws back to primal $x$-space via `transform.inverse`, and
      records exact leapfrog gradient evaluations
      (`grad_evals == phase1_grad_evals + phase2_grad_evals + sampling_grad_evals`).
+
+5. **Ablation controls (`transform_kind`)**:
+   - `"arcsinh"` (default): the pipeline above.
+   - `"affine"`: the same three phases and the same Phase 1 calibration rule, but with the affine
+     map $z_i = (x_i - \mu_i) / R_i$ (`JaxAffineTransform`), so polynomial tails are not warped.
+   - `"identity"`: no transform and no Phase 1; one BlackJAX `window_adaptation` of `tune` steps
+     per chain in $x$-space, i.e. stock BlackJAX NUTS sharing this module's sampling code and
+     gradient accounting.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import jax
 
@@ -65,7 +73,11 @@ import numpy as np
 from xarray import DataTree
 
 from mcmc_robust.core.target import TargetDistribution
-from mcmc_robust.integrations import JaxArcsinhTransform
+from mcmc_robust.integrations import JaxAffineTransform, JaxArcsinhTransform, JaxCoordinateTransform
+
+#: Coordinate transforms supported by `sample_blackjax_unified_nuts` (see the module docstring, item 5).
+TransformKind = Literal["arcsinh", "affine", "identity"]
+TRANSFORM_KINDS: tuple[str, ...] = ("arcsinh", "affine", "identity")
 
 
 def arviz_from_samples(
@@ -102,7 +114,9 @@ class JaxUnifiedNUTSResult:
     Attributes:
         samples: Post-warmup draws in primal $x$-space, shape `(chains, draws, d)`.
         z_samples: Post-warmup draws in warped $z$-space, shape `(chains, draws, d)`.
-        transform: Calibrated `JaxArcsinhTransform` instance (`radii`, `location`, `mask`).
+        transform: Calibrated transform (`radii`, `location`, `mask`): a `JaxArcsinhTransform` by
+            default, a `JaxAffineTransform` for `transform_kind="affine"`, and a unit-scale,
+            zero-location `JaxAffineTransform` (the identity) for `transform_kind="identity"`.
         step_size: Step size each chain sampled with, shape `(chains,)`.
         inverse_mass_matrix: Diagonal inverse mass matrix each chain sampled with in $z$-space,
             shape `(chains, d)`.
@@ -117,7 +131,7 @@ class JaxUnifiedNUTSResult:
 
     samples: np.ndarray
     z_samples: np.ndarray
-    transform: JaxArcsinhTransform
+    transform: JaxCoordinateTransform
     step_size: np.ndarray
     inverse_mass_matrix: np.ndarray
     grad_evals: int
@@ -129,36 +143,16 @@ class JaxUnifiedNUTSResult:
     idata: DataTree
 
 
-def calibrate_jax_arcsinh_transform(
+def _phase1_location_and_radii(
     pilot_samples: Any,
-    d: int | None = None,
-    mask: Any | None = None,
-    min_radius: float = 0.1,
-    max_radius: float = 100.0,
-    scale_multiplier: float = 1.5,
-) -> JaxArcsinhTransform:
-    r"""Calibrates shift-equivariant coordinate medians $\mu_i$ and clipped scales $R_i$ from pilot draws.
+    d: int | None,
+    min_radius: float,
+    max_radius: float,
+    scale_multiplier: float,
+) -> tuple[jnp.ndarray, jnp.ndarray, int]:
+    r"""Phase 1 calibration rule shared by every transform kind; returns `(location, radii, d)`.
 
-    Implements the exact pure-JAX counterpart of
-    `CoordinateWiseArcsinhTransform.compute_phase1_calibration` (`transforms/coordinate_arcsinh.py`)
-    and `UnifiedRobustNUTS.adapt` (`samplers/novel/nuts.py`), matching the formally verified
-    Phase 1 calibration map (`formal/McmcRobustFormal.lean` §8):
-        $$\mu_i = \operatorname{median}(x_{\cdot, i}), \qquad
-          R_i = \min\!\left(R_{\max},\, \max\!\left(R_{\min},\, c \cdot \hat{\sigma}_i\right)\right)$$
-    where $\hat{\sigma}_i = \operatorname{IQR}(x_{\cdot, i} - \mu_i) / 1.3489795$ when
-    $\hat{\sigma}_{\text{IQR}, i} > R_{\min}$, falling back to
-    $\max(\operatorname{MAD}(x_{\cdot, i} - \mu_i) / 0.67448975,\, q_{0.90}(|x_{\cdot, i} - \mu_i|))$.
-
-    Parameters:
-        pilot_samples: Exploratory primal draws of shape `(n_samples, d)` or `(chains, draws, d)`.
-        d: Target dimension $d \ge 1$. If `None`, inferred from `pilot_samples.shape[-1]`.
-        mask: Optional boolean mask of shape `(d,)` selecting coordinates to warp (default: all `True`).
-        min_radius: Strictly positive lower bound $R_{\min} > 0$ on calibrated radii.
-        max_radius: Upper bound $R_{\max} \ge R_{\min}$ on calibrated radii.
-        scale_multiplier: Scale multiplier $c \ge 0$ applied to base dispersion $\hat{\sigma}_i$.
-
-    Returns:
-        Calibrated `JaxArcsinhTransform` with `.location`, `.radii`, and `.mask`.
+    See `calibrate_jax_arcsinh_transform` for the formula.
     """
     if min_radius <= 0.0:
         raise ValueError(f"min_radius must be strictly positive, got {min_radius}")
@@ -199,10 +193,60 @@ def calibrate_jax_arcsinh_transform(
         jnp.float64(max_radius),
         jnp.maximum(jnp.float64(min_radius), jnp.float64(scale_multiplier) * base_scale),
     )
+    return med_clean, radii, d_actual
 
+
+def calibrate_jax_affine_transform(
+    pilot_samples: Any,
+    d: int | None = None,
+    mask: Any | None = None,
+    min_radius: float = 0.1,
+    max_radius: float = 100.0,
+    scale_multiplier: float = 1.5,
+) -> JaxAffineTransform:
+    r"""Calibrates a `JaxAffineTransform` with exactly the Phase 1 rule of `calibrate_jax_arcsinh_transform`.
+
+    Parameters and the formula for $(\mu, R)$ are those of `calibrate_jax_arcsinh_transform`.
+    """
+    location, radii, d_actual = _phase1_location_and_radii(pilot_samples, d, min_radius, max_radius, scale_multiplier)
+    return JaxAffineTransform(radii=radii, location=location, mask=mask, d=d_actual)
+
+
+def calibrate_jax_arcsinh_transform(
+    pilot_samples: Any,
+    d: int | None = None,
+    mask: Any | None = None,
+    min_radius: float = 0.1,
+    max_radius: float = 100.0,
+    scale_multiplier: float = 1.5,
+) -> JaxArcsinhTransform:
+    r"""Calibrates shift-equivariant coordinate medians $\mu_i$ and clipped scales $R_i$ from pilot draws.
+
+    Implements the exact pure-JAX counterpart of
+    `CoordinateWiseArcsinhTransform.compute_phase1_calibration` (`transforms/coordinate_arcsinh.py`)
+    and `UnifiedRobustNUTS.adapt` (`samplers/novel/nuts.py`), matching the formally verified
+    Phase 1 calibration map (`formal/McmcRobustFormal.lean` §8):
+        $$\mu_i = \operatorname{median}(x_{\cdot, i}), \qquad
+          R_i = \min\!\left(R_{\max},\, \max\!\left(R_{\min},\, c \cdot \hat{\sigma}_i\right)\right)$$
+    where $\hat{\sigma}_i = \operatorname{IQR}(x_{\cdot, i} - \mu_i) / 1.3489795$ when
+    $\hat{\sigma}_{\text{IQR}, i} > R_{\min}$, falling back to
+    $\max(\operatorname{MAD}(x_{\cdot, i} - \mu_i) / 0.67448975,\, q_{0.90}(|x_{\cdot, i} - \mu_i|))$.
+
+    Parameters:
+        pilot_samples: Exploratory primal draws of shape `(n_samples, d)` or `(chains, draws, d)`.
+        d: Target dimension $d \ge 1$. If `None`, inferred from `pilot_samples.shape[-1]`.
+        mask: Optional boolean mask of shape `(d,)` selecting coordinates to warp (default: all `True`).
+        min_radius: Strictly positive lower bound $R_{\min} > 0$ on calibrated radii.
+        max_radius: Upper bound $R_{\max} \ge R_{\min}$ on calibrated radii.
+        scale_multiplier: Scale multiplier $c \ge 0$ applied to base dispersion $\hat{\sigma}_i$.
+
+    Returns:
+        Calibrated `JaxArcsinhTransform` with `.location`, `.radii`, and `.mask`.
+    """
+    location, radii, d_actual = _phase1_location_and_radii(pilot_samples, d, min_radius, max_radius, scale_multiplier)
     return JaxArcsinhTransform(
         radii=radii,
-        location=med_clean,
+        location=location,
         mask=mask,
         d=d_actual,
     )
@@ -232,6 +276,7 @@ def sample_blackjax_unified_nuts(
     divergence_threshold: float = 1000.0,
     dim: int | None = None,
     step_size: float = 0.1,
+    transform_kind: TransformKind = "arcsinh",
 ) -> JaxUnifiedNUTSResult:
     r"""Runs 3-phase adaptive NUTS on the arcsinh-warped target with `JaxArcsinhTransform` and BlackJAX.
 
@@ -275,6 +320,9 @@ def sample_blackjax_unified_nuts(
         divergence_threshold: Maximum Hamiltonian energy error $\Delta H$ before divergence (default: `1000.0`).
         dim: Optional alias for `d`.
         step_size: Fallback step size when `tune == 0` (default: `0.1`).
+        transform_kind: `"arcsinh"` (default), `"affine"` (same calibration, no tail warping) or
+            `"identity"` (stock window-adapted NUTS in $x$-space, no Phase 1); see the module
+            docstring, item 5.
 
     Returns:
         `JaxUnifiedNUTSResult` containing primal `samples`, `z_samples`, calibrated `transform`,
@@ -287,6 +335,8 @@ def sample_blackjax_unified_nuts(
         raise ValueError(f"tune must be >= 0, got {tune}")
     if chains < 1:
         raise ValueError(f"chains must be >= 1, got {chains}")
+    if transform_kind not in TRANSFORM_KINDS:
+        raise ValueError(f"transform_kind must be one of {TRANSFORM_KINDS}, got {transform_kind!r}")
 
     # Resolve TargetDistribution vs callable logdensity_fn
     if isinstance(logdensity_fn, TargetDistribution):
@@ -331,15 +381,17 @@ def sample_blackjax_unified_nuts(
         init_x = 0.5 * jax.random.normal(key_init, shape=(chains, d_int), dtype=jnp.float64)
 
     # Initial transform (matches UnifiedRobustNUTS._ensure_transform)
-    transform_init = JaxArcsinhTransform(
-        radii=initial_radius,
-        location=initial_location,
-        mask=mask,
-        d=d_int,
-    )
+    transform_init: JaxCoordinateTransform
+    if transform_kind == "arcsinh":
+        transform_init = JaxArcsinhTransform(radii=initial_radius, location=initial_location, mask=mask, d=d_int)
+    elif transform_kind == "affine":
+        transform_init = JaxAffineTransform(radii=initial_radius, location=initial_location, mask=mask, d=d_int)
+    else:
+        transform_init = JaxAffineTransform(radii=1.0, location=0.0, d=d_int)
+    calibrate = calibrate_jax_affine_transform if transform_kind == "affine" else calibrate_jax_arcsinh_transform
 
     # Phase 1 horizon W1 = max(10, int(0.15 * tune)) matches UnifiedRobustNUTS.adapt (nuts.py line 666)
-    run_phase1 = bool(adapt_tail_scale and tune >= 20)
+    run_phase1 = bool(adapt_tail_scale and tune >= 20 and transform_kind != "identity")
     phase1_grad_evals = 0
     phase2_grad_evals = 0
 
@@ -366,7 +418,7 @@ def sample_blackjax_unified_nuts(
         half_idx = max(1, w1_steps // 2)
         z_p1_tail = info_p1.state.position[:, half_idx:, :]
         x_p1_tail = jax.vmap(jax.vmap(transform_init.inverse))(z_p1_tail)
-        transform = calibrate_jax_arcsinh_transform(
+        transform: JaxCoordinateTransform = calibrate(
             pilot_samples=x_p1_tail,
             d=d_int,
             mask=mask,
