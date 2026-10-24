@@ -230,6 +230,27 @@ uv run python -m mcmc_robust.bench.plot
 | **UnifiedRobustSampler** | `mcmc-robust` | 6,004 | 403.7 | 765.0 | 1.019 | **0.12741 (1.85x)** | **10 (1.7x vs Tamed)** | **0 (0 warmup)** |
 | **UnifiedRobustNUTS** | `mcmc-robust` | 62,131 | 4,697.1 | **3,502.7** | **1.002** | 0.05638 | **15 (2.7x vs NUTS)** | **0 (24 warmup)** |
 
+#### Table 5: Canonical Applied Bayesian (`posteriordb`-Style) Benchmark Suite (`reports/applied_benchmark_results.csv`)
+*Targets: 5 canonical applied Bayesian posteriors (`RadonHierarchicalTarget` $d=18$, `SparseHorseshoeLogisticTarget` $d=21$, `RobustStudentTRegressionTarget` $d=12$, `HierarchicalItemResponse2PLTarget` $d=22$, and `StochasticVolatilityLogReturnTarget` $d=22$, evaluated via `uv run python -m mcmc_robust.bench.applied_runner`).*
+
+| Applied Model & Sampler | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | ESS/grad | Tail-ESS/grad | Post-Warmup Divs | Wall Time (s) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Radon ($d=18$):** BlackJAX NUTS (Stock) | 9,902 | 100.1 | 112.2 | 1.091 | 0.01011 | 0.01133 | 1 | 2.03s |
+| **Radon ($d=18$):** **BlackJAX NUTS + Arcsinh** | 5,856 | **139.3** | **132.5** | **1.044** | **0.02378** | **0.02262 (2.00x)** | 1 | 1.52s |
+| **Radon ($d=18$):** **UnifiedRobustNUTS** | 12,390 | 122.1 | 118.7 | 1.073 | 0.00985 | 0.00958 | **0** | **0.79s** |
+| **Horseshoe Logistic ($d=21$):** BlackJAX NUTS (Stock) | 22,711 | 66.8 | 82.0 | 1.278 | 0.00294 | 0.00361 | 27 | 3.26s |
+| **Horseshoe Logistic ($d=21$):** **BlackJAX NUTS + Arcsinh** | 33,806 | **102.3** | **91.5** | 1.177 | 0.00303 | 0.00271 | 19 | 3.56s |
+| **Horseshoe Logistic ($d=21$):** **UnifiedRobustNUTS** | 17,103 | 52.1 | 63.9 | **1.174** | **0.00305** | **0.00373** | **9 (-67%)** | **1.19s** |
+| **Student-$t$ Regression ($d=12$):** BlackJAX NUTS (Stock) | 3,872 | 205.1 | **163.6** | 1.035 | **0.05297** | **0.04226** | **0** | 2.89s |
+| **Student-$t$ Regression ($d=12$):** **BlackJAX NUTS + Arcsinh** | 4,689 | **213.0** | 151.9 | 1.067 | 0.04543 | 0.03239 | **0** | 2.96s |
+| **Student-$t$ Regression ($d=12$):** **UnifiedRobustNUTS** | 6,269 | 173.9 | 159.2 | **1.018** | 0.02774 | 0.02540 | **0** | **0.39s** |
+| **IRT-2PL ($d=22$):** BlackJAX NUTS (Stock) | 12,145 | 87.8 | 82.9 | 1.589 | 0.00723 | 0.00683 | 18 | 3.08s |
+| **IRT-2PL ($d=22$):** **BlackJAX NUTS + Arcsinh** | 12,419 | 120.7 | 126.7 | 1.116 | 0.00972 | 0.01020 (1.49x) | 7 | 3.49s |
+| **IRT-2PL ($d=22$):** **UnifiedRobustNUTS** | 10,611 | **127.9** | **131.4** | **1.060** | **0.01206** | **0.01238 (1.81x)** | **0** | **0.74s** |
+| **Stochastic Volatility ($d=22$):** BlackJAX NUTS (Stock) | 10,741 | **139.7** | 46.5 | 1.345 | **0.01301** | 0.00433 | **0** | 2.94s |
+| **Stochastic Volatility ($d=22$):** **BlackJAX NUTS + Arcsinh** | 9,668 | 108.9 | 98.3 | 1.114 | 0.01126 | **0.01017 (2.35x)** | **0** | 3.47s |
+| **Stochastic Volatility ($d=22$):** **UnifiedRobustNUTS** | 11,274 | 84.3 | **107.7** | **1.085** | 0.00748 | 0.00955 (2.20x) | **0** | **0.65s** |
+
 ---
 
 ### Publication Figure 5: Head-to-Head External SOTA Comparison
@@ -243,7 +264,7 @@ uv run python -m mcmc_robust.bench.plot
 
 ### Lean 4 Mathematical Foundations (`formal/McmcRobustFormal.lean`)
 
-All 26 core mathematical theorems and lemmas are formally verified sorry-free in Lean 4 with 0 linter warnings under `#lint`:
+All 31 core mathematical theorems and lemmas are formally verified sorry-free in Lean 4 with 0 linter warnings under `#lint`:
 
 ```bash
 cd formal && lake build
@@ -265,6 +286,9 @@ cd formal && lake build
 | `softCappedDriftStep_lt_bound` | Global step cap $\Delta_{\text{cap}}(r) < s \kappa_{\max} / \gamma$ for all $r \ge 0, h > 0$ | **Proved (0 sorries)** |
 | `softCapped_global_contraction_no_overshoot` | Global contraction $0 < r - \Delta_{\text{cap}}(r) < r$ for all $r \ge s \kappa_{\max} / \gamma$ | **Proved (0 sorries)** |
 | `mhAccept_bounds` / `mh_detailed_balance` | $0 \le \alpha(x,y) \le 1$ and exact reversibility $\pi(x)q(x,y)\alpha(x,y) = \pi(y)q(y,x)\alpha(y,x)$ | **Proved (0 sorries)** |
+| `studentTNegLogKernel_nonneg` / `cauchyShrinkagePenalty_nonneg` | Non-negativity of Student-$t$ negative log-kernel and Cauchy/Horseshoe shrinkage penalty | **Proved (0 sorries)** |
+| `hasDerivAt_studentTNegLogKernel` / `studentTScore_zero` | Exact Student-$t$ score derivative $\frac{d}{dr}\frac{\nu+1}{2}\log(1+r^2/\nu) = \frac{(\nu+1)r}{\nu+r^2}$ | **Proved (0 sorries)** |
+| `studentTScore_mul_le` | Global virial bound $\|r \cdot s_\nu(r)\| \le \nu + 1$ for outlier-robust Student-$t$ likelihoods | **Proved (0 sorries)** |
 
 ### Reference Implementation Cross-Validation (`test_reference_scrutiny.py`)
 
@@ -346,6 +370,9 @@ cd formal && lake build
 15. **Bell, J., Łatuszyński, K., & Roberts, G. O. (2024).** *Adaptive heavy-tailed diffeomorphisms for geometrically ergodic Markov chain Monte Carlo.* Technical Report / Preprint.
 16. **Brešar, M., & Mijatović, A. (2026).** *Diffeomorphic coordinate transformation for heavy-tailed Markov Chain Monte Carlo (DCS).* Preprint.
 17. **The Mathlib Community (2020–2026).** *The Lean 4 mathematical library (`mathlib4`).* Proceedings of the 9th ACM SIGPLAN International Conference on Certified Programs and Proofs (CPP 2020), 367–381. [github.com/leanprover-community/mathlib4](https://github.com/leanprover-community/mathlib4).
+18. **Gelman, A., & Hill, J. (2006).** *Data Analysis Using Regression and Multilevel/Hierarchical Models.* Cambridge University Press. [doi:10.1017/CBO9780511790942](https://doi.org/10.1017/CBO9780511790942).
+19. **Piironen, J., & Vehtari, A. (2017).** *Sparsity information and regularization in the horseshoe and other shrinkage priors.* Electronic Journal of Statistics, 11(2), 5018–5051. [doi:10.1214/17-EJS1337SI](https://doi.org/10.1214/17-EJS1337SI).
+20. **Kim, S., Shephard, N., & Chib, S. (1998).** *Stochastic volatility: Likelihood inference and comparison with ARCH models.* The Review of Economic Studies, 65(3), 361–393. [doi:10.1111/1467-937X.00050](https://doi.org/10.1111/1467-937X.00050).
 
 ---
 

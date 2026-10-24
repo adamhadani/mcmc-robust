@@ -342,6 +342,25 @@ All five publication-grade figures are generated directly from the committed JSO
 | **UnifiedRobustSampler** | `mcmc-robust` | 6,004 | 403.7 | 765.0 | 1.019 | **0.12741 (1.85x)** | **10** | **0 (0 warmup)** |
 | **UnifiedRobustNUTS** | `mcmc-robust` | 62,131 | 4,697.1 | **3,502.7** | **1.002** | 0.05638 | **15** | **0 (24 warmup)** |
 
+#### 5. Canonical Applied Bayesian (`posteriordb`-Style) Benchmark Suite (`reports/applied_benchmark_results.csv`)
+| Applied Model & Sampler | Total Grads | Bulk-ESS | Tail-ESS | Split $\widehat{R}$ | ESS/grad | Tail-ESS/grad | Post-Warmup Divs | Wall Time (s) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Radon ($d=18$):** BlackJAX NUTS (Stock) | 9,902 | 100.1 | 112.2 | 1.091 | 0.01011 | 0.01133 | 1 | 2.03s |
+| **Radon ($d=18$):** **BlackJAX NUTS + Arcsinh** | 5,856 | **139.3** | **132.5** | **1.044** | **0.02378** | **0.02262 (2.00x)** | 1 | 1.52s |
+| **Radon ($d=18$):** **UnifiedRobustNUTS** | 12,390 | 122.1 | 118.7 | 1.073 | 0.00985 | 0.00958 | **0** | **0.79s** |
+| **Horseshoe Logistic ($d=21$):** BlackJAX NUTS (Stock) | 22,711 | 66.8 | 82.0 | 1.278 | 0.00294 | 0.00361 | 27 | 3.26s |
+| **Horseshoe Logistic ($d=21$):** **BlackJAX NUTS + Arcsinh** | 33,806 | **102.3** | **91.5** | 1.177 | 0.00303 | 0.00271 | 19 | 3.56s |
+| **Horseshoe Logistic ($d=21$):** **UnifiedRobustNUTS** | 17,103 | 52.1 | 63.9 | **1.174** | **0.00305** | **0.00373** | **9 (-67%)** | **1.19s** |
+| **Student-$t$ Regression ($d=12$):** BlackJAX NUTS (Stock) | 3,872 | 205.1 | **163.6** | 1.035 | **0.05297** | **0.04226** | **0** | 2.89s |
+| **Student-$t$ Regression ($d=12$):** **BlackJAX NUTS + Arcsinh** | 4,689 | **213.0** | 151.9 | 1.067 | 0.04543 | 0.03239 | **0** | 2.96s |
+| **Student-$t$ Regression ($d=12$):** **UnifiedRobustNUTS** | 6,269 | 173.9 | 159.2 | **1.018** | 0.02774 | 0.02540 | **0** | **0.39s** |
+| **IRT-2PL ($d=22$):** BlackJAX NUTS (Stock) | 12,145 | 87.8 | 82.9 | 1.589 | 0.00723 | 0.00683 | 18 | 3.08s |
+| **IRT-2PL ($d=22$):** **BlackJAX NUTS + Arcsinh** | 12,419 | 120.7 | 126.7 | 1.116 | 0.00972 | 0.01020 (1.49x) | 7 | 3.49s |
+| **IRT-2PL ($d=22$):** **UnifiedRobustNUTS** | 10,611 | **127.9** | **131.4** | **1.060** | **0.01206** | **0.01238 (1.81x)** | **0** | **0.74s** |
+| **Stochastic Volatility ($d=22$):** BlackJAX NUTS (Stock) | 10,741 | **139.7** | 46.5 | 1.345 | **0.01301** | 0.00433 | **0** | 2.94s |
+| **Stochastic Volatility ($d=22$):** **BlackJAX NUTS + Arcsinh** | 9,668 | 108.9 | 98.3 | 1.114 | 0.01126 | **0.01017 (2.35x)** | **0** | 3.47s |
+| **Stochastic Volatility ($d=22$):** **UnifiedRobustNUTS** | 11,274 | 84.3 | **107.7** | **1.085** | 0.00748 | 0.00955 (2.20x) | **0** | **0.65s** |
+
 ---
 
 ## 7. Discussion, Limitations & Practitioner Guide
