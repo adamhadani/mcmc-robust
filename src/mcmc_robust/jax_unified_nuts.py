@@ -217,11 +217,13 @@ def _make_smooth_wall_logdensity(
 
     def soft_logp(z: jnp.ndarray) -> jnp.ndarray:
         val = base_logdensity_z(z)
-        val_clean = jnp.where(jnp.isfinite(val), val, l_floor_f - 1e8)
-        diff = jnp.clip((l_floor_f - val_clean) / scale_f, 0.0, 1e100)
+        far_tail_excess = jnp.sum(jnp.maximum(0.0, jnp.abs(z) - 2.5))
+        dyn_floor = l_floor_f - 4.0 * far_tail_excess
+        val_clean = jnp.where(jnp.isfinite(val), val, dyn_floor - 1e8)
+        diff = jnp.clip((dyn_floor - val_clean) / scale_f, 0.0, 1e100)
         return jnp.where(
-            val_clean < l_floor_f,
-            l_floor_f - scale_f * jnp.arcsinh(diff),
+            val_clean < dyn_floor,
+            dyn_floor - scale_f * jnp.arcsinh(diff),
             val_clean,
         )
 
@@ -427,12 +429,15 @@ def sample_blackjax_unified_nuts(
         # Exact Phase 2/3 gradient evaluations: 1 init eval per chain + sum of leapfrog steps
         phase2_grad_evals = int(chains + int(jnp.sum(info_p2.info.num_integration_steps)))
 
-        # Use conservative minimum adapted step size across chains so chains entering stiff regions
-        # (e.g. funnel necks) never experience step-size overshoot, while keeping per-chain mass matrices
-        adapted_step_size = float(jnp.min(jnp.maximum(params_p2["step_size"], 1e-6)))
-        chain_step_sizes = jnp.full((chains,), adapted_step_size, dtype=jnp.float64)
+        # Normalize each chain's step size by its mass-matrix scale relative to the pooled metric
+        # so that taking the conservative minimum physical step size across chains does not
+        # under-step chains that adapted a smaller inverse_mass_matrix on heavy-tailed targets.
         chain_inv_masses = jnp.maximum(params_p2["inverse_mass_matrix"], 1e-12)
         adapted_inv_mass = jnp.exp(jnp.mean(jnp.log(chain_inv_masses), axis=0))
+        scale_ratio = jnp.exp(0.5 * jnp.mean(jnp.log(chain_inv_masses) - jnp.log(adapted_inv_mass), axis=-1))
+        normalized_ss = jnp.maximum(params_p2["step_size"], 1e-6) * scale_ratio
+        adapted_step_size = float(jnp.min(normalized_ss))
+        chain_step_sizes = jnp.asarray(adapted_step_size / scale_ratio, dtype=jnp.float64)
         sampling_init_states = state_p2
         init_sampling_evals = 0
     else:
