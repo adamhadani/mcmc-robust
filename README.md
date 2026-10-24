@@ -84,6 +84,8 @@ uv sync
 
 **Optional: the nutpie competitor benchmark.** It needs `uv sync --extra competitors`. nutpie publishes wheels for CPython 3.12–3.14 only; on 3.15 uv builds it from source, which needs a Rust toolchain.
 
+**Optional: the posteriordb benchmark and Stan models.** `uv sync --extra posteriordb` installs BridgeStan, which compiles Stan models with `make` and a C++ toolchain. `mcmc_robust.stan_bridge.bridgestan_logdensity_fn` then turns a compiled Stan model into a log density for `sample_blackjax_unified_nuts`.
+
 ## Usage
 
 ### JAX / BlackJAX (recommended)
@@ -176,6 +178,7 @@ Pull requests run only the tests a change can reach (`pytest-impacted`); see [AG
 
 ```bash
 uv run python -m mcmc_robust.bench.ablation_runner --full --workers 2
+uv run python -m mcmc_robust.bench.posteriordb_runner --full --workers 6   # needs the posteriordb extra and --fetch
 uv run python -m mcmc_robust.bench.sota_runner --full
 uv run python -m mcmc_robust.bench.applied_runner
 uv run python -m mcmc_robust.bench.render_docs --write

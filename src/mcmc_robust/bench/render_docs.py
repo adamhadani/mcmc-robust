@@ -202,6 +202,10 @@ class Reports:
     def competitors(self) -> dict[str, Any]:
         return self._load("competitor_results.json")
 
+    @cached_property
+    def posteriordb(self) -> dict[str, Any]:
+        return self._load("posteriordb_results.json")
+
     def sota_rows(self, task_prefix: str, target_name: str | None = None) -> list[dict[str, Any]]:
         return [
             r
@@ -931,6 +935,199 @@ def render_competitor_findings(reports: Reports) -> str:
         + ("; `nutpie_flow` " + converged("nutpie_flow") if "nutpie_flow" in arms else "")
         + "."
     )
+    return "\n".join(bullets) + "\n"
+
+
+# --- real posteriors (reports/posteriordb_results.json) ------------------------------------------
+
+#: A run disagrees with posteriordb's reference draws when a tail-probability or mean z-score exceeds this.
+POSTERIORDB_DISAGREE_Z: float = 5.0
+
+#: Paired ratio below which an arm counts as worse "by more than a fifth" in the findings.
+POSTERIORDB_WORSE_RATIO: float = 0.8
+
+
+def _pdb_runs(reports: Reports, posterior: str, arm: str) -> dict[int, dict[str, Any]]:
+    return {
+        r["seed"]: r
+        for r in reports.posteriordb["rows"]
+        if r["posterior"] == posterior and r["arm"] == arm and r.get("error") is None
+    }
+
+
+def _pdb_posteriors(reports: Reports) -> list[str]:
+    return list(dict.fromkeys(r["posterior"] for r in reports.posteriordb["rows"]))
+
+
+def _pdb_arms(reports: Reports) -> list[str]:
+    return list(dict.fromkeys(r["arm"] for r in reports.posteriordb["rows"]))
+
+
+def _pdb_ratios(reports: Reports, posterior: str, arm: str, reference: str) -> list[float]:
+    """Per-seed worst-parameter tail-ESS per gradient of ``arm`` over ``reference``, paired by seed."""
+    a, b = _pdb_runs(reports, posterior, arm), _pdb_runs(reports, posterior, reference)
+    key = "min_tail_ess_per_grad"
+    return [a[s][key] / b[s][key] for s in sorted(a.keys() & b.keys()) if a[s][key] is not None and b[s][key]]
+
+
+def _pdb_disagrees(row: dict[str, Any]) -> bool:
+    zs = [row.get("ref_tail_prob_max_abs_z"), row.get("ref_mean_max_abs_z")]
+    return any(z is None or z > POSTERIORDB_DISAGREE_Z for z in zs)
+
+
+def _pdb_ratio_cell(ratios: list[float]) -> str:
+    if not ratios:
+        return "n/a"
+    return f"{float(np.median(ratios)):.2f}× ({sum(r > 1.0 for r in ratios)} of {len(ratios)})"
+
+
+def _pdb_setup(reports: Reports) -> str:
+    cfg = reports.posteriordb["config"]
+    prov = reports.posteriordb.get("provenance", {})
+    sha = prov.get("posteriordb_sha") or "unknown"
+    when = f" (run {prov['timestamp_utc'][:10]}, commit {prov['git_sha'][:7]})" if "timestamp_utc" in prov else ""
+    return (
+        f"Every posterior of posteriordb (commit `{sha[:12]}`) with reference draws: "
+        f"{len(_pdb_posteriors(reports))} posteriors, {len(cfg['seeds'])} seeds each. Each run has {cfg['chains']} "
+        f"chains × {cfg['draws']:,} draws after {cfg['tune']} warm-up steps, on Stan's unconstrained space through "
+        "BridgeStan; arms share each seed's Stan-style initial positions and random key, so ratios are paired by "
+        "seed. ESS and accuracy are measured on the parameters that have reference draws; the ratios compare the "
+        f"worst parameter's tail-ESS per gradient. Source: `reports/posteriordb_results.json`{when}."
+    )
+
+
+def render_posteriordb_table(reports: Reports) -> str:
+    arms = _pdb_arms(reports)
+    body = []
+    for post in _pdb_posteriors(reports):
+        stock = _pdb_runs(reports, post, "stock")
+        any_run = next(iter(r for r in reports.posteriordb["rows"] if r["posterior"] == post))
+        stock_rate = [r["min_tail_ess_per_grad"] for r in stock.values() if r["min_tail_ess_per_grad"] is not None]
+
+        def per_arm(fn: Callable[[dict[int, dict[str, Any]]], str], post: str = post) -> str:
+            return " / ".join(fn(_pdb_runs(reports, post, a)) for a in arms)
+
+        tukey = _pdb_runs(reports, post, "tukey_h")
+        h_pos = [r["tukey_h_n_positive"] for r in tukey.values() if r.get("tukey_h_n_positive") is not None]
+        body.append(
+            [
+                post,
+                str(any_run["d"]),
+                _rate(float(np.median(stock_rate))) if stock_rate else "n/a",
+                _pdb_ratio_cell(_pdb_ratios(reports, post, "arcsinh", "stock")),
+                _pdb_ratio_cell(_pdb_ratios(reports, post, "tukey_h", "stock")),
+                _pdb_ratio_cell(_pdb_ratios(reports, post, "tukey_h", "arcsinh")),
+                per_arm(
+                    lambda runs: f"{float(np.median([r['divergences'] for r in runs.values()])):g}" if runs else "–"
+                ),
+                per_arm(lambda runs: str(sum(_pdb_disagrees(r) for r in runs.values()))),
+                per_arm(lambda runs: str(sum(not r["converged"] for r in runs.values()))),
+                f"{float(np.median(h_pos)):g}" if h_pos else "n/a",
+            ]
+        )
+    arm_list = " / ".join(arms)
+    header = [
+        "Posterior",
+        "d",
+        "Stock min-tail-ESS/grad, median",
+        "`arcsinh` ÷ stock (seeds better)",
+        "`tukey_h` ÷ stock (seeds better)",
+        "`tukey_h` ÷ `arcsinh` (seeds better)",
+        f"Median divergences ({arm_list})",
+        f"Seeds disagreeing with reference ({arm_list})",
+        f"Seeds not converged ({arm_list})",
+        "`tukey_h` coordinates with h > 0, median",
+    ]
+    note = (
+        f"A run disagrees with the reference when a tail-probability z-score (at the reference's 1%, 5%, 95% and "
+        f"99% quantiles) or a mean z-score exceeds {POSTERIORDB_DISAGREE_Z:g} in absolute value; z counts the Monte "
+        f"Carlo error of the run and of the reference. Not converged: max R-hat above {RHAT_CONVERGED}. d is the "
+        "unconstrained dimension."
+    )
+    return _pdb_setup(reports) + "\n\n" + note + "\n\n" + _table(header, body, numeric_from=1)
+
+
+def render_posteriordb_findings(reports: Reports) -> str:
+    posts = _pdb_posteriors(reports)
+    arms = _pdb_arms(reports)
+    n = len(posts)
+
+    def vs(arm: str, reference: str) -> str:
+        medians = [float(np.median(r)) for p in posts if (r := _pdb_ratios(reports, p, arm, reference))]
+        if not medians:
+            return "no paired runs"
+        better = sum(m > 1.0 for m in medians)
+        worse = sum(m < POSTERIORDB_WORSE_RATIO for m in medians)
+        return (
+            f"`{arm}` better on {better} of {len(medians)} posteriors, worse by more than a fifth on {worse}; "
+            f"median over posteriors {float(np.median(medians)):.2f}× "
+            f"(range {min(medians):.2f}× to {max(medians):.2f}×)"
+        )
+
+    def posteriors_where(arm: str, predicate: Callable[[dict[str, Any]], bool]) -> list[str]:
+        """Posteriors where ``predicate`` holds on at least half of ``arm``'s seeds."""
+        out = []
+        for p in posts:
+            runs = list(_pdb_runs(reports, p, arm).values())
+            if runs and 2 * sum(predicate(r) for r in runs) >= len(runs):
+                out.append(p)
+        return out
+
+    def listing(arm: str, predicate: Callable[[dict[str, Any]], bool]) -> str:
+        hits = posteriors_where(arm, predicate)
+        names = f" ({', '.join(hits)})" if hits and len(hits) <= 8 else ""
+        return f"`{arm}`: {len(hits)} of {n}{names}"
+
+    bullets = []
+    for arm, reference, label in (
+        ("arcsinh", "stock", "**`arcsinh` vs stock NUTS**"),
+        ("tukey_h", "stock", "**`tukey_h` vs stock NUTS**"),
+        ("tukey_h", "arcsinh", "**`tukey_h` vs `arcsinh`**"),
+    ):
+        if {arm, reference} <= set(arms):
+            bullets.append(
+                f"- {label} (worst-parameter tail-ESS per gradient, per-posterior median over seeds): "
+                + vs(arm, reference)
+                + "."
+            )
+    bullets.append(
+        f"- **Posteriors where most runs disagree with the reference** (a z-score above {POSTERIORDB_DISAGREE_Z:g} "
+        "on at least half the seeds): " + "; ".join(listing(a, _pdb_disagrees) for a in arms) + "."
+    )
+    bullets.append(
+        "- **Posteriors with divergences on at least half the seeds**: "
+        + "; ".join(listing(a, lambda r: r["divergences"] > 0) for a in arms)
+        + "."
+    )
+    bullets.append(
+        f"- **Posteriors not converged on at least half the seeds** (max R-hat above {RHAT_CONVERGED}): "
+        + "; ".join(listing(a, lambda r: not r["converged"]) for a in arms)
+        + "."
+    )
+    if "tukey_h" in arms:
+        total_d = 0
+        positive = 0
+        with_h = 0
+        for p in posts:
+            runs = list(_pdb_runs(reports, p, "tukey_h").values())
+            if not runs:
+                continue
+            total_d += runs[0]["d"]
+            med = float(np.median([r["tukey_h_n_positive"] for r in runs]))
+            positive += round(med)
+            with_h += med > 0
+        bullets.append(
+            f"- **The `tukey_h` guard** (median over seeds) set h > 0 on {positive} of {total_d} unconstrained "
+            f"coordinates ({with_h} of {n} posteriors); everywhere else the h-map is the affine map."
+        )
+    if "arcsinh" in arms:
+        warned = posteriors_where("arcsinh", lambda r: bool(r.get("tail_alignment_warning")))
+        bullets.append(
+            "- **`TailAlignmentWarning`** on the default `arcsinh` runs' unconstrained draws fired on at least half "
+            f"the seeds of {len(warned)} of {n} posteriors"
+            + (f" ({', '.join(warned)})" if 0 < len(warned) <= 8 else "")
+            + "."
+        )
     return "\n".join(bullets) + "\n"
 
 

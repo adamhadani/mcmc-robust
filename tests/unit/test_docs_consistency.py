@@ -228,3 +228,94 @@ def test_ablation_findings_report_tail_alignment_warnings(tmp_path: Path) -> Non
     assert "with `arcsinh`: heavy: 2 of 3 seeds" in text
     # One run never visits a tail (heavy, arcsinh, seed 2), and the warning did not fire on it.
     assert "fired on 0 of 1" in text
+
+
+# --- posteriordb renderers, on a small synthetic results file --------------------------------
+
+
+def _synthetic_posteriordb(tmp_path: Path) -> render_docs.Reports:
+    """Two posteriors x three seeds x three arms.
+
+    On 'a-heavy' tukey_h beats arcsinh on seeds 0 and 1 (min-tail-ESS/grad ratios 2, 2, 0.5) and arcsinh
+    beats stock on every seed (ratio 2). On 'b-light' both transforms lose to stock (ratio 0.5) and
+    tukey_h ties arcsinh. tukey_h disagrees with the reference on two seeds of 'b-light' only.
+    """
+    mtpg = {
+        ("a-heavy", "stock"): [1.0, 1.0, 1.0],
+        ("a-heavy", "arcsinh"): [2.0, 2.0, 2.0],
+        ("a-heavy", "tukey_h"): [4.0, 4.0, 1.0],
+        ("b-light", "stock"): [2.0, 2.0, 2.0],
+        ("b-light", "arcsinh"): [1.0, 1.0, 1.0],
+        ("b-light", "tukey_h"): [1.0, 1.0, 1.0],
+    }
+    max_z = {("b-light", "tukey_h"): [9.0, 7.0, 1.0]}
+    divs = {("a-heavy", "tukey_h"): [3, 0, 5]}
+    h_pos = {("a-heavy", "tukey_h"): [2, 2, 1], ("b-light", "tukey_h"): [0, 1, 0]}
+    warned = {("a-heavy", "arcsinh"): [True, True, False]}
+    rows = [
+        {
+            "posterior": p,
+            "arm": a,
+            "seed": s,
+            "d": 4 if p == "a-heavy" else 3,
+            "k": 4,
+            "min_tail_ess_per_grad": v,
+            "tail_ess_per_grad": v,
+            "max_rhat": 1.0 if (p, a, s) != ("a-heavy", "stock", 1) else 1.2,
+            "converged": (p, a, s) != ("a-heavy", "stock", 1),
+            "divergences": divs.get((p, a), [0, 0, 0])[s],
+            "total_grad_evals": 1000,
+            "ref_tail_prob_max_abs_z": max_z.get((p, a), [1.5, 1.5, 1.5])[s],
+            "ref_mean_max_abs_z": 1.0,
+            "tukey_h_n_positive": h_pos[(p, a)][s] if a == "tukey_h" else None,
+            "tail_alignment_warning": warned.get((p, a), [False, False, False])[s],
+            "error": None,
+        }
+        for (p, a), vals in mtpg.items()
+        for s, v in enumerate(vals)
+    ]
+    (tmp_path / "reports").mkdir(exist_ok=True)
+    payload = {
+        "rows": rows,
+        "config": {
+            "seeds": [0, 1, 2],
+            "chains": 4,
+            "draws": 1000,
+            "tune": 500,
+            "arms": ["stock", "arcsinh", "tukey_h"],
+        },
+        "provenance": {"posteriordb_sha": "91027f9cdd13b7e76283fec3f2898f59d4b83ec4", "git_sha": "a" * 40},
+    }
+    (tmp_path / "reports" / "posteriordb_results.json").write_text(json.dumps(payload))
+    return render_docs.Reports(tmp_path)
+
+
+def test_posteriordb_findings_count_posteriors_where_each_arm_wins(tmp_path: Path) -> None:
+    text = render_docs.render_posteriordb_findings(_synthetic_posteriordb(tmp_path))
+    # Per-posterior medians of the paired ratios: arcsinh/stock 2 and 0.5; tukey_h/arcsinh 2 and 1.
+    assert "**`arcsinh` vs stock NUTS**" in text
+    assert "better on 1 of 2 posteriors" in text
+    assert "**`tukey_h` vs `arcsinh`**" in text
+    assert "`tukey_h` better on 1 of 2 posteriors, worse by more than a fifth on 0" in text
+
+
+def test_posteriordb_findings_report_disagreement_with_the_reference(tmp_path: Path) -> None:
+    text = render_docs.render_posteriordb_findings(_synthetic_posteriordb(tmp_path))
+    assert "disagree with the reference" in text
+    assert "`tukey_h`: 1 of 2 (b-light)" in text
+    assert "`arcsinh`: 0 of 2" in text
+
+
+def test_posteriordb_findings_report_the_guard_and_the_warning(tmp_path: Path) -> None:
+    text = render_docs.render_posteriordb_findings(_synthetic_posteriordb(tmp_path))
+    # Median over seeds of the coordinates with h > 0: 2 of 4 on a-heavy, 0 of 3 on b-light.
+    assert "h > 0 on 2 of 7 unconstrained coordinates (1 of 2 posteriors)" in text
+    assert "`TailAlignmentWarning`" in text and "1 of 2 posteriors" in text
+
+
+def test_posteriordb_table_has_one_row_per_posterior(tmp_path: Path) -> None:
+    text = render_docs.render_posteriordb_table(_synthetic_posteriordb(tmp_path))
+    assert "91027f9cdd13" in text
+    # Columns: d, stock's median, then arcsinh / stock, tukey_h / stock, tukey_h / arcsinh (median, seeds better).
+    assert "| a-heavy | 4 | 1 | 2.00× (3 of 3) | 4.00× (2 of 3) | 2.00× (2 of 3) |" in text
+    assert "| b-light | 3 |" in text

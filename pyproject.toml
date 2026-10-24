@@ -47,6 +47,11 @@ competitors = [
     "flowjax>=17.1.0",
     "equinox>=0.11.12",
 ]
+# Real-posterior benchmark (bench/posteriordb_runner.py): BridgeStan compiles posteriordb's Stan models, which
+# needs make and a C++ toolchain; on first use it downloads the Stan sources (about 35 MB) to ~/.bridgestan.
+posteriordb = [
+    "bridgestan>=2.9.0,<3",
+]
 dev = [
     "coverage>=7.8.0",
     "mypy>=1.15.0",
