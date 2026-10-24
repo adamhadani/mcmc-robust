@@ -36,6 +36,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Direct-competitor baselines for bench/competitor_runner.py (nutpie's Rust NUTS with its default
+# gradient-based mass matrix and its experimental normalizing-flow adaptation, which needs flowjax).
+# - nutpie 0.16.11 publishes wheels for CPython 3.12-3.14 only. On Python 3.15, uv builds it from the
+#   sdist, which needs a Rust toolchain (cargo); the build takes a few minutes.
+# - The upper bound <0.17 is deliberate: bench/competitors.py relies on nutpie internals
+#   (PyFuncModel._make_model and the TransformAdapter method names) to count gradient evaluations.
+competitors = [
+    "nutpie>=0.16.11,<0.17",
+    "flowjax>=17.1.0",
+    "equinox>=0.11.12",
+]
 dev = [
     "coverage>=7.8.0",
     "mypy>=1.15.0",
