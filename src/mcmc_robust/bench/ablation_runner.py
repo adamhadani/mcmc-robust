@@ -366,7 +366,7 @@ def collect_provenance(repo: Path | None = None) -> dict[str, Any]:
     change the code that ran and are only counted, in `git_untracked_files`.
     """
     status = _git("status", "--porcelain", "--untracked-files=no", repo=repo)
-    untracked = _git("ls-files", "--others", "--exclude-standard", repo=repo)
+    untracked = _git("ls-files", "--others", "--exclude-standard", "--full-name", ":/", repo=repo)
     return {
         "git_sha": _git("rev-parse", "HEAD", repo=repo),
         "git_dirty": None if status is None else bool(status),

@@ -99,6 +99,7 @@ _ABLATION_TARGETS: dict[str, str] = {
     "mvt_rot_nu1": "rotated t (ν = 1)",
     "mvt_rot_nu2": "rotated t (ν = 2)",
     "mvt_iso_nu2": "isotropic t (ν = 2)",
+    "rot_prod_cauchy": "rotated product of Cauchys",
     "gauss_rot": "rotated Gaussian",
     "gauss_aniso": "anisotropic Gaussian",
 }

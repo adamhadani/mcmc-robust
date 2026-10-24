@@ -324,5 +324,9 @@ def test_provenance_dirty_flag_ignores_untracked_files(tmp_path: Path) -> None:
     assert prov["git_dirty"] is False
     assert prov["git_untracked_files"] == 1
 
+    # Counted repository-wide, also when the process runs from a subdirectory.
+    (tmp_path / "pkg").mkdir()
+    assert collect_provenance(repo=tmp_path / "pkg")["git_untracked_files"] == 1
+
     (tmp_path / "tracked.py").write_text("x = 2\n")
     assert collect_provenance(repo=tmp_path)["git_dirty"] is True
