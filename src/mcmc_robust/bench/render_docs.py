@@ -772,6 +772,14 @@ def render_ablation_findings(reports: Reports) -> str:
             if any(r["arm"] == "tukey_h" for r in reports.ablation["rows"])
             else []
         ),
+        *(
+            [
+                "- **The guard's h > 0 decisions** (`tukey_h` vs `tukey_h0`, the same pipeline with h = 0 on every "
+                "coordinate): " + vs("tukey_h", "tukey_h0", "better than h = 0") + "."
+            ]
+            if any(r["arm"] == "tukey_h0" for r in reports.ablation["rows"])
+            else []
+        ),
         f"- **Seeds converged** (max R-hat at most {RHAT_CONVERGED}) with `arcsinh`: "
         + seeds_where("arcsinh", lambda r: bool(r["converged"]))
         + "; with `stock`: "
@@ -1013,6 +1021,7 @@ def render_posteriordb_table(reports: Reports) -> str:
 
         tukey = _pdb_runs(reports, post, "tukey_h")
         h_pos = [r["tukey_h_n_positive"] for r in tukey.values() if r.get("tukey_h_n_positive") is not None]
+        h_ref = [r["tukey_h_ref_positive"] for r in tukey.values() if r.get("tukey_h_ref_positive") is not None]
         body.append(
             [
                 post,
@@ -1021,12 +1030,14 @@ def render_posteriordb_table(reports: Reports) -> str:
                 _pdb_ratio_cell(_pdb_ratios(reports, post, "arcsinh", "stock")),
                 _pdb_ratio_cell(_pdb_ratios(reports, post, "tukey_h", "stock")),
                 _pdb_ratio_cell(_pdb_ratios(reports, post, "tukey_h", "arcsinh")),
+                _pdb_ratio_cell(_pdb_ratios(reports, post, "tukey_h", "tukey_h0")),
                 per_arm(
                     lambda runs: f"{float(np.median([r['divergences'] for r in runs.values()])):g}" if runs else "–"
                 ),
                 per_arm(lambda runs: str(sum(_pdb_disagrees(r) for r in runs.values()))),
                 per_arm(lambda runs: str(sum(not r["converged"] for r in runs.values()))),
                 f"{float(np.median(h_pos)):g}" if h_pos else "n/a",
+                f"{float(np.median(h_ref)):g}" if h_ref else "n/a",
             ]
         )
     arm_list = " / ".join(arms)
@@ -1037,16 +1048,19 @@ def render_posteriordb_table(reports: Reports) -> str:
         "`arcsinh` ÷ stock (seeds better)",
         "`tukey_h` ÷ stock (seeds better)",
         "`tukey_h` ÷ `arcsinh` (seeds better)",
+        "`tukey_h` ÷ `tukey_h0` (seeds better)",
         f"Median divergences ({arm_list})",
         f"Seeds disagreeing with reference ({arm_list})",
         f"Seeds not converged ({arm_list})",
         "`tukey_h` coordinates with h > 0, median",
+        "The same guard on exact draws, median",
     ]
     note = (
         f"A run disagrees with the reference when a tail-probability z-score (at the reference's 1%, 5%, 95% and "
         f"99% quantiles) or a mean z-score exceeds {POSTERIORDB_DISAGREE_Z:g} in absolute value; z counts the Monte "
         f"Carlo error of the run and of the reference. Not converged: max R-hat above {RHAT_CONVERGED}. d is the "
-        "unconstrained dimension."
+        "unconstrained dimension. The last column runs `tukey_h`'s guard on as many reference draws as Phase 1 "
+        "calibrates from (unconstrained; n/a where the reference lacks a parameter of the model)."
     )
     return _pdb_setup(reports) + "\n\n" + note + "\n\n" + _table(header, body, numeric_from=1)
 
@@ -1087,6 +1101,7 @@ def render_posteriordb_findings(reports: Reports) -> str:
         ("arcsinh", "stock", "**`arcsinh` vs stock NUTS**"),
         ("tukey_h", "stock", "**`tukey_h` vs stock NUTS**"),
         ("tukey_h", "arcsinh", "**`tukey_h` vs `arcsinh`**"),
+        ("tukey_h0", "stock", "**`tukey_h0` (h = 0 everywhere) vs stock NUTS**"),
     ):
         if {arm, reference} <= set(arms):
             bullets.append(
@@ -1137,9 +1152,9 @@ def render_posteriordb_findings(reports: Reports) -> str:
             + "."
         )
     if "tukey_h" in arms:
-        total_d = 0
-        positive = 0
-        with_h = 0
+        total_d = positive = with_h = 0
+        ref_d = ref_phase1 = ref_exact = ref_posts = 0
+        groups: dict[bool, list[str]] = {False: [], True: []}
         for p in posts:
             runs = list(_pdb_runs(reports, p, "tukey_h").values())
             if not runs:
@@ -1148,44 +1163,40 @@ def render_posteriordb_findings(reports: Reports) -> str:
             med = float(np.median([r["tukey_h_n_positive"] for r in runs]))
             positive += round(med)
             with_h += med > 0
-        bullets.append(
+            groups[med > 0].append(p)
+            exact = [r["tukey_h_ref_positive"] for r in runs if r.get("tukey_h_ref_positive") is not None]
+            if exact:
+                ref_posts += 1
+                ref_d += runs[0]["d"]
+                ref_phase1 += round(med)
+                ref_exact += round(float(np.median(exact)))
+        guard = (
             f"- **The `tukey_h` guard** (median over seeds) set h > 0 on {positive} of {total_d} unconstrained "
             f"coordinates ({with_h} of {n} posteriors); everywhere else the h-map is the affine map."
         )
-        if {"arcsinh", "stock"} <= set(arms):
-            groups: dict[bool, list[str]] = {False: [], True: []}
-            for p in posts:
-                runs = list(_pdb_runs(reports, p, "tukey_h").values())
-                if runs:
-                    groups[float(np.median([r["tukey_h_n_positive"] for r in runs])) > 0].append(p)
+        if ref_posts:
+            guard += (
+                f" On the {ref_posts} posteriors whose reference draws include every parameter, from Phase 1's draws "
+                f"it set h > 0 on {ref_phase1} of {ref_d} coordinates, and from as many exact posterior draws on "
+                f"{ref_exact}."
+            )
+        bullets.append(guard)
+        if "tukey_h0" in arms:
 
-            def medians(ps: list[str], arm: str, reference: str) -> list[float]:
-                return [float(np.median(r)) for p in ps if (r := _pdb_ratios(reports, p, arm, reference))]
+            def medians(ps: list[str]) -> list[float]:
+                return [float(np.median(r)) for p in ps if (r := _pdb_ratios(reports, p, "tukey_h", "tukey_h0"))]
 
             def overall(ms: list[float]) -> str:
                 return f"{float(np.median(ms)):.2f}×" if ms else "n/a"
 
-            parts = []
-            for positive_h, where in ((False, "kept h = 0 on every coordinate"), (True, "set h > 0 somewhere")):
-                ps = groups[positive_h]
-                vs_arc, vs_stock = medians(ps, "tukey_h", "arcsinh"), medians(ps, "tukey_h", "stock")
-                better = sum(m > 1.0 for m in vs_arc)
-                worse = sum(m < POSTERIORDB_WORSE_RATIO for m in vs_stock)
-                if positive_h:
-                    parts.append(
-                        f"where it {where} ({len(ps)} of {n}), {overall(vs_arc)} (better on {better}) "
-                        f"and worse than stock on {worse}"
-                    )
-                else:
-                    parts.append(
-                        f"where it {where} ({len(ps)} of {n} posteriors), `tukey_h` vs `arcsinh` {overall(vs_arc)} "
-                        f"(better on {better}) and worse than stock by more than a fifth on {worse}"
-                    )
-            control = " and ".join(overall(medians(groups[g], "arcsinh", "stock")) for g in (False, True))
+            warped, kept = medians(groups[True]), medians(groups[False])
             bullets.append(
-                "- **`tukey_h` by the guard's decision** (per-posterior medians over seeds): "
-                + "; ".join(parts)
-                + f". `arcsinh` vs stock on the same groups: {control}."
+                "- **`tukey_h` by the guard's decision**, against its h = 0 control `tukey_h0`, which differs only in "
+                f"those decisions (per-posterior medians over seeds): where it set h > 0 somewhere "
+                f"({len(groups[True])} of {n} posteriors), `tukey_h` vs `tukey_h0` {overall(warped)} (better on "
+                f"{sum(m > 1.0 for m in warped)}, worse by more than a fifth on "
+                f"{sum(m < POSTERIORDB_WORSE_RATIO for m in warped)}); where it kept h = 0 on every coordinate "
+                f"({len(groups[False])} of {n}), {overall(kept)}."
             )
     if "arcsinh" in arms:
         warned = posteriors_where("arcsinh", lambda r: bool(r.get("tail_alignment_warning")))
