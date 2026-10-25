@@ -328,7 +328,9 @@ def test_posteriordb_findings_report_the_guard_and_the_warning(tmp_path: Path) -
     # Median over seeds of the coordinates with h > 0: 2 of 4 on a-heavy, 0 of 3 on b-light.
     assert "h > 0 on 2 of 7 unconstrained coordinates (1 of 2 posteriors)" in text
     # On exact draws (median over seeds): 1 coordinate of a-heavy, none of b-light.
-    assert "from Phase 1's draws it set h > 0 on 2 of 7 coordinates, and from as many exact posterior draws on 1" in text
+    assert (
+        "from Phase 1's draws it set h > 0 on 2 of 7 coordinates, and from as many exact posterior draws on 1" in text
+    )
     assert "`TailAlignmentWarning`" in text and "1 of 2 posteriors" in text
 
 

@@ -19,7 +19,7 @@ This is the technical record for the code in this repository. Every result numbe
 
   It shows where the gain comes from and where the transform is not the best choice.
 - **Comparison with nutpie (§5.2).** nutpie is the closest existing tool. The comparison covers its default (a gradient-based mass matrix) and its normalizing-flow adaptation. The transform is ahead per gradient on axis-aligned heavy tails, and behind the flow on rotated targets.
-- **Real posteriors (§5.3).** Every posteriordb posterior with reference draws, compared with stock NUTS on Stan's unconstrained space. There neither transform is a uniform improvement over stock NUTS, both add divergences on posteriors where stock NUTS has none, and the Tukey h-map's losses come where its guard sets h > 0.
+- **Real posteriors (§5.3).** Every posteriordb posterior with reference draws, compared with stock NUTS on Stan's unconstrained space. There neither transform is a uniform improvement over stock NUTS, and both add divergences on posteriors where stock NUTS has none. The Tukey h-map's losses are caused by its guard's h > 0 decisions, most of which come from early warm-up draws rather than from the posterior: with h held at 0, the same pipeline does not have them.
 - **Single-seed comparisons (§5.4).** On two synthetic targets whose heavy tails are aligned with the coordinate axes, the transform raises tail-ESS per gradient over stock BlackJAX and PyMC NUTS and lowers the error of the estimated 0.99 quantile (Tables 1 and 3).
 - It does not resolve funnel geometry (Table 2).
 - The repository's other components remain experimental (§3): a damped Langevin drift for stiff targets, and first-order samplers that use the transform.
@@ -233,7 +233,7 @@ x_i = \mu_i + R_i\, z_i \exp\left(\tfrac{1}{2} h_i z_i^2\right), \qquad
 
 **Default.** arcsinh remains the default `transform_kind`.
 - Table A (§5.1) compares the two maps on synthetic targets.
-- Table C (§5.3) compares them on real posteriors. There `tukey_h` is close to stock NUTS where the guard keeps h = 0 everywhere, and loses where it sets h > 0.
+- Table C (§5.3) compares them on real posteriors. There most of the guard's h > 0 decisions come from Phase 1's draws, not from the posterior, and against the h = 0 control `tukey_h0` those decisions cost efficiency. On a centred funnel, whose exact draws are non-Gaussian, warping did not help either.
 
 ### 2.7 Tail-alignment warning
 
@@ -596,87 +596,92 @@ Excluded: `dcs_bresar_mijatovic_2026` (not run: no official code found).
 - *What the guard decides on exact draws:* the same guard on as many of posteriordb's reference draws as Phase 1 calibrates from, mapped to the unconstrained space. A coordinate with h > 0 from Phase 1's draws but not from exact draws was warped because of where Phase 1's chains were, not because of the posterior's tails.
 
 <!-- BEGIN GENERATED: posteriordb-table -->
-Every posterior of posteriordb (commit `91027f9cdd13`) with reference draws: 58 posteriors, 10 seeds each. Each run has 4 chains × 1,000 draws after 500 warm-up steps, on Stan's unconstrained space through BridgeStan; arms share each seed's Stan-style initial positions and random key, so ratios are paired by seed. ESS and accuracy are measured on the parameters that have reference draws; the ratios compare the worst parameter's tail-ESS per gradient. Source: `reports/posteriordb_results.json` (run 2026-10-24, commit 6a860fd).
+Every posterior of posteriordb (commit `91027f9cdd13`) with reference draws: 58 posteriors, 10 seeds each. Each run has 4 chains × 1,000 draws after 500 warm-up steps, on Stan's unconstrained space through BridgeStan; arms share each seed's Stan-style initial positions and random key, so ratios are paired by seed. ESS and accuracy are measured on the parameters that have reference draws; the ratios compare the worst parameter's tail-ESS per gradient. Source: `reports/posteriordb_results.json` (run 2026-10-25, commit e80f4a7).
 
 A run disagrees with the reference when a tail-probability z-score (at the reference's 1%, 5%, 95% and 99% quantiles) or a mean z-score exceeds 5 in absolute value; z counts the Monte Carlo error of the run and of the reference. Not converged: max R-hat above 1.01. d is the unconstrained dimension. The last column runs `tukey_h`'s guard on as many reference draws as Phase 1 calibrates from (unconstrained; n/a where the reference lacks a parameter of the model).
 
-| Posterior | d | Stock min-tail-ESS/grad, median | `arcsinh` ÷ stock (seeds better) | `tukey_h` ÷ stock (seeds better) | `tukey_h` ÷ `arcsinh` (seeds better) | `tukey_h` ÷ `tukey_h0` (seeds better) | Median divergences (stock / arcsinh / tukey_h) | Seeds disagreeing with reference (stock / arcsinh / tukey_h) | Seeds not converged (stock / arcsinh / tukey_h) | `tukey_h` coordinates with h > 0, median | The same guard on exact draws, median |
+| Posterior | d | Stock min-tail-ESS/grad, median | `arcsinh` ÷ stock (seeds better) | `tukey_h` ÷ stock (seeds better) | `tukey_h` ÷ `arcsinh` (seeds better) | `tukey_h` ÷ `tukey_h0` (seeds better) | Median divergences (stock / arcsinh / tukey_h / tukey_h0) | Seeds disagreeing with reference (stock / arcsinh / tukey_h / tukey_h0) | Seeds not converged (stock / arcsinh / tukey_h / tukey_h0) | `tukey_h` coordinates with h > 0, median | The same guard on exact draws, median |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Rate_1_data-Rate_1_model | 1 | 0.111 | 0.57× (0 of 10) | 0.93× (5 of 10) | 1.45× (10 of 10) | n/a | 0 / 6 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| Rate_2_data-Rate_2_model | 2 | 0.105 | 0.78× (1 of 10) | 0.90× (2 of 10) | 1.24× (10 of 10) | n/a | 0 / 2 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| Rate_3_data-Rate_3_model | 1 | 0.113 | 0.61× (0 of 10) | 0.99× (4 of 10) | 1.77× (10 of 10) | n/a | 0 / 10.5 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| Rate_5_data-Rate_5_model | 1 | 0.106 | 0.68× (0 of 10) | 1.04× (6 of 10) | 1.49× (10 of 10) | n/a | 0 / 13.5 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| arK-arK | 7 | 0.0125 | 0.98× (4 of 10) | 0.99× (5 of 10) | 1.03× (6 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| arma-arma11 | 4 | 0.000113 | 1.21× (8 of 10) | 0.52× (3 of 10) | 0.38× (2 of 10) | n/a | 122 / 0 / 49.5 | 5 / 2 / 3 | 7 / 6 / 8 | 3 | n/a |
-| bball_drive_event_0-hmm_drive_0 | 6 | 0.000334 | 95.00× (8 of 10) | 47.48× (8 of 10) | 0.50× (4 of 10) | n/a | 19 / 4.5 / 3 | 3 / 1 / 2 | 7 / 3 / 2 | 2 | n/a |
-| bball_drive_event_1-hmm_drive_1 | 6 | 0.016 | 1.05× (6 of 10) | 0.63× (1 of 10) | 0.54× (2 of 10) | n/a | 0 / 0 / 94 | 0 / 0 / 0 | 0 / 0 / 0 | 5 | n/a |
-| diamonds-diamonds | 26 | 0.000328 | 0.99× (4 of 10) | 1.06× (8 of 10) | 1.06× (6 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 20.5 | n/a |
-| dogs-dogs | 3 | 0.026 | 0.89× (2 of 10) | 0.98× (3 of 10) | 1.05× (6 of 10) | n/a | 0 / 0 / 0 | 1 / 0 / 0 | 0 / 1 / 0 | 0 | n/a |
-| dogs-dogs_hierarchical | 2 | 0.0683 | 0.78× (0 of 10) | 0.98× (3 of 10) | 1.23× (10 of 10) | n/a | 0 / 1.5 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| earnings-earn_height | 3 | 0.00229 | 0.77× (4 of 10) | 0.03× (1 of 10) | 0.10× (3 of 10) | n/a | 0 / 0 / 120 | 0 / 2 / 6 | 0 / 3 / 9 | 1 | n/a |
-| earnings-log10earn_height | 3 | 0.00246 | 1.32× (9 of 10) | 1.12× (9 of 10) | 0.89× (4 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 1 / 0 | 0 | n/a |
-| earnings-logearn_height | 3 | 0.00276 | 1.07× (6 of 10) | 1.07× (7 of 10) | 1.07× (6 of 10) | n/a | 0 / 0 / 0 | 0 / 1 / 0 | 0 / 1 / 0 | 1 | n/a |
-| earnings-logearn_height_male | 4 | 0.00219 | 1.01× (7 of 10) | 0.91× (3 of 10) | 0.84× (2 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 1 | 2 | n/a |
-| earnings-logearn_interaction | 5 | 0.00111 | 0.95× (3 of 10) | 0.88× (3 of 10) | 0.92× (4 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 1 | 0 / 1 / 1 | 2 | n/a |
-| earnings-logearn_interaction_z | 5 | 0.0291 | 0.93× (1 of 10) | 0.59× (0 of 10) | 0.65× (0 of 10) | n/a | 0 / 0 / 7.5 | 0 / 0 / 0 | 0 / 0 / 1 | 5 | n/a |
-| earnings-logearn_logheight_male | 4 | 0.000546 | 1.01× (5 of 10) | 1.03× (6 of 10) | 0.98× (5 of 10) | n/a | 0 / 16 / 0 | 0 / 3 / 1 | 0 / 2 / 1 | 0 | n/a |
-| eight_schools-eight_schools_centered | 10 | 0.000229 | 5.23× (9 of 10) | 1.49× (7 of 10) | 0.29× (4 of 10) | n/a | 150.5 / 57.5 / 141.5 | 10 / 10 / 10 | 10 / 10 / 10 | 5 | n/a |
-| eight_schools-eight_schools_noncentered | 10 | 0.0342 | 1.12× (6 of 10) | 1.23× (7 of 10) | 1.06× (6 of 10) | n/a | 0 / 25 / 77 | 0 / 0 / 0 | 0 / 0 / 0 | 1 | n/a |
-| garch-garch11 | 4 | 0.0295 | 0.98× (4 of 10) | 0.95× (2 of 10) | 0.92× (2 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 1 | n/a |
-| gp_pois_regr-gp_pois_regr | 13 | 0.00163 | 0.88× (2 of 10) | 1.01× (5 of 10) | 1.15× (9 of 10) | n/a | 11.5 / 43 / 16 | 0 / 0 / 0 | 0 / 1 / 0 | 0 | n/a |
-| gp_pois_regr-gp_regr | 3 | 0.0858 | 0.79× (0 of 10) | 1.08× (7 of 10) | 1.31× (10 of 10) | n/a | 0 / 11 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| hmm_example-hmm_example | 4 | 0.0253 | 1.01× (5 of 10) | 0.97× (3 of 10) | 0.94× (3 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 1 | 1 | n/a |
-| hudson_lynx_hare-lotka_volterra | 8 | 0.00539 | 1.13× (6 of 10) | 1.08× (7 of 10) | 1.02× (5 of 10) | n/a | 0 / 0 / 1.5 | 0 / 0 / 0 | 4 / 2 / 1 | 8 | n/a |
-| kidiq-kidscore_interaction | 5 | 0.00165 | 0.92× (5 of 10) | 0.62× (2 of 10) | 0.86× (3 of 10) | n/a | 0 / 10 / 127.5 | 0 / 1 / 5 | 0 / 3 / 6 | 3 | n/a |
-| kidiq-kidscore_momhs | 3 | 0.0209 | 1.26× (10 of 10) | 0.90× (3 of 10) | 0.77× (2 of 10) | n/a | 0 / 0 / 2 | 0 / 0 / 0 | 0 / 0 / 0 | 3 | n/a |
-| kidiq-kidscore_momhsiq | 4 | 0.00577 | 1.40× (10 of 10) | 1.32× (9 of 10) | 0.94× (4 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 1 | n/a |
-| kidiq-kidscore_momiq | 3 | 0.00649 | 1.35× (8 of 10) | 1.28× (10 of 10) | 1.05× (7 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0.5 | n/a |
-| kidiq_with_mom_work-kidscore_interaction_c | 5 | 0.0526 | 1.10× (8 of 10) | 0.90× (5 of 10) | 0.89× (2 of 10) | n/a | 0 / 2 / 18.5 | 0 / 0 / 0 | 0 / 0 / 0 | 3 | n/a |
-| kidiq_with_mom_work-kidscore_interaction_c2 | 5 | 0.0374 | 0.94× (4 of 10) | 0.58× (0 of 10) | 0.58× (0 of 10) | n/a | 0 / 0 / 23 | 0 / 0 / 0 | 0 / 0 / 1 | 5 | n/a |
-| kidiq_with_mom_work-kidscore_interaction_z | 5 | 0.0328 | 1.43× (9 of 10) | 1.00× (5 of 10) | 0.68× (1 of 10) | n/a | 0 / 2 / 24.5 | 0 / 0 / 0 | 0 / 0 / 0 | 3 | n/a |
-| kidiq_with_mom_work-kidscore_mom_work | 5 | 0.013 | 1.24× (10 of 10) | 1.06× (6 of 10) | 0.90× (4 of 10) | n/a | 0 / 1.5 / 21.5 | 0 / 0 / 0 | 0 / 0 / 1 | 2 | n/a |
-| kilpisjarvi_mod-kilpisjarvi | 3 | 0.000205 | 0.11× (1 of 10) | 1.32× (6 of 10) | 7.22× (8 of 10) | n/a | 0 / 106.5 / 0 | 0 / 8 / 2 | 3 / 9 / 2 | 0.5 | n/a |
-| low_dim_gauss_mix-low_dim_gauss_mix | 5 | 0.0602 | 1.00× (5 of 10) | 0.56× (2 of 10) | 0.55× (1 of 10) | n/a | 0 / 0 / 22.5 | 0 / 0 / 0 | 0 / 0 / 1 | 5 | n/a |
-| mcycle_gp-accel_gp | 66 | 0.000398 | 1.01× (6 of 10) | 0.93× (5 of 10) | 0.91× (4 of 10) | n/a | 40.5 / 102 / 97.5 | 1 / 0 / 0 | 0 / 0 / 2 | 6 | n/a |
-| mesquite-logmesquite | 8 | 0.0113 | 0.89× (3 of 10) | 0.95× (4 of 10) | 1.18× (7 of 10) | n/a | 0 / 1 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| mesquite-logmesquite_logva | 5 | 0.0099 | 0.99× (4 of 10) | 0.95× (3 of 10) | 1.02× (6 of 10) | n/a | 0 / 1 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| mesquite-logmesquite_logvas | 8 | 0.0058 | 0.90× (2 of 10) | 0.98× (3 of 10) | 1.11× (7 of 10) | n/a | 0 / 12 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| mesquite-logmesquite_logvash | 7 | 0.00567 | 0.83× (0 of 10) | 1.00× (5 of 10) | 1.17× (10 of 10) | n/a | 0 / 4.5 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| mesquite-logmesquite_logvolume | 3 | 0.0544 | 0.92× (3 of 10) | 1.01× (6 of 10) | 1.04× (7 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| mesquite-mesquite | 8 | 0.00385 | 0.59× (0 of 10) | 1.09× (5 of 10) | 1.76× (9 of 10) | n/a | 0 / 11 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 1 | n/a |
-| nes1972-nes | 10 | 0.00756 | 0.96× (4 of 10) | 1.00× (5 of 10) | 1.03× (7 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| nes1976-nes | 10 | 0.00741 | 1.01× (5 of 10) | 1.03× (7 of 10) | 1.06× (6 of 10) | n/a | 0 / 1 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| nes1980-nes | 10 | 0.00733 | 0.99× (5 of 10) | 0.98× (4 of 10) | 0.97× (3 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| nes1984-nes | 10 | 0.0073 | 1.10× (8 of 10) | 1.06× (6 of 10) | 0.97× (2 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| nes1988-nes | 10 | 0.00746 | 0.93× (3 of 10) | 1.00× (5 of 10) | 1.07× (8 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| nes1992-nes | 10 | 0.00779 | 0.98× (4 of 10) | 0.99× (5 of 10) | 1.01× (6 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| nes1996-nes | 10 | 0.00686 | 0.93× (4 of 10) | 0.99× (5 of 10) | 1.08× (6 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| nes2000-nes | 10 | 0.00665 | 0.94× (3 of 10) | 0.96× (3 of 10) | 0.94× (3 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| nes_logit_data-nes_logit_model | 2 | 0.0168 | 0.85× (1 of 10) | 0.88× (1 of 10) | 1.08× (5 of 10) | n/a | 0 / 0 / 0.5 | 0 / 0 / 1 | 0 / 1 / 1 | 1 | n/a |
-| one_comp_mm_elim_abs-one_comp_mm_elim_abs | 4 | 0.00842 | 0.83× (4 of 10) | 0.70× (2 of 10) | 1.14× (5 of 10) | n/a | 12.5 / 138.5 / 171 | 5 / 10 / 5 | 2 / 3 / 2 | 1 | n/a |
-| radon_all-radon_pooled | 3 | 0.0898 | 0.96× (4 of 10) | 0.98× (4 of 10) | 1.02× (6 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| radon_mn-radon_pooled | 3 | 0.0861 | 0.99× (4 of 10) | 1.00× (5 of 10) | 1.02× (6 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
-| sblrc-blr | 6 | 0.00755 | 2.87× (10 of 10) | 2.67× (10 of 10) | 0.89× (2 of 10) | n/a | 0 / 0 / 0 | 1 / 0 / 1 | 1 / 0 / 0 | 5 | n/a |
-| sblri-blr | 6 | 0.0143 | 4.63× (10 of 10) | 4.49× (10 of 10) | 0.93× (3 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 5 | n/a |
-| wells_data-wells_dist | 2 | 0.00761 | 3.27× (10 of 10) | 1.85× (10 of 10) | 0.57× (2 of 10) | n/a | 0 / 0 / 8 | 0 / 0 / 0 | 1 / 0 / 2 | 2 | n/a |
-| wells_data-wells_dist100_model | 2 | 0.0365 | 0.85× (3 of 10) | 1.01× (6 of 10) | 1.19× (8 of 10) | n/a | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | n/a |
+| Rate_1_data-Rate_1_model | 1 | 0.111 | 0.57× (0 of 10) | 0.93× (5 of 10) | 1.45× (10 of 10) | 1.00× (0 of 10) | 0 / 6 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| Rate_2_data-Rate_2_model | 2 | 0.105 | 0.78× (1 of 10) | 0.90× (2 of 10) | 1.24× (10 of 10) | 1.00× (0 of 10) | 0 / 2 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| Rate_3_data-Rate_3_model | 1 | 0.113 | 0.61× (0 of 10) | 0.99× (4 of 10) | 1.77× (10 of 10) | 1.00× (0 of 10) | 0 / 10.5 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| Rate_5_data-Rate_5_model | 1 | 0.106 | 0.68× (0 of 10) | 1.04× (6 of 10) | 1.49× (10 of 10) | 1.00× (0 of 10) | 0 / 13.5 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| arK-arK | 7 | 0.0125 | 0.98× (4 of 10) | 0.99× (5 of 10) | 1.03× (6 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| arma-arma11 | 4 | 0.000113 | 1.21× (8 of 10) | 0.54× (4 of 10) | 0.53× (3 of 10) | 0.57× (1 of 10) | 122 / 0 / 121 / 0 | 5 / 2 / 3 / 1 | 7 / 6 / 9 / 6 | 1 | 0 |
+| bball_drive_event_0-hmm_drive_0 | 6 | 0.000334 | 95.00× (8 of 10) | 75.37× (8 of 10) | 0.94× (5 of 10) | 0.93× (0 of 10) | 19 / 4.5 / 1 / 0 | 3 / 1 / 1 / 1 | 7 / 3 / 2 / 1 | 0.5 | 2 |
+| bball_drive_event_1-hmm_drive_1 | 6 | 0.016 | 1.05× (6 of 10) | 0.57× (1 of 10) | 0.57× (1 of 10) | 0.55× (2 of 10) | 0 / 0 / 68 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 4 | 0 |
+| diamonds-diamonds | 26 | 0.000328 | 0.99× (4 of 10) | 1.02× (6 of 10) | 1.03× (7 of 10) | 0.93× (3 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 17.5 | 0 |
+| dogs-dogs | 3 | 0.026 | 0.89× (2 of 10) | 0.98× (3 of 10) | 1.05× (6 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 1 / 0 / 0 / 0 | 0 / 1 / 0 / 0 | 0 | 0 |
+| dogs-dogs_hierarchical | 2 | 0.0683 | 0.78× (0 of 10) | 1.02× (5 of 10) | 1.30× (10 of 10) | 1.00× (0 of 10) | 0 / 1.5 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| earnings-earn_height | 3 | 0.00229 | 0.77× (4 of 10) | 0.03× (1 of 10) | 0.09× (2 of 10) | 0.02× (1 of 10) | 0 / 0 / 153.5 / 0 | 0 / 2 / 5 / 0 | 0 / 3 / 9 / 0 | 1 | 0 |
+| earnings-log10earn_height | 3 | 0.00246 | 1.32× (9 of 10) | 1.31× (10 of 10) | 1.04× (6 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 1 / 0 / 0 | 0 | 0 |
+| earnings-logearn_height | 3 | 0.00276 | 1.07× (6 of 10) | 1.07× (7 of 10) | 1.03× (5 of 10) | 1.00× (2 of 10) | 0 / 0 / 0 / 0 | 0 / 1 / 0 / 1 | 0 / 1 / 0 / 1 | 0 | 0 |
+| earnings-logearn_height_male | 4 | 0.00219 | 1.01× (7 of 10) | 0.88× (4 of 10) | 0.87× (2 of 10) | 0.87× (1 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 0 | 1 | 0 |
+| earnings-logearn_interaction | 5 | 0.00111 | 0.95× (3 of 10) | 0.88× (4 of 10) | 0.97× (5 of 10) | 1.00× (3 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 1 | 0 / 1 / 1 / 1 | 1.5 | 0 |
+| earnings-logearn_interaction_z | 5 | 0.0291 | 0.93× (1 of 10) | 0.60× (0 of 10) | 0.66× (0 of 10) | 0.61× (0 of 10) | 0 / 0 / 14.5 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 0 | 4 | 0 |
+| earnings-logearn_logheight_male | 4 | 0.000546 | 1.01× (5 of 10) | 1.04× (6 of 10) | 0.98× (5 of 10) | 1.00× (0 of 10) | 0 / 16 / 0 / 0 | 0 / 3 / 1 / 0 | 0 / 2 / 1 / 0 | 0 | 0 |
+| eight_schools-eight_schools_centered | 10 | 0.000229 | 5.23× (9 of 10) | 1.66× (6 of 10) | 0.42× (3 of 10) | 0.56× (3 of 10) | 150.5 / 57.5 / 123 / 112 | 10 / 10 / 10 / 10 | 10 / 10 / 10 / 10 | 3.5 | 5 |
+| eight_schools-eight_schools_noncentered | 10 | 0.0342 | 1.12× (6 of 10) | 1.00× (5 of 10) | 0.90× (3 of 10) | 1.00× (2 of 10) | 0 / 25 / 1 / 1 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | n/a |
+| garch-garch11 | 4 | 0.0295 | 0.98× (4 of 10) | 0.95× (2 of 10) | 0.94× (2 of 10) | 1.00× (2 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0.5 | 1 |
+| gp_pois_regr-gp_pois_regr | 13 | 0.00163 | 0.88× (2 of 10) | 1.01× (5 of 10) | 1.15× (9 of 10) | 1.00× (1 of 10) | 11.5 / 43 / 12.5 / 13 | 0 / 0 / 0 / 0 | 0 / 1 / 0 / 0 | 0 | n/a |
+| gp_pois_regr-gp_regr | 3 | 0.0858 | 0.79× (0 of 10) | 1.08× (7 of 10) | 1.31× (10 of 10) | 1.00× (0 of 10) | 0 / 11 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| hmm_example-hmm_example | 4 | 0.0253 | 1.01× (5 of 10) | 0.99× (4 of 10) | 0.96× (3 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| hudson_lynx_hare-lotka_volterra | 8 | 0.00539 | 1.13× (6 of 10) | 1.03× (6 of 10) | 1.01× (5 of 10) | 0.98× (3 of 10) | 0 / 0 / 1.5 / 0 | 0 / 0 / 1 / 1 | 4 / 2 / 2 / 3 | 5 | 0 |
+| kidiq-kidscore_interaction | 5 | 0.00165 | 0.92× (5 of 10) | 0.91× (2 of 10) | 0.84× (4 of 10) | 0.89× (0 of 10) | 0 / 10 / 0 / 0 | 0 / 1 / 3 / 0 | 0 / 3 / 3 / 0 | 1.5 | 0 |
+| kidiq-kidscore_momhs | 3 | 0.0209 | 1.26× (10 of 10) | 0.94× (4 of 10) | 0.75× (2 of 10) | 0.80× (1 of 10) | 0 / 0 / 0.5 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 2 | 0 |
+| kidiq-kidscore_momhsiq | 4 | 0.00577 | 1.40× (10 of 10) | 1.34× (10 of 10) | 0.99× (5 of 10) | 1.00× (2 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| kidiq-kidscore_momiq | 3 | 0.00649 | 1.35× (8 of 10) | 1.33× (10 of 10) | 1.06× (8 of 10) | 1.00× (1 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| kidiq_with_mom_work-kidscore_interaction_c | 5 | 0.0526 | 1.10× (8 of 10) | 0.90× (5 of 10) | 0.85× (2 of 10) | 0.76× (0 of 10) | 0 / 2 / 19.5 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 1 | 0 |
+| kidiq_with_mom_work-kidscore_interaction_c2 | 5 | 0.0374 | 0.94× (4 of 10) | 0.58× (0 of 10) | 0.58× (0 of 10) | 0.49× (0 of 10) | 0 / 0 / 21.5 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 0 | 4.5 | 0 |
+| kidiq_with_mom_work-kidscore_interaction_z | 5 | 0.0328 | 1.43× (9 of 10) | 1.06× (5 of 10) | 0.72× (2 of 10) | 0.64× (1 of 10) | 0 / 2 / 25.5 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 3 | 0 |
+| kidiq_with_mom_work-kidscore_mom_work | 5 | 0.013 | 1.24× (10 of 10) | 1.17× (6 of 10) | 0.95× (5 of 10) | 0.78× (1 of 10) | 0 / 1.5 / 17 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 0 | 2 | 0 |
+| kilpisjarvi_mod-kilpisjarvi | 3 | 0.000205 | 0.11× (1 of 10) | 1.60× (8 of 10) | 12.78× (10 of 10) | 1.00× (0 of 10) | 0 / 106.5 / 0 / 0 | 0 / 8 / 0 / 0 | 3 / 9 / 0 / 0 | 0 | 0 |
+| low_dim_gauss_mix-low_dim_gauss_mix | 5 | 0.0602 | 1.00× (5 of 10) | 0.56× (1 of 10) | 0.52× (0 of 10) | 0.54× (0 of 10) | 0 / 0 / 24.5 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 0 | 5 | 0 |
+| mcycle_gp-accel_gp | 66 | 0.000398 | 1.01× (6 of 10) | 1.00× (5 of 10) | 1.03× (5 of 10) | 1.07× (7 of 10) | 40.5 / 102 / 74 / 58 | 1 / 0 / 0 / 1 | 0 / 0 / 0 / 0 | 3.5 | 2 |
+| mesquite-logmesquite | 8 | 0.0113 | 0.89× (3 of 10) | 0.95× (4 of 10) | 1.16× (7 of 10) | 1.00× (1 of 10) | 0 / 1 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| mesquite-logmesquite_logva | 5 | 0.0099 | 0.99× (4 of 10) | 0.95× (3 of 10) | 1.04× (6 of 10) | 1.00× (1 of 10) | 0 / 1 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| mesquite-logmesquite_logvas | 8 | 0.0058 | 0.90× (2 of 10) | 0.98× (3 of 10) | 1.11× (7 of 10) | 1.00× (2 of 10) | 0 / 12 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| mesquite-logmesquite_logvash | 7 | 0.00567 | 0.83× (0 of 10) | 1.00× (5 of 10) | 1.17× (10 of 10) | 1.00× (2 of 10) | 0 / 4.5 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| mesquite-logmesquite_logvolume | 3 | 0.0544 | 0.92× (3 of 10) | 1.01× (6 of 10) | 1.04× (7 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| mesquite-mesquite | 8 | 0.00385 | 0.59× (0 of 10) | 1.46× (8 of 10) | 2.05× (9 of 10) | 1.00× (0 of 10) | 0 / 11 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes1972-nes | 10 | 0.00756 | 0.96× (4 of 10) | 1.00× (5 of 10) | 1.03× (7 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes1976-nes | 10 | 0.00741 | 1.01× (5 of 10) | 1.03× (7 of 10) | 1.06× (6 of 10) | 1.00× (1 of 10) | 0 / 1 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes1980-nes | 10 | 0.00733 | 0.99× (5 of 10) | 0.99× (4 of 10) | 0.98× (4 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes1984-nes | 10 | 0.0073 | 1.10× (8 of 10) | 1.06× (6 of 10) | 0.97× (4 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 1 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes1988-nes | 10 | 0.00746 | 0.93× (3 of 10) | 1.00× (5 of 10) | 1.07× (7 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes1992-nes | 10 | 0.00779 | 0.98× (4 of 10) | 0.97× (5 of 10) | 0.97× (5 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes1996-nes | 10 | 0.00686 | 0.93× (4 of 10) | 1.02× (6 of 10) | 1.08× (6 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes2000-nes | 10 | 0.00665 | 0.94× (3 of 10) | 0.97× (3 of 10) | 0.97× (4 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes_logit_data-nes_logit_model | 2 | 0.0168 | 0.85× (1 of 10) | 0.91× (2 of 10) | 1.21× (7 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 0 | 0 / 1 / 2 / 1 | 0 | 0 |
+| one_comp_mm_elim_abs-one_comp_mm_elim_abs | 4 | 0.00842 | 0.83× (4 of 10) | 0.77× (4 of 10) | 1.33× (6 of 10) | 1.00× (2 of 10) | 12.5 / 138.5 / 90 / 7.5 | 5 / 10 / 4 / 7 | 2 / 3 / 2 / 1 | 1 | 1 |
+| radon_all-radon_pooled | 3 | 0.0898 | 0.96× (4 of 10) | 0.98× (4 of 10) | 1.02× (6 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| radon_mn-radon_pooled | 3 | 0.0861 | 0.99× (4 of 10) | 1.00× (5 of 10) | 1.02× (6 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| sblrc-blr | 6 | 0.00755 | 2.87× (10 of 10) | 2.61× (10 of 10) | 0.85× (2 of 10) | 0.90× (4 of 10) | 0 / 0 / 0 / 0 | 1 / 0 / 1 / 0 | 1 / 0 / 0 / 0 | 5 | 0 |
+| sblri-blr | 6 | 0.0143 | 4.63× (10 of 10) | 4.46× (10 of 10) | 0.93× (0 of 10) | 0.95× (4 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 3.5 | 0 |
+| wells_data-wells_dist | 2 | 0.00761 | 3.27× (10 of 10) | 2.64× (10 of 10) | 0.85× (2 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 1 / 0 / 1 / 0 | 0 | 0 |
+| wells_data-wells_dist100_model | 2 | 0.0365 | 0.85× (3 of 10) | 1.01× (6 of 10) | 1.19× (8 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
 <!-- END GENERATED: posteriordb-table -->
 
 <!-- BEGIN GENERATED: posteriordb-findings -->
 - **`arcsinh` vs stock NUTS** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `arcsinh` better on 24 of 58 posteriors, worse by more than a fifth on 9; median over posteriors 0.98× (range 0.11× to 95.00×).
-- **`tukey_h` vs stock NUTS** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `tukey_h` better on 24 of 58 posteriors, worse by more than a fifth on 8; median over posteriors 0.99× (range 0.03× to 47.48×).
-- **`tukey_h` vs `arcsinh`** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `tukey_h` better on 31 of 58 posteriors, worse by more than a fifth on 11; median over posteriors 1.02× (range 0.10× to 7.22×).
-- **Posteriors where most runs disagree with the reference** (a z-score above 5 on at least half the seeds): `stock`: 3 of 58 (arma-arma11, eight_schools-eight_schools_centered, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `arcsinh`: 3 of 58 (eight_schools-eight_schools_centered, kilpisjarvi_mod-kilpisjarvi, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `tukey_h`: 4 of 58 (earnings-earn_height, eight_schools-eight_schools_centered, kidiq-kidscore_interaction, one_comp_mm_elim_abs-one_comp_mm_elim_abs).
-- **Posteriors with divergences on at least half the seeds**: `stock`: 6 of 58 (arma-arma11, bball_drive_event_0-hmm_drive_0, eight_schools-eight_schools_centered, gp_pois_regr-gp_pois_regr, mcycle_gp-accel_gp, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `arcsinh`: 24 of 58; `tukey_h`: 20 of 58.
-- **Posteriors not converged on at least half the seeds** (max R-hat above 1.01): `stock`: 3 of 58 (arma-arma11, bball_drive_event_0-hmm_drive_0, eight_schools-eight_schools_centered); `arcsinh`: 3 of 58 (arma-arma11, eight_schools-eight_schools_centered, kilpisjarvi_mod-kilpisjarvi); `tukey_h`: 4 of 58 (arma-arma11, earnings-earn_height, eight_schools-eight_schools_centered, kidiq-kidscore_interaction).
+- **`tukey_h` vs stock NUTS** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `tukey_h` better on 27 of 58 posteriors, worse by more than a fifth on 7; median over posteriors 1.00× (range 0.03× to 75.37×).
+- **`tukey_h` vs `arcsinh`** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `tukey_h` better on 31 of 58 posteriors, worse by more than a fifth on 9; median over posteriors 1.02× (range 0.09× to 12.78×).
+- **`tukey_h0` (h = 0 everywhere) vs stock NUTS** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `tukey_h0` better on 36 of 58 posteriors, worse by more than a fifth on 0; median over posteriors 1.02× (range 0.90× to 130.57×).
+- **Posteriors where most runs disagree with the reference** (a z-score above 5 on at least half the seeds): `stock`: 3 of 58 (arma-arma11, eight_schools-eight_schools_centered, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `arcsinh`: 3 of 58 (eight_schools-eight_schools_centered, kilpisjarvi_mod-kilpisjarvi, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `tukey_h`: 2 of 58 (earnings-earn_height, eight_schools-eight_schools_centered); `tukey_h0`: 2 of 58 (eight_schools-eight_schools_centered, one_comp_mm_elim_abs-one_comp_mm_elim_abs).
+- **Posteriors with divergences on at least half the seeds**: `stock`: 6 of 58 (arma-arma11, bball_drive_event_0-hmm_drive_0, eight_schools-eight_schools_centered, gp_pois_regr-gp_pois_regr, mcycle_gp-accel_gp, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `arcsinh`: 24 of 58; `tukey_h`: 17 of 58; `tukey_h0`: 5 of 58 (eight_schools-eight_schools_centered, eight_schools-eight_schools_noncentered, gp_pois_regr-gp_pois_regr, mcycle_gp-accel_gp, one_comp_mm_elim_abs-one_comp_mm_elim_abs).
+- **Posteriors not converged on at least half the seeds** (max R-hat above 1.01): `stock`: 3 of 58 (arma-arma11, bball_drive_event_0-hmm_drive_0, eight_schools-eight_schools_centered); `arcsinh`: 3 of 58 (arma-arma11, eight_schools-eight_schools_centered, kilpisjarvi_mod-kilpisjarvi); `tukey_h`: 3 of 58 (arma-arma11, earnings-earn_height, eight_schools-eight_schools_centered); `tukey_h0`: 2 of 58 (arma-arma11, eight_schools-eight_schools_centered).
 - **Phase 1 calibrated off the posterior** (median over seeds of the largest distance between the calibrated location and the run's final median, above 3 posterior scales): `arcsinh`: 10 of 58 posteriors, worse than stock by more than a fifth on 2 of them; `tukey_h`: 10 of 58 posteriors, worse than stock by more than a fifth on 1 of them.
-- **The `tukey_h` guard** (median over seeds) set h > 0 on 103 of 394 unconstrained coordinates (31 of 58 posteriors); everywhere else the h-map is the affine map.
+- **The `tukey_h` guard** (median over seeds) set h > 0 on 73 of 394 unconstrained coordinates (22 of 58 posteriors); everywhere else the h-map is the affine map. On the 56 posteriors whose reference draws include every parameter, from Phase 1's draws it set h > 0 on 73 of 371 coordinates, and from as many exact posterior draws on 11.
+- **`tukey_h` by the guard's decision**, against its h = 0 control `tukey_h0`, which differs only in those decisions (per-posterior medians over seeds): where it set h > 0 somewhere (22 of 58 posteriors), `tukey_h` vs `tukey_h0` 0.83× (better on 1, worse by more than a fifth on 11); where it kept h = 0 on every coordinate (36 of 58), 1.00×.
 - **`TailAlignmentWarning`** on the default `arcsinh` runs' unconstrained draws fired, on at least half the seeds, on 0 of 58 posteriors.
 <!-- END GENERATED: posteriordb-findings -->
 
 **What the table does and does not show.**
 - It compares the transforms with stock NUTS on Stan's unconstrained parameterisation of each model, as posteriordb defines it. Most of these posteriors are regressions that stock NUTS already samples well, so Table C tests whether the transforms are safe as a default, not whether they help on heavy tails (Tables A and B).
-- The split by the guard's decision is observational: the guard's decision and the posterior are not varied independently. Running `tukey_h` with h held at 0, which is the `affine` arm, on the same posteriors would test whether the h > 0 decisions cause the losses.
+- `tukey_h0` differs from `tukey_h` only in the guard's decisions, so their paired ratio is what the h > 0 decisions did on each posterior.
+- The guard's decisions on exact draws show why most of those decisions were made. Phase 1 ends before the chains have reached the posterior, and its pooled draws look heavy-tailed. The ESS correction (§2.6) cannot see a transient that every chain shares.
+- `tukey_h0` is not stock NUTS. It runs Phase 1 under the arcsinh map and then samples with a calibrated affine map, so its gains over stock NUTS are warm-up effects, like those on the anisotropic Gaussian of Table A. On heavy-tailed targets it is close to stock NUTS (Table A).
+- `arcsinh` and `tukey_h0` share Phase 1 and differ in the final map: arcsinh warps every coordinate, light ones included. That warp is the likely source of `arcsinh`'s extra divergences (§2.2), since `tukey_h0`, which warps nothing, has about as many as stock NUTS.
 - Each run has the protocol of Table A; stock NUTS on posteriordb is usually run with a longer warm-up.
 
 ### 5.4 Single-seed comparisons (Tables 1–5)
@@ -852,14 +857,13 @@ Seed 42 only, 4 chains × 1,000 draws after 1,000 warm-up steps, NUTS tree depth
 
 **Not yet evaluated:**
 - elliptical heavy tails with several scales, beyond the rotated *t* targets of Table A;
-- diffeomorphic MCMC (Brešar & Mijatović, 2026), for which no public code was found;
-- the `affine` arm on posteriordb, which would test whether the `tukey_h` guard's h > 0 decisions cause its losses there (§5.3).
+- diffeomorphic MCMC (Brešar & Mijatović, 2026), for which no public code was found.
 
 **Alternative transforms under exploration** (exploration branches, not part of the library): whitened radial and block-structured maps for elliptical heavy tails.
 
 **The new options:**
 - The `tukey_h` guard and the tail-alignment warning were calibrated on synthetic targets, and both can be wrong in the ways described in §2.6 and §2.7.
-- On posteriordb (§5.3) the guard sets h > 0 on coordinates of many posteriors, and those are the posteriors where `tukey_h` loses. Its test treats autocorrelated, early warm-up draws as independent; a guard that accounts for that is open work.
+- On posteriordb (§5.3) most of the guard's h > 0 decisions come from Phase 1's draws, which have not yet reached the posterior, and those decisions cause `tukey_h`'s losses there. Correcting the test for autocorrelation (§2.6) removes only some of them. Deciding later in warm-up, or from gradients, is open work, as is a test that tells polynomial tails from the heavy-looking marginals of a funnel.
 
 **Engineering:**
 - **Speed.** `UnifiedRobustNUTS` is a NumPy implementation and is slower per gradient than BlackJAX; the JAX pipeline is the faster path.
@@ -880,7 +884,7 @@ Check R-hat and ESS as usual.
 - **Heavy tails that are strongly rotated relative to the coordinates:** gains are smaller and less reliable, and a tail can be missed without warning (Table A). nutpie's normalizing-flow adaptation is worth trying there (Table B).
 - **Targets that stock NUTS already samples well:** the transform is not expected to help there, and on real posteriors it can add divergences (Table C). Use it when you expect heavy tails, not as a default for every model.
 
-**Try the Tukey h-map.** On axis-aligned heavy tails, try `transform_kind="tukey_h"` (Table A compares it with arcsinh). Check `result.transform.h` to see which coordinates were warped. If it is positive on coordinates you expect to be light-tailed, prefer arcsinh or stock NUTS: on real posteriors, the guard's h > 0 decisions are where `tukey_h` lost (Table C).
+**Try the Tukey h-map.** On axis-aligned heavy tails, try `transform_kind="tukey_h"` (Table A compares it with arcsinh). Check `result.transform.h` to see which coordinates were warped. If it is positive on coordinates you expect to be light-tailed, rerun with `tukey_h_level=0` or use stock NUTS: on real posteriors, the guard's h > 0 decisions are what cost `tukey_h` efficiency (Table C).
 
 **Heed the warning.** If `TailAlignmentWarning` fires, treat tail estimates with caution. Reparameterise the model, or try a method that follows tail directions, such as nutpie's flow (Table B).
 
