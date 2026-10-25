@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 from scipy import special, stats
 
+from mcmc_robust.diagnostics.ess import compute_mean_ess
 from mcmc_robust.integrations import JaxTukeyHTransform
 from mcmc_robust.jax_unified_nuts import (
     TRANSFORM_KINDS,
@@ -122,10 +123,77 @@ def test_calibration_likelihood_ratio_test_definition() -> None:
         ll0 = np.sum(stats.norm.logpdf(x, loc=cal.location[j], scale=cal.radius_gaussian[j]))
         np.testing.assert_allclose(cal.lr_statistic[j], max(2.0 * (ll1 - ll0), 0.0), rtol=1e-8, atol=1e-8)
     assert np.all(cal.lr_statistic >= 0.0)
-    expected_p = np.where(cal.lr_statistic > 0.0, 0.5 * stats.chi2.sf(cal.lr_statistic, df=1), 1.0)
+    # A 2-D pilot is one chain: the statistic is deflated by the ESS of the efficient score along it.
+    for j in range(pilot.shape[1]):
+        z = (pilot[:, j] - cal.location[j]) / cal.radius_gaussian[j]
+        ess = compute_mean_ess((z**4 - 6.0 * z**2 + 3.0)[:, np.newaxis])[0]
+        assert cal.ess_fraction[j] == pytest.approx(min(1.0, ess / N_PHASE1), rel=1e-12)
+    deflated = cal.lr_statistic * cal.ess_fraction
+    expected_p = np.where(deflated > 0.0, 0.5 * stats.chi2.sf(deflated, df=1), 1.0)
     np.testing.assert_allclose(cal.p_value, expected_p, rtol=1e-12)
     np.testing.assert_array_equal(cal.heavy, cal.p_value < 0.05)
     assert cal.heavy[0] and not cal.heavy[2]
+
+
+def _ar1(rng: np.random.Generator, phi: float, shape: tuple[int, ...]) -> np.ndarray:
+    """Stationary AR(1) series along the last axis, N(0, 1) marginals."""
+    g = np.empty(shape)
+    g[..., 0] = rng.standard_normal(shape[:-1])
+    eps = rng.standard_normal(shape) * np.sqrt(1.0 - phi**2)
+    for t in range(1, shape[-1]):
+        g[..., t] = phi * g[..., t - 1] + eps[..., t]
+    return g
+
+
+@pytest.mark.unit
+def test_the_guard_deflates_its_statistic_by_the_effective_fraction_of_the_efficient_score() -> None:
+    """With (chains, draws, d) pilot draws, f = min(1, ESS / n) of He4(z) uses the chains separately (split chains).
+
+    Under h = 0 the likelihood-ratio statistic is the squared standardised sum of He4(z) / 2; autocorrelation and
+    disagreement between chains inflate that sum's variance by n / ESS, so the test uses f times the statistic.
+    """
+    rng = np.random.default_rng(6)
+    chains, draws = 4, 38
+    pilot = np.stack(
+        [rng.standard_normal((chains, draws)), _ar1(rng, 0.95, (chains, draws)), rng.standard_cauchy((chains, draws))],
+        axis=-1,
+    )
+    cal = calibrate_jax_tukey_h_transform(pilot)
+    for j in range(3):
+        z = (pilot[:, :, j] - cal.location[j]) / cal.radius_gaussian[j]
+        ess = compute_mean_ess((z**4 - 6.0 * z**2 + 3.0)[:, :, np.newaxis])[0]
+        assert cal.ess_fraction[j] == pytest.approx(min(1.0, ess / (chains * draws)), rel=1e-12)
+    deflated = cal.lr_statistic * cal.ess_fraction
+    np.testing.assert_allclose(
+        cal.p_value, np.where(deflated > 0.0, 0.5 * stats.chi2.sf(deflated, df=1), 1.0), rtol=1e-12
+    )
+    np.testing.assert_array_equal(cal.heavy, cal.p_value < TUKEY_H_TEST_LEVEL)
+    assert cal.heavy[2]
+    # The fit itself pools the chains: location, scales, h_mle and the statistic are those of the flattened draws.
+    flat = calibrate_jax_tukey_h_transform(pilot.reshape(-1, 3))
+    for field in ("location", "radius_gaussian", "radius_mle", "h_mle", "lr_statistic"):
+        np.testing.assert_array_equal(getattr(cal, field), getattr(flat, field))
+
+
+@pytest.mark.unit
+@pytest.mark.statistical
+def test_the_guard_holds_its_level_on_autocorrelated_chains_and_keeps_its_power() -> None:
+    """400 replicates of 4 chains x 38 AR(1) draws (phi = 0.95), the shape of the pipeline's Phase 1 pilot.
+
+    Over 5 seeds of this experiment, Gaussian chains got h > 0 in 6.0-7.7% of replicates without the ESS
+    deflation and 0.3-1.0% with it (level 1%), and Cauchy chains (the same AR(1) through the Cauchy quantile
+    function) in 96.5-98.8%. Asserted: at most 2.5% (a binomial standard deviation at 1% is 0.5%), at least 4%
+    without the deflation, and at least 93%.
+    """
+    rng = np.random.default_rng(100)
+    reps = 400
+    gauss = np.moveaxis(3.0 + 0.2 * _ar1(rng, 0.95, (reps, 4, 38)), 0, -1)
+    cauchy = np.moveaxis(stats.cauchy.ppf(stats.norm.cdf(_ar1(rng, 0.95, (reps, 4, 38)))), 0, -1)
+    cal_gauss = calibrate_jax_tukey_h_transform(gauss, min_radius=1e-3, max_radius=1e3)
+    cal_cauchy = calibrate_jax_tukey_h_transform(cauchy, min_radius=1e-3, max_radius=1e3)
+    assert np.mean(cal_gauss.heavy) <= 0.025
+    assert np.mean(0.5 * stats.chi2.sf(cal_gauss.lr_statistic, df=1) < TUKEY_H_TEST_LEVEL) >= 0.04
+    assert np.mean(cal_cauchy.heavy) >= 0.93
 
 
 @pytest.mark.unit
@@ -174,8 +242,14 @@ def test_calibration_clips_mask_validation_and_degenerate_columns() -> None:
     stacked = calibrate_jax_tukey_h_transform(pilot.reshape(4, N_PHASE1 // 4, 5), min_radius=0.1, max_radius=100.0)
     np.testing.assert_array_equal(stacked.h, calibrate_jax_tukey_h_transform(pilot, min_radius=0.1, max_radius=100.0).h)
 
+    # Level 0 never rejects h = 0: the affine map everywhere (the h = 0 control arm of the benchmarks).
+    never = calibrate_jax_tukey_h_transform(pilot, level=0.0, min_radius=0.1, max_radius=100.0, max_h=1.5)
+    assert not never.heavy.any() and np.all(never.h == 0.0)
+    np.testing.assert_array_equal(never.lr_statistic, cal.lr_statistic)
+    np.testing.assert_array_equal(never.radii, np.clip(never.radius_gaussian, 0.1, 100.0))
+
     for bad in (
-        {"level": 0.0},
+        {"level": -0.1},
         {"level": 1.0},
         {"max_h": 0.0},
         {"min_radius": 0.0},

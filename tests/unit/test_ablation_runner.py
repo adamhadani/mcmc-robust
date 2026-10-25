@@ -44,7 +44,7 @@ def test_quick_config_is_small_and_full_config_matches_the_protocol() -> None:
     assert full.seeds == tuple(range(10))
     assert (full.tune, full.draws, full.chains, full.max_num_doublings) == (500, 1000, 4, 10)
     assert full.targets == ar.ABLATION_TARGET_NAMES
-    assert set(full.arms) == {"stock", "stock_ta95", "arcsinh", "affine", "scale_mixture", "tukey_h"}
+    assert set(full.arms) == {"stock", "stock_ta95", "arcsinh", "affine", "scale_mixture", "tukey_h", "tukey_h0"}
     assert full.tail_probs == (0.01, 0.99)
     assert ar.ARMS["stock"].target_accept == 0.80
     assert ar.ARMS["stock_ta95"].target_accept == 0.95
@@ -53,8 +53,13 @@ def test_quick_config_is_small_and_full_config_matches_the_protocol() -> None:
     assert ar.ARMS["tukey_h"].transform_kind == "tukey_h"
     assert ar.ARMS["tukey_h"].target_accept == 0.80
     assert not ar.ARMS["tukey_h"].augmented
-    # The Tukey h-map arm runs on every target.
-    assert all(full.applies(make_ablation_target(t), "tukey_h") for t in ar.ABLATION_TARGET_NAMES)
+    # The Tukey h-map arm and its h = 0 control (the same pipeline with the guard never rejecting) run on every target.
+    assert ar.ARMS["tukey_h"].tukey_h_level is None
+    assert ar.ARMS["tukey_h0"].transform_kind == "tukey_h"
+    assert ar.ARMS["tukey_h0"].tukey_h_level == 0.0
+    assert all(
+        full.applies(make_ablation_target(t), a) for t in ar.ABLATION_TARGET_NAMES for a in ("tukey_h", "tukey_h0")
+    )
     assert ar.ARMS["stock"].transform_kind == ar.ARMS["scale_mixture"].transform_kind == "identity"
 
 
@@ -218,11 +223,15 @@ def test_aggregation_on_handmade_rows() -> None:
 def test_arms_share_paired_initial_positions(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every arm of a seed starts from the same x-space positions; the scale mixture starts at their preimage."""
     calls: list[tuple[str, np.ndarray]] = []
+    levels: list[float | None] = []
+    results: list[Any] = []
     real = ar.sample_blackjax_unified_nuts
 
     def spy(*args: Any, **kwargs: Any) -> Any:
         calls.append((kwargs["transform_kind"], np.asarray(kwargs["x0"])))
-        return real(*args, **kwargs)
+        levels.append(kwargs.get("tukey_h_level"))
+        results.append(real(*args, **kwargs))
+        return results[-1]
 
     monkeypatch.setattr(ar, "sample_blackjax_unified_nuts", spy)
     config = ar.AblationConfig.quick(targets=("mvt_iso_nu2",), seeds=(3,), tune=30, draws=20)
@@ -243,6 +252,10 @@ def test_arms_share_paired_initial_positions(monkeypatch: pytest.MonkeyPatch) ->
             np.testing.assert_allclose(np.asarray(jax.vmap(sm.to_x)(jnp.asarray(start))), x0, atol=1e-12)
         else:
             np.testing.assert_array_equal(start, x0)
+    # Each arm's guard level reaches the pipeline; the h = 0 control warps nothing.
+    assert levels == [ar.ARMS[arm].guard_level for arm in ar.ARM_NAMES]
+    h0 = results[ar.ARM_NAMES.index("tukey_h0")].transform
+    np.testing.assert_array_equal(np.asarray(h0.h), np.zeros(spec.d))
 
 
 @pytest.mark.unit

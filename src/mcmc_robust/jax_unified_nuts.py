@@ -58,8 +58,8 @@ not a line-by-line port:
    - `"tukey_h"`: the same Phase 1 (under the initial arcsinh map), then Tukey's h-map
      $x_i = \mu_i + R_i z_i e^{h_i z_i^2 / 2}$ (`JaxTukeyHTransform`) calibrated by
      `calibrate_jax_tukey_h_transform`: $\mu_i$ the median, $(R_i, h_i)$ by Tukey-h maximum
-     likelihood, and $h_i = 0$ (affine) unless a likelihood-ratio test rejects $h_i = 0$ at level
-     `tukey_h_level`. A polynomial tail of index $\alpha$ pulls back to a Gaussian tail of variance
+     likelihood, and $h_i = 0$ (affine) unless a likelihood-ratio test, deflated by the effective
+     sample size of the pilot draws, rejects $h_i = 0$ at level `tukey_h_level`. A polynomial tail of index $\alpha$ pulls back to a Gaussian tail of variance
      $1 / (\alpha h_i)$. Without Phase 1 nothing is tested and every $h_i = 0$.
 """
 
@@ -81,6 +81,7 @@ from scipy import optimize, stats
 from xarray import DataTree
 
 from mcmc_robust.core.target import TargetDistribution
+from mcmc_robust.diagnostics.ess import compute_mean_ess
 from mcmc_robust.diagnostics.tail_alignment import TailAlignmentReport, TailAlignmentWarning, tail_alignment_diagnostic
 from mcmc_robust.integrations import (
     JaxAffineTransform,
@@ -294,7 +295,7 @@ class TukeyHCalibration:
     r"""Result of `calibrate_jax_tukey_h_transform`: the calibrated transform and the per-coordinate fit.
 
     Arrays have shape `(d,)`. A coordinate that was not fitted (too few finite draws, or no spread)
-    has `radius_mle = h_mle = NaN`, `lr_statistic = 0` and `p_value = 1`.
+    has `radius_mle = h_mle = NaN`, `lr_statistic = 0`, `ess_fraction = 1` and `p_value = 1`.
 
     Attributes:
         transform: `JaxTukeyHTransform` with `location`, `radii`, `h` and the mask.
@@ -304,7 +305,9 @@ class TukeyHCalibration:
         heavy: Whether coordinate $i$ is masked and the likelihood-ratio test rejected $h_i = 0$.
         lr_statistic: $\Lambda_i = 2(\hat\ell_{1,i} - \hat\ell_{0,i}) \ge 0$, the maximised Tukey-h log-likelihood
             minus the maximised Gaussian ($h = 0$) log-likelihood, both with location $\mu_i$.
-        p_value: $\tfrac12 P(\chi^2_1 > \Lambda_i)$ for $\Lambda_i > 0$ and 1 otherwise.
+        ess_fraction: $f_i = \min(1, \mathrm{ESS}_i / n_i)$, the effective fraction of the $n_i$ draws for the
+            efficient score of $h$ at $h = 0$ (see `calibrate_jax_tukey_h_transform`, step 3).
+        p_value: $\tfrac12 P(\chi^2_1 > f_i \Lambda_i)$ for $f_i \Lambda_i > 0$ and 1 otherwise.
         radius_mle: $\hat R_i$ of the Tukey-h fit (before clipping).
         h_mle: $\hat h_i \in [0, h_{\max}]$ of the Tukey-h fit.
         radius_gaussian: $\hat R_{0,i} = (\overline{(x_i - \mu_i)^2})^{1/2}$, the $h = 0$ fit.
@@ -317,6 +320,7 @@ class TukeyHCalibration:
     h: np.ndarray
     heavy: np.ndarray
     lr_statistic: np.ndarray
+    ess_fraction: np.ndarray
     p_value: np.ndarray
     radius_mle: np.ndarray
     h_mle: np.ndarray
@@ -382,6 +386,22 @@ def _fit_tukey_h_mle(u: np.ndarray, max_h: float) -> tuple[float, float, float]:
     return float(np.exp(best.x[0])), float(best.x[1]), float(best.fun)
 
 
+def _efficient_score_ess_fraction(chains: np.ndarray, location: float, radius: float) -> float:
+    r"""$\min(1, \mathrm{ESS} / n)$ of $He_4(z)$, $z = (x - \mu) / R$, over chains of shape `(chains, draws)`.
+
+    Non-finite draws are dropped from each chain and the chains are cut to the shortest one's length.
+    """
+    kept = [c[np.isfinite(c)] for c in chains]
+    length = min(len(c) for c in kept)
+    z = np.stack([c[:length] for c in kept]) - location
+    z /= radius
+    score = z**4 - 6.0 * z**2 + 3.0
+    if score.size == 0:
+        return 1.0
+    ess = float(np.asarray(compute_mean_ess(score[:, :, np.newaxis]))[0])
+    return min(1.0, ess / score.size)
+
+
 def calibrate_jax_tukey_h_transform(
     pilot_samples: Any,
     d: int | None = None,
@@ -400,19 +420,28 @@ def calibrate_jax_tukey_h_transform(
        Goerg 2015) model $x = \mu_i + R z e^{h z^2 / 2}$, $z \sim N(0, 1)$, over $R > 0$ and
        $0 \le h \le h_{\max}$; $\hat R_{0,i}$ is the closed-form maximiser at $h = 0$.
     3. **Guard.** $\Lambda_i = 2(\hat\ell_1 - \hat\ell_0)$ tests $h = 0$ against $h > 0$. Under the null
-       $h = 0$ lies on the boundary of the parameter space, so $\Lambda_i$ is asymptotically
-       $\tfrac12\chi^2_0 + \tfrac12\chi^2_1$ (Self & Liang 1987) and $p_i = \tfrac12 P(\chi^2_1 > \Lambda_i)$.
-       A coordinate gets $(\hat R_i, \hat h_i)$ only if it is masked and $p_i <$ `level`; otherwise
-       it gets $(\hat R_{0,i}, 0)$, the affine map. Light coordinates thus keep $h = 0$, which the
-       pullback needs for its Gaussian-tail (geometric ergodicity) window, unless the data reject it.
+       $h = 0$ lies on the boundary of the parameter space, so for independent draws $\Lambda_i$ is
+       asymptotically $\tfrac12\chi^2_0 + \tfrac12\chi^2_1$ (Self & Liang 1987). Near the null, $\Lambda_i$ is the
+       squared standardised sum of the efficient score of $h$ (with $R$ profiled out), $\tfrac12 He_4(z)$ with
+       $He_4(z) = z^4 - 6 z^2 + 3$ and $z = (x - \mu_i) / \hat R_{0,i}$. Pilot draws are autocorrelated, and
+       chains may still disagree; either inflates the variance of that sum by $n_i / \mathrm{ESS}_i$, where
+       $\mathrm{ESS}_i$ is the effective sample size of $He_4(z)$ over the chains (`compute_mean_ess`, split
+       chains). The test therefore uses $f_i \Lambda_i$ with $f_i = \min(1, \mathrm{ESS}_i / n_i)$, and
+       $p_i = \tfrac12 P(\chi^2_1 > f_i \Lambda_i)$. A coordinate gets $(\hat R_i, \hat h_i)$ only if it is masked
+       and $p_i <$ `level`; otherwise it gets $(\hat R_{0,i}, 0)$, the affine map. Light coordinates thus keep
+       $h = 0$, which the pullback needs for its Gaussian-tail (geometric ergodicity) window, unless the data
+       reject it. `level = 0` never rejects, so every coordinate keeps $h = 0$ (an ablation control).
     4. **Clips.** $h_{\max}$ bounds $\hat h_i$ in the fitted model's own units ($z \sim N(0, 1)$).
        $R_i$ is then clipped to $[R_{\min}, R_{\max}]$ and $h_i$ multiplied by $(R_i^{\mathrm{clip}} / R_i)^2$.
        That rescales $z$ only, since the map's shape depends on $h / R^2$ alone (`hMap_rescale`), so
        the clip never changes which density is sampled or the tail shape.
 
-    The test assumes independent draws; Phase 1 warm-up draws are autocorrelated, which can make it
-    reject more often than `level`. Coordinates with fewer than `TUKEY_H_MIN_DRAWS` finite draws or
-    no spread are not tested ($h_i = 0$, $R_i = R_{\min}$ if there is no spread).
+    The fit pools the chains. The effective sample size uses them separately: a 2-D pilot is one chain, and
+    non-finite draws are dropped from each chain, which is then cut to the shortest chain's length. The
+    correction covers dependence and disagreement that the pilot draws themselves show; it cannot detect
+    pilot draws that all chains share but the posterior does not (a common transient). Coordinates with
+    fewer than `TUKEY_H_MIN_DRAWS` finite draws or no spread are not tested ($h_i = 0$, $R_i = R_{\min}$ if
+    there is no spread).
 
     Parameters:
         pilot_samples: Primal draws of shape `(n_samples, d)` or `(chains, draws, d)`.
@@ -420,7 +449,8 @@ def calibrate_jax_tukey_h_transform(
         mask: Optional boolean mask of shape `(d,)`; unmasked coordinates are never warped.
         min_radius: Lower clip $R_{\min} > 0$ on $R_i$.
         max_radius: Upper clip $R_{\max} \ge R_{\min}$ on $R_i$.
-        level: Per-coordinate level of the test of $h = 0$, in $(0, 1)$ (default `TUKEY_H_TEST_LEVEL`).
+        level: Per-coordinate level of the test of $h = 0$, in $[0, 1)$ (default `TUKEY_H_TEST_LEVEL`); 0 never
+            rejects.
         max_h: Upper bound $h_{\max} > 0$ on the fitted $\hat h_i$ (default `TUKEY_H_MAX_H`).
 
     Returns:
@@ -430,16 +460,16 @@ def calibrate_jax_tukey_h_transform(
         raise ValueError(f"min_radius must be strictly positive, got {min_radius}")
     if min_radius > max_radius:
         raise ValueError(f"min_radius ({min_radius}) must be <= max_radius ({max_radius})")
-    if not 0.0 < level < 1.0:
-        raise ValueError(f"level must be in (0, 1), got {level}")
+    if not 0.0 <= level < 1.0:
+        raise ValueError(f"level must be in [0, 1), got {level}")
     if not (np.isfinite(max_h) and max_h > 0.0):
         raise ValueError(f"max_h must be finite and positive, got {max_h}")
 
     arr = np.asarray(pilot_samples, dtype=np.float64)
     if arr.ndim == 1:
         arr = arr.reshape(-1, d) if d is not None and d > 1 else arr[:, np.newaxis]
-    elif arr.ndim >= 3:
-        arr = arr.reshape(-1, arr.shape[-1])
+    chains = arr.reshape(-1, *arr.shape[-2:]) if arr.ndim >= 3 else arr[np.newaxis]  # (chains, draws, d)
+    arr = chains.reshape(-1, chains.shape[-1])
     d_actual = int(arr.shape[-1])
     if d is not None and int(d) != d_actual:
         raise ValueError(f"pilot_samples last dimension {d_actual} does not match d={d}")
@@ -452,6 +482,7 @@ def calibrate_jax_tukey_h_transform(
     radius_mle = np.full(d_actual, np.nan)
     h_mle = np.full(d_actual, np.nan)
     lr_statistic = np.zeros(d_actual)
+    ess_fraction = np.ones(d_actual)
     for j in range(d_actual):
         x = arr[:, j][np.isfinite(arr[:, j])]
         if x.size == 0:
@@ -466,8 +497,10 @@ def calibrate_jax_tukey_h_transform(
         nll0 = float(np.log(radius_gaussian[j])) + 0.5 + _LOG_SQRT_2PI
         radius_mle[j], h_mle[j], nll1 = _fit_tukey_h_mle(u, max_h)
         lr_statistic[j] = max(2.0 * x.size * (nll0 - nll1), 0.0)
+        ess_fraction[j] = _efficient_score_ess_fraction(chains[:, :, j], location[j], radius_gaussian[j])
 
-    p_value = np.where(lr_statistic > 0.0, 0.5 * stats.chi2.sf(lr_statistic, df=1), 1.0)
+    deflated = ess_fraction * lr_statistic
+    p_value = np.where(deflated > 0.0, 0.5 * stats.chi2.sf(deflated, df=1), 1.0)
     heavy = mask_arr & (p_value < level)
     radius = np.where(heavy, radius_mle, radius_gaussian)
     h = np.where(heavy, h_mle, 0.0)
@@ -482,12 +515,20 @@ def calibrate_jax_tukey_h_transform(
         h=h,
         heavy=heavy,
         lr_statistic=lr_statistic,
+        ess_fraction=ess_fraction,
         p_value=p_value,
         radius_mle=radius_mle,
         h_mle=h_mle,
         radius_gaussian=radius_gaussian,
         level=float(level),
     )
+
+
+def phase1_schedule(tune: int) -> tuple[int, int]:
+    r"""Phase 1's length $W_1 = \max(10, \lfloor 0.15 \cdot \text{tune} \rfloor)$ and the step from which its draws
+    calibrate the transform (its second half); each chain contributes `W1 - start` pilot draws."""
+    w1 = max(10, int(0.15 * tune))
+    return w1, max(1, w1 // 2)
 
 
 def sample_blackjax_unified_nuts(
@@ -564,8 +605,9 @@ def sample_blackjax_unified_nuts(
         transform_kind: `"arcsinh"` (default), `"affine"` (same calibration, no tail warping),
             `"identity"` (stock window-adapted NUTS in $x$-space, no Phase 1) or `"tukey_h"`
             (Tukey h-map with a tested per-coordinate $h \ge 0$); see the module docstring, item 5.
-        tukey_h_level: Level of the per-coordinate test of $h = 0$ for `transform_kind="tukey_h"`
-            (default: `TUKEY_H_TEST_LEVEL`); see `calibrate_jax_tukey_h_transform`.
+        tukey_h_level: Level in $[0, 1)$ of the per-coordinate test of $h = 0$ for `transform_kind="tukey_h"`
+            (default: `TUKEY_H_TEST_LEVEL`); 0 never rejects, so every $h = 0$. See
+            `calibrate_jax_tukey_h_transform`.
         check_tail_alignment: Whether to run `tail_alignment_diagnostic` on the primal post-warm-up
             draws (default: `True`). The report is stored as `result.tail_alignment`, and a
             `TailAlignmentWarning` is emitted when heavy tails appear to be shared across coordinates:
@@ -648,7 +690,7 @@ def sample_blackjax_unified_nuts(
     phase2_grad_evals = 0
 
     if run_phase1:
-        w1_steps = max(10, int(0.15 * tune))
+        w1_steps, half_idx = phase1_schedule(tune)
         w2_steps = max(10, tune - w1_steps)
 
         z0_batch = jax.vmap(transform_init.forward)(init_x)
@@ -667,7 +709,6 @@ def sample_blackjax_unified_nuts(
         phase1_grad_evals = int(chains + int(jnp.sum(info_p1.info.num_integration_steps)))
 
         # Pull second half of Phase 1 draws back to primal x-space and calibrate location & radii
-        half_idx = max(1, w1_steps // 2)
         z_p1_tail = info_p1.state.position[:, half_idx:, :]
         x_p1_tail = jax.vmap(jax.vmap(transform_init.inverse))(z_p1_tail)
         transform: JaxCoordinateTransform

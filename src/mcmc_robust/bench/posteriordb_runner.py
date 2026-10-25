@@ -1,4 +1,4 @@
-r"""Real posteriors: stock NUTS, arcsinh and Tukey-h on every posteriordb posterior with reference draws.
+r"""Real posteriors: stock NUTS, arcsinh, Tukey-h and its h = 0 control on every posteriordb posterior with reference draws.
 
 Question: on real models, does the transform pay, and does `tukey_h` match or beat `arcsinh`
 without losing accuracy (the evidence needed before making it the default)?
@@ -12,6 +12,8 @@ Arms (`ablation_runner.ARMS`; every arm is `sample_blackjax_unified_nuts` with `
 - `stock`: transform_kind "identity", target acceptance 0.8.
 - `arcsinh`: the calibrated arcsinh pullback (the library default).
 - `tukey_h`: the Tukey h-map with the likelihood-ratio guard.
+- `tukey_h0`: the same pipeline with the guard never rejecting, so h = 0 everywhere; on posteriors where
+  `tukey_h` sets h > 0, the paired ratio `tukey_h` / `tukey_h0` is the effect of those decisions.
 Initial positions are Stan's: Uniform(-2, 2) per unconstrained coordinate, redrawn (at most 100 times)
 until the log density is finite, from `numpy.random.default_rng(seed)` and shared by all arms.
 
@@ -23,10 +25,12 @@ draws (posteriordb names, transformed parameters included):
   probabilities at the reference's 1%, 5%, 95% and 99% quantiles, and means, as z-scores that count
   the Monte Carlo error of the run and of the reference;
 - the tail-alignment check on the sampled (unconstrained) draws, which the library's warning would see;
-- for `tukey_h`, how many coordinates the guard gave $h > 0$ and the largest $h$.
+- for `tukey_h` (and `tukey_h0`), how many coordinates the guard gave $h > 0$ and the largest $h$, and how many
+  it would give $h > 0$ if it saw exact posterior draws instead of Phase 1's: as many reference draws as the
+  Phase 1 pilot has, subsampled with the row's seed and mapped to the unconstrained space.
 
-Aggregates per posterior x arm: median and IQR over seeds, and paired per-seed ratios to `stock` and
-to `arcsinh`.
+Aggregates per posterior x arm: median and IQR over seeds, and paired per-seed ratios to `stock`,
+`arcsinh` and `tukey_h0`.
 
 Usage::
 
@@ -87,7 +91,7 @@ from mcmc_robust.bench.posteriordb import (
 from mcmc_robust.bench.sota_adapters import evaluate_chains_with_arviz
 from mcmc_robust.diagnostics.tail_accuracy import REFERENCE_PROBS, reference_agreement
 from mcmc_robust.diagnostics.tail_alignment import tail_alignment_diagnostic
-from mcmc_robust.jax_unified_nuts import sample_blackjax_unified_nuts
+from mcmc_robust.jax_unified_nuts import calibrate_jax_tukey_h_transform, phase1_schedule, sample_blackjax_unified_nuts
 from mcmc_robust.stan_bridge import StanLogDensity, bridgestan_logdensity_fn
 
 SCHEMA_VERSION: int = 1
@@ -98,10 +102,10 @@ IQR_TO_SD: float = 1.3489795003921634
 #: Draws per chain tried before an initial position is given up on (Stan's limit).
 MAX_INIT_ATTEMPTS: int = 100
 
-DEFAULT_ARMS: tuple[str, ...] = ("stock", "arcsinh", "tukey_h")
+DEFAULT_ARMS: tuple[str, ...] = ("stock", "arcsinh", "tukey_h", "tukey_h0")
 
 #: Arms whose paired per-seed ratios are reported, as the `ratio_vs_<arm>` keys of the aggregates.
-RATIO_BASELINES: tuple[str, ...] = ("stock", "arcsinh")
+RATIO_BASELINES: tuple[str, ...] = ("stock", "arcsinh", "tukey_h0")
 
 ROW_FIELDS: tuple[str, ...] = (
     "posterior",
@@ -141,6 +145,7 @@ ROW_FIELDS: tuple[str, ...] = (
     "tail_alignment_n_heavy",
     "tukey_h_n_positive",
     "tukey_h_max",
+    "tukey_h_ref_positive",
     "calib_location_offset_max",
     "calib_scale_ratio_max",
     "step_size_median",
@@ -166,6 +171,7 @@ AGG_METRICS: tuple[str, ...] = (
     "ref_mean_abs_z",
     "ref_mean_max_abs_z",
     "tukey_h_n_positive",
+    "tukey_h_ref_positive",
     "calib_location_offset_max",
     "calib_scale_ratio_max",
     "wall_time_sec",
@@ -181,6 +187,8 @@ class StanModelLike(StanLogDensity, Protocol):
 
     def param_constrain(self, theta_unc: np.ndarray, *, include_tp: bool = ..., include_gq: bool = ...) -> Any: ...
 
+    def param_unconstrain(self, theta: np.ndarray) -> Any: ...
+
 
 @dataclass(frozen=True)
 class LoadedPosterior:
@@ -191,6 +199,8 @@ class LoadedPosterior:
     reference_names: tuple[str, ...]
     reference_draws: np.ndarray
     columns: tuple[int, ...]
+    #: Reference columns of the model's parameters, in `param_unconstrain` order; None if the reference lacks one.
+    parameter_columns: tuple[int, ...] | None = None
 
     @classmethod
     def from_model(
@@ -201,12 +211,16 @@ class LoadedPosterior:
         missing = [n for n in reference_names if n not in names]
         if missing:
             raise ValueError(f"{name}: reference parameters {missing} are not parameters of the model")
+        params = [stan_name_to_posteriordb(n) for n in model.param_names(include_tp=False)]
         return cls(
             name=name,
             model=model,
             reference_names=tuple(reference_names),
             reference_draws=np.asarray(reference_draws, dtype=np.float64),
             columns=tuple(names.index(n) for n in reference_names),
+            parameter_columns=(
+                tuple(list(reference_names).index(n) for n in params) if set(params) <= set(reference_names) else None
+            ),
         )
 
     @property
@@ -218,6 +232,16 @@ class LoadedPosterior:
     def k(self) -> int:
         """Number of reference parameters (what is scored)."""
         return len(self.reference_names)
+
+    def unconstrained_reference(self, n: int, seed: int) -> np.ndarray | None:
+        """`n` reference draws (subsampled with `seed`) on the unconstrained space, or None if the reference lacks
+        some parameter of the model."""
+        if self.parameter_columns is None:
+            return None
+        flat = self.reference_draws.reshape(-1, self.k)
+        pick = np.random.default_rng(seed).choice(len(flat), size=n, replace=False)
+        cols = list(self.parameter_columns)
+        return np.stack([np.asarray(self.model.param_unconstrain(np.ascontiguousarray(flat[i, cols]))) for i in pick])
 
     def constrain(self, unconstrained: np.ndarray) -> np.ndarray:
         """Maps draws of shape `(..., d)` to the reference columns, shape `(..., k)`."""
@@ -328,6 +352,16 @@ def _calibration_offsets(transform: Any, samples: np.ndarray) -> tuple[float | N
     return _finite_or_none(offset), _finite_or_none(ratio)
 
 
+def _guard_on_reference(post: LoadedPosterior, level: float, seed: int, config: PosteriorDBConfig) -> int | None:
+    """How many coordinates the guard gives h > 0 on exact draws: as many reference draws as the Phase 1 pilot has."""
+    w1, start = phase1_schedule(config.tune)
+    draws = post.unconstrained_reference(config.chains * (w1 - start), seed)
+    if draws is None:
+        return None
+    cal = calibrate_jax_tukey_h_transform(draws, level=level)
+    return int(np.sum(cal.heavy))
+
+
 def run_single(post: LoadedPosterior, arm: str, seed: int, config: PosteriorDBConfig) -> dict[str, Any]:
     """Runs one (posterior, arm, seed) cell and returns its row (`error` holds the message if it failed)."""
     arm_spec = ARMS[arm]
@@ -346,6 +380,7 @@ def run_single(post: LoadedPosterior, arm: str, seed: int, config: PosteriorDBCo
             target_accept=arm_spec.target_accept,
             max_num_doublings=config.max_num_doublings,
             transform_kind=arm_spec.transform_kind,
+            tukey_h_level=arm_spec.guard_level,
             # Scored below by the runner, without a warning that `-W error` would turn into an error row.
             check_tail_alignment=False,
         )
@@ -359,6 +394,7 @@ def run_single(post: LoadedPosterior, arm: str, seed: int, config: PosteriorDBCo
         min_tail_ess = _finite_or_none(m["min_tail_ess"])
         max_rhat = _finite_or_none(m["split_rhat"])
         h = np.asarray(getattr(res.transform, "h", np.zeros(0)))
+        tukey = arm_spec.transform_kind == "tukey_h"
         calibrated = arm_spec.transform_kind != "identity"
         offset, ratio = _calibration_offsets(res.transform, res.samples) if calibrated else (None, None)
         row.update(
@@ -382,8 +418,9 @@ def run_single(post: LoadedPosterior, arm: str, seed: int, config: PosteriorDBCo
             tail_alignment_warning=alignment.warn,
             tail_alignment_max_chi=_finite_or_none(alignment.max_chi),
             tail_alignment_n_heavy=len(alignment.heavy_coordinates),
-            tukey_h_n_positive=int(np.sum(h > 0.0)) if arm_spec.transform_kind == "tukey_h" else None,
-            tukey_h_max=float(np.max(h)) if arm_spec.transform_kind == "tukey_h" and h.size else None,
+            tukey_h_n_positive=int(np.sum(h > 0.0)) if tukey else None,
+            tukey_h_max=float(np.max(h)) if tukey and h.size else None,
+            tukey_h_ref_positive=_guard_on_reference(post, arm_spec.guard_level, seed, config) if tukey else None,
             calib_location_offset_max=offset,
             calib_scale_ratio_max=ratio,
             step_size_median=float(np.median(res.step_size)),
@@ -444,6 +481,10 @@ NOTES: tuple[str, ...] = (
     ),
     "tail_alignment_* is the library's tail-alignment check on the sampled (unconstrained) draws.",
     "tukey_h_n_positive counts unconstrained coordinates whose calibrated h is positive (the guard rejected h = 0).",
+    (
+        "tukey_h_ref_positive: the same guard on exact draws, as many reference draws as Phase 1 calibrates from "
+        "(subsampled with the row's seed, unconstrained); null when the reference lacks a parameter of the model."
+    ),
     (
         "calib_*: Phase 1's location and scale against the run's own post-warm-up draws (unconstrained, scale = "
         "IQR / 1.349): max |mu - median| / scale and max of R / scale or scale / R. Null for stock."

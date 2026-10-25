@@ -20,6 +20,7 @@ import pytest
 from mcmc_robust.bench import posteriordb_runner as pr
 from mcmc_robust.diagnostics.tail_accuracy import reference_agreement
 from mcmc_robust.diagnostics.tail_alignment import tail_alignment_diagnostic
+from mcmc_robust.jax_unified_nuts import TUKEY_H_TEST_LEVEL, calibrate_jax_tukey_h_transform, phase1_schedule
 
 
 class ScaleModel:
@@ -48,6 +49,9 @@ class ScaleModel:
         self._check(theta)
         with np.errstate(over="ignore"):
             return float(-0.5 * np.sum(theta**2)), -np.asarray(theta, dtype=np.float64)
+
+    def param_unconstrain(self, theta: np.ndarray) -> np.ndarray:
+        return np.array([theta[0], np.log(theta[1])])
 
     def param_constrain(self, theta_unc: np.ndarray, include_tp: bool = False, include_gq: bool = False) -> np.ndarray:
         with np.errstate(over="ignore"):
@@ -119,13 +123,15 @@ def test_initial_positions_skip_a_non_finite_density_that_does_not_raise() -> No
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("arm", ["stock", "arcsinh", "tukey_h"])
+@pytest.mark.parametrize("arm", ["stock", "arcsinh", "tukey_h", "tukey_h0"])
 def test_rows_score_constrained_draws_against_the_reference(monkeypatch: pytest.MonkeyPatch, arm: str) -> None:
     """Accuracy and ESS use the constrained reference columns; the tail-alignment check uses the sampled draws."""
     results: list[Any] = []
+    levels: list[float | None] = []
     real = pr.sample_blackjax_unified_nuts
 
     def spy(*args: Any, **kwargs: Any) -> Any:
+        levels.append(kwargs.get("tukey_h_level"))
         results.append(real(*args, **kwargs))
         return results[-1]
 
@@ -135,6 +141,7 @@ def test_rows_score_constrained_draws_against_the_reference(monkeypatch: pytest.
     assert row["error"] is None, row["error"]
     assert list(row) == list(pr.ROW_FIELDS)
     (res,) = results
+    assert levels == [pr.ARMS[arm].guard_level]
     assert res.tail_alignment is None
 
     constrained = post.constrain(res.samples)
@@ -157,12 +164,54 @@ def test_rows_score_constrained_draws_against_the_reference(monkeypatch: pytest.
         mu, radius = np.asarray(res.transform.location), np.asarray(res.transform.radius)
         assert row["calib_location_offset_max"] == pytest.approx(float(np.max(np.abs(mu - med) / scale)))
         assert row["calib_scale_ratio_max"] == pytest.approx(float(np.max(np.maximum(radius / scale, scale / radius))))
-    if arm == "tukey_h":
+    if arm.startswith("tukey_h"):
         h = np.asarray(res.transform.h)
         assert row["tukey_h_n_positive"] == int(np.sum(h > 0.0))
         assert row["tukey_h_max"] == pytest.approx(float(np.max(h)))
     else:
         assert row["tukey_h_n_positive"] is None and row["tukey_h_max"] is None
+    if arm == "tukey_h0":
+        assert row["tukey_h_n_positive"] == 0
+    # The reference lacks tau, a parameter of the model, so the guard cannot be run on exact draws.
+    assert row["tukey_h_ref_positive"] is None
+
+
+@pytest.mark.unit
+def test_the_guard_is_also_run_on_exact_reference_draws_of_the_phase1_pilot_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tukey_h_ref_positive: coordinates the run's guard gives h > 0 on exact draws, as many as Phase 1 calibrates from.
+
+    The draws are the reference posterior's, subsampled with the row's seed and mapped to the unconstrained space.
+    """
+    # A reference whose mu is Cauchy (the runner takes reference draws as given), so the two arms' guards differ.
+    rng = np.random.default_rng(0)
+    reference = np.stack([np.exp(rng.normal(size=(10, 1000))), rng.standard_cauchy((10, 1000))], axis=-1)
+    post = pr.LoadedPosterior.from_model("toy-scale", ScaleModel(), ("tau", "mu"), reference)
+    config = pr.PosteriorDBConfig.quick(**{**QUICK, "tune": 300})
+    w1, start = phase1_schedule(config.tune)
+    n = config.chains * (w1 - start)
+    flat = post.reference_draws.reshape(-1, 2)
+    pick = np.random.default_rng(4).choice(len(flat), size=n, replace=False)
+    unconstrained = np.column_stack([flat[pick, 1], np.log(flat[pick, 0])])  # (mu, log tau)
+    expected = {
+        arm: int(calibrate_jax_tukey_h_transform(unconstrained, level=level).heavy.sum())
+        for arm, level in (("tukey_h", TUKEY_H_TEST_LEVEL), ("tukey_h0", 0.0))
+    }
+    assert expected["tukey_h"] >= 1 and expected["tukey_h0"] == 0  # the fixture separates the arms
+    shapes: list[tuple[int, ...]] = []
+
+    def spy(draws: np.ndarray, **kwargs: Any) -> Any:
+        shapes.append(np.shape(draws))
+        return calibrate_jax_tukey_h_transform(draws, **kwargs)
+
+    monkeypatch.setattr(pr, "calibrate_jax_tukey_h_transform", spy)
+    for arm in ("tukey_h", "tukey_h0"):
+        row = pr.run_single(post, arm, 4, config)
+        assert row["error"] is None, row["error"]
+        assert row["tukey_h_ref_positive"] == expected[arm]
+    assert shapes == [(n, 2), (n, 2)]
+    assert pr.run_single(post, "stock", 4, config)["tukey_h_ref_positive"] is None
 
 
 class HeavyNuisanceModel(ScaleModel):
@@ -228,7 +277,12 @@ def _row(posterior: str, arm: str, seed: int, **metrics: float) -> dict[str, Any
 def test_aggregates_pair_ratios_by_seed_against_stock_and_arcsinh() -> None:
     rows = [
         _row("p", arm, seed, min_tail_ess_per_grad=value, tail_ess_per_grad=value)
-        for arm, values in (("stock", [1.0, 2.0, 4.0]), ("arcsinh", [2.0, 2.0, 2.0]), ("tukey_h", [4.0, 1.0, 8.0]))
+        for arm, values in (
+            ("stock", [1.0, 2.0, 4.0]),
+            ("arcsinh", [2.0, 2.0, 2.0]),
+            ("tukey_h", [4.0, 1.0, 8.0]),
+            ("tukey_h0", [8.0, 1.0, 2.0]),
+        )
         for seed, value in enumerate(values)
     ]
     agg = {(a["posterior"], a["arm"]): a for a in pr.aggregate_rows(rows)}
@@ -238,6 +292,9 @@ def test_aggregates_pair_ratios_by_seed_against_stock_and_arcsinh() -> None:
     assert tukey["ratio_vs_stock"]["min_tail_ess_per_grad"]["median"] == 2.0
     assert tukey["ratio_vs_arcsinh"]["min_tail_ess_per_grad"]["median"] == 2.0
     assert tukey["ratio_vs_arcsinh"]["min_tail_ess_per_grad"]["n"] == 3
+    # Per seed: tukey/tukey_h0 = 0.5, 1, 4.
+    assert tukey["ratio_vs_tukey_h0"]["min_tail_ess_per_grad"]["median"] == 1.0
+    assert "ratio_vs_tukey_h0" not in agg[("p", "tukey_h0")]
     assert "ratio_vs_stock" not in agg[("p", "stock")]
     assert "ratio_vs_arcsinh" not in agg[("p", "arcsinh")]
 
@@ -384,7 +441,7 @@ def test_a_row_cut_off_mid_write_is_run_again(tmp_path: Path) -> None:
 def test_full_config_is_the_reported_protocol() -> None:
     full = pr.PosteriorDBConfig.full()
     assert (full.tune, full.draws, full.chains, full.max_num_doublings) == (500, 1000, 4, 10)
-    assert full.arms == ("stock", "arcsinh", "tukey_h")
+    assert full.arms == ("stock", "arcsinh", "tukey_h", "tukey_h0")
     assert full.posteriors is None
     assert full.mode == "full"
     with pytest.raises(ValueError, match="scale_mixture"):
