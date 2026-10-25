@@ -14,9 +14,9 @@ Arms (every arm: BlackJAX NUTS with window adaptation, `tune` warm-up steps, `dr
   reparameterisation (`targets/scale_mixture.py`), t-family targets and Task 1 only. ESS and
   accuracy are measured on $x$; gradients are counted in the augmented space.
 - `tukey_h`: the same pipeline and Phase 1 with Tukey's h-map $x = \mu + R z e^{h z^2 / 2}$ instead
-  of arcsinh; $(R, h)$ by Tukey-h maximum likelihood, and $h = 0$ unless a likelihood-ratio test
-  rejects it (`calibrate_jax_tukey_h_transform`, default level). All targets.
-- `tukey_h0`: `tukey_h` with the guard never rejecting (level 0), so h = 0 on every coordinate: the same
+  of arcsinh; $h = 0$ unless the tail probe finds the log density polynomial on both sides of the
+  coordinate, then $(R, h)$ by Tukey-h maximum likelihood (`calibrate_jax_tukey_h_transform`). All targets.
+- `tukey_h0`: `tukey_h` with warping off (`tukey_h_warp=False`), so h = 0 on every coordinate: the same
   Phase 1 and the same Gaussian-fit scales, without the h-map. The control for `tukey_h`'s h > 0 decisions.
   All targets.
 
@@ -79,7 +79,6 @@ from mcmc_robust.diagnostics.tail_alignment import (
     tail_alignment_diagnostic,
 )
 from mcmc_robust.jax_unified_nuts import (
-    TUKEY_H_TEST_LEVEL,
     JaxUnifiedNUTSResult,
     TransformKind,
     sample_blackjax_unified_nuts,
@@ -105,13 +104,8 @@ class ArmSpec:
     target_accept: float
     augmented: bool = False
     description: str = ""
-    #: Level of the h = 0 guard for `transform_kind="tukey_h"` (None: the pipeline's default).
-    tukey_h_level: float | None = None
-
-    @property
-    def guard_level(self) -> float:
-        """The guard level passed to the pipeline (ignored unless `transform_kind` is "tukey_h")."""
-        return TUKEY_H_TEST_LEVEL if self.tukey_h_level is None else self.tukey_h_level
+    #: For `transform_kind="tukey_h"`: whether the guard may warp coordinates (`False`: h = 0 everywhere).
+    tukey_h_warp: bool = True
 
 
 ARMS: dict[str, ArmSpec] = {
@@ -131,16 +125,16 @@ ARMS: dict[str, ArmSpec] = {
         "tukey_h",
         0.80,
         description=(
-            "Same pipeline and Phase 1, Tukey h-map x = mu + R z exp(h z^2 / 2); (R, h) by Tukey-h maximum "
-            "likelihood, h = 0 unless a likelihood-ratio test (deflated by the effective sample size of the "
-            "Phase 1 draws) rejects it"
+            "Same pipeline and Phase 1, Tukey h-map x = mu + R z exp(h z^2 / 2); h = 0 unless the tail probe "
+            "finds the log density polynomial on both sides of the coordinate, then (R, h) by Tukey-h maximum "
+            "likelihood"
         ),
     ),
     "tukey_h0": ArmSpec(
         "tukey_h",
         0.80,
-        tukey_h_level=0.0,
-        description="tukey_h with the guard never rejecting (level 0): h = 0 on every coordinate",
+        tukey_h_warp=False,
+        description="tukey_h with warping off: h = 0 on every coordinate, the same calibration otherwise",
     ),
 }
 ARM_NAMES: tuple[str, ...] = tuple(ARMS)
@@ -290,7 +284,7 @@ def run_single(spec: AblationTarget, arm: str, seed: int, config: AblationConfig
         "target_accept": arm_spec.target_accept,
         "max_num_doublings": config.max_num_doublings,
         "transform_kind": arm_spec.transform_kind,
-        "tukey_h_level": arm_spec.guard_level,
+        "tukey_h_warp": arm_spec.tukey_h_warp,
         # Scored below on x for every arm (the pipeline would score scale_mixture's augmented draws), and
         # without a warning that `-W error` would turn into an error row.
         "check_tail_alignment": False,

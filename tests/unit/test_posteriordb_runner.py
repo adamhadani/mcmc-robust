@@ -20,7 +20,7 @@ import pytest
 from mcmc_robust.bench import posteriordb_runner as pr
 from mcmc_robust.diagnostics.tail_accuracy import reference_agreement
 from mcmc_robust.diagnostics.tail_alignment import tail_alignment_diagnostic
-from mcmc_robust.jax_unified_nuts import TUKEY_H_TEST_LEVEL, calibrate_jax_tukey_h_transform, phase1_schedule
+from mcmc_robust.jax_unified_nuts import calibrate_jax_tukey_h_transform, phase1_schedule
 
 
 class ScaleModel:
@@ -127,11 +127,11 @@ def test_initial_positions_skip_a_non_finite_density_that_does_not_raise() -> No
 def test_rows_score_constrained_draws_against_the_reference(monkeypatch: pytest.MonkeyPatch, arm: str) -> None:
     """Accuracy and ESS use the constrained reference columns; the tail-alignment check uses the sampled draws."""
     results: list[Any] = []
-    levels: list[float | None] = []
+    warps: list[bool | None] = []
     real = pr.sample_blackjax_unified_nuts
 
     def spy(*args: Any, **kwargs: Any) -> Any:
-        levels.append(kwargs.get("tukey_h_level"))
+        warps.append(kwargs.get("tukey_h_warp"))
         results.append(real(*args, **kwargs))
         return results[-1]
 
@@ -141,7 +141,7 @@ def test_rows_score_constrained_draws_against_the_reference(monkeypatch: pytest.
     assert row["error"] is None, row["error"]
     assert list(row) == list(pr.ROW_FIELDS)
     (res,) = results
-    assert levels == [pr.ARMS[arm].guard_level]
+    assert warps == [pr.ARMS[arm].tukey_h_warp]
     assert res.tail_alignment is None
 
     constrained = post.constrain(res.samples)
@@ -172,46 +172,57 @@ def test_rows_score_constrained_draws_against_the_reference(monkeypatch: pytest.
         assert row["tukey_h_n_positive"] is None and row["tukey_h_max"] is None
     if arm == "tukey_h0":
         assert row["tukey_h_n_positive"] == 0
-    # The reference lacks tau, a parameter of the model, so the guard cannot be run on exact draws.
+    # The reference lacks tau, a parameter of the model, so the guard cannot start from exact draws.
     assert row["tukey_h_ref_positive"] is None
 
 
+class CauchyLocationModel(ScaleModel):
+    """mu ~ Cauchy(0, 1), log tau ~ N(0, 1): one polynomial and one Gaussian coordinate."""
+
+    def log_density_gradient(
+        self, theta: np.ndarray, *, propto: bool = True, jacobian: bool = True
+    ) -> tuple[float, np.ndarray]:
+        mu, log_tau = theta
+        with np.errstate(over="ignore"):
+            return float(-np.log1p(mu**2) - 0.5 * log_tau**2), np.array([-2.0 * mu / (1.0 + mu**2), -log_tau])
+
+    def log_density(self, theta: np.ndarray, *, propto: bool = True, jacobian: bool = True) -> float:
+        return self.log_density_gradient(theta)[0]
+
+
 @pytest.mark.unit
-def test_the_guard_is_also_run_on_exact_reference_draws_of_the_phase1_pilot_size(
+def test_the_guard_is_also_started_from_exact_reference_draws_of_the_phase1_pilot_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """tukey_h_ref_positive: coordinates the run's guard gives h > 0 on exact draws, as many as Phase 1 calibrates from.
+    """tukey_h_ref_positive: coordinates the guard warps when it calibrates from exact draws, as many as Phase 1 has.
 
-    The draws are the reference posterior's, subsampled with the row's seed and mapped to the unconstrained space.
+    The draws are the reference posterior's, subsampled with the row's seed and mapped to the unconstrained space;
+    the probe reads the model's log density from their median. Only the warping arm computes it.
     """
-    # A reference whose mu is Cauchy (the runner takes reference draws as given), so the two arms' guards differ.
     rng = np.random.default_rng(0)
     reference = np.stack([np.exp(rng.normal(size=(10, 1000))), rng.standard_cauchy((10, 1000))], axis=-1)
-    post = pr.LoadedPosterior.from_model("toy-scale", ScaleModel(), ("tau", "mu"), reference)
+    post = pr.LoadedPosterior.from_model("toy-cauchy", CauchyLocationModel(), ("tau", "mu"), reference)
     config = pr.PosteriorDBConfig.quick(**{**QUICK, "tune": 300})
     w1, start = phase1_schedule(config.tune)
     n = config.chains * (w1 - start)
-    flat = post.reference_draws.reshape(-1, 2)
-    pick = np.random.default_rng(4).choice(len(flat), size=n, replace=False)
-    unconstrained = np.column_stack([flat[pick, 1], np.log(flat[pick, 0])])  # (mu, log tau)
-    expected = {
-        arm: int(calibrate_jax_tukey_h_transform(unconstrained, level=level).heavy.sum())
-        for arm, level in (("tukey_h", TUKEY_H_TEST_LEVEL), ("tukey_h0", 0.0))
-    }
-    assert expected["tukey_h"] >= 1 and expected["tukey_h0"] == 0  # the fixture separates the arms
     shapes: list[tuple[int, ...]] = []
+    heavy: list[np.ndarray] = []
 
-    def spy(draws: np.ndarray, **kwargs: Any) -> Any:
+    def spy(draws: np.ndarray, logdensity_fn: Any, **kwargs: Any) -> Any:
         shapes.append(np.shape(draws))
-        return calibrate_jax_tukey_h_transform(draws, **kwargs)
+        cal = calibrate_jax_tukey_h_transform(draws, logdensity_fn, **kwargs)
+        heavy.append(cal.heavy)
+        return cal
 
     monkeypatch.setattr(pr, "calibrate_jax_tukey_h_transform", spy)
-    for arm in ("tukey_h", "tukey_h0"):
-        row = pr.run_single(post, arm, 4, config)
-        assert row["error"] is None, row["error"]
-        assert row["tukey_h_ref_positive"] == expected[arm]
-    assert shapes == [(n, 2), (n, 2)]
-    assert pr.run_single(post, "stock", 4, config)["tukey_h_ref_positive"] is None
+    row = pr.run_single(post, "tukey_h", 4, config)
+    assert row["error"] is None, row["error"]
+    assert shapes == [(n, 2)]
+    np.testing.assert_array_equal(heavy[0], [True, False])  # (mu, log tau)
+    assert row["tukey_h_ref_positive"] == 1
+    for arm in ("tukey_h0", "stock"):
+        assert pr.run_single(post, arm, 4, config)["tukey_h_ref_positive"] is None
+    assert len(shapes) == 1
 
 
 class HeavyNuisanceModel(ScaleModel):

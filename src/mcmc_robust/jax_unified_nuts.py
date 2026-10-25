@@ -57,10 +57,11 @@ not a line-by-line port:
      gradient accounting.
    - `"tukey_h"`: the same Phase 1 (under the initial arcsinh map), then Tukey's h-map
      $x_i = \mu_i + R_i z_i e^{h_i z_i^2 / 2}$ (`JaxTukeyHTransform`) calibrated by
-     `calibrate_jax_tukey_h_transform`: $\mu_i$ the median, $(R_i, h_i)$ by Tukey-h maximum
-     likelihood, and $h_i = 0$ (affine) unless a likelihood-ratio test, deflated by the effective
-     sample size of the pilot draws, rejects $h_i = 0$ at level `tukey_h_level`. A polynomial tail of index $\alpha$ pulls back to a Gaussian tail of variance
-     $1 / (\alpha h_i)$. Without Phase 1 nothing is tested and every $h_i = 0$.
+     `calibrate_jax_tukey_h_transform`: $\mu_i$ the median, and $h_i = 0$ (affine) unless the tail probe
+     (`probe_tail_decay`) finds the log density polynomial on both sides of coordinate $i$, in which case
+     $(R_i, h_i)$ come from Tukey-h maximum likelihood. A polynomial tail of index $\alpha$ pulls back to a
+     Gaussian tail of variance $1 / (\alpha h_i)$. The probe's $8d$ log-density evaluations are counted in
+     `phase1_grad_evals`. Without Phase 1 nothing is calibrated and every $h_i = 0$.
 """
 
 from __future__ import annotations
@@ -77,11 +78,10 @@ import arviz as az
 import blackjax
 import jax.numpy as jnp
 import numpy as np
-from scipy import optimize, stats
+from scipy import optimize
 from xarray import DataTree
 
 from mcmc_robust.core.target import TargetDistribution
-from mcmc_robust.diagnostics.ess import compute_mean_ess
 from mcmc_robust.diagnostics.tail_alignment import TailAlignmentReport, TailAlignmentWarning, tail_alignment_diagnostic
 from mcmc_robust.integrations import (
     JaxAffineTransform,
@@ -273,17 +273,20 @@ def calibrate_jax_arcsinh_transform(
     )
 
 
-#: Default level of the per-coordinate likelihood-ratio test of h = 0 in `calibrate_jax_tukey_h_transform`.
-TUKEY_H_TEST_LEVEL: float = 0.01
-
 #: Default upper bound on the fitted h, i.e. a fitted Tukey-h tail index 1 / h of at least 0.1.
 TUKEY_H_MAX_H: float = 10.0
 
-#: Coordinates with fewer finite pilot draws than this are not tested and keep h = 0.
+#: Coordinates with fewer finite pilot draws than this are not fitted and keep h = 0.
 TUKEY_H_MIN_DRAWS: int = 10
 
 #: The (log R, h) search spans R within this factor of the coordinate's normal-consistent IQR scale.
 _TUKEY_H_RADIUS_SEARCH_FACTOR: float = 1e3
+
+#: Radii of the tail probe (`probe_tail_decay`) in units of each coordinate's scale, half a decade apart.
+TAIL_PROBE_RADII: tuple[float, ...] = (1e3, 10.0**3.5, 1e4, 10.0**4.5)
+
+#: The tail probe calls a side polynomial when its log-slope grows by less than this factor over a decade.
+TAIL_PROBE_RATIO: float = float(np.sqrt(10.0))
 
 _IQR_TO_SIGMA: float = 1.3489795003921634  # interquartile range of N(0, 1)
 _MEAN_ABS_TO_SIGMA: float = 0.7978845608028654  # E|Z| = sqrt(2 / pi) for Z ~ N(0, 1)
@@ -291,27 +294,104 @@ _LOG_SQRT_2PI: float = 0.9189385332046727  # log sqrt(2 pi)
 
 
 @dataclass(frozen=True, eq=False)
-class TukeyHCalibration:
-    r"""Result of `calibrate_jax_tukey_h_transform`: the calibrated transform and the per-coordinate fit.
+class TailProbe:
+    r"""Result of `probe_tail_decay`: the potential along each coordinate's rays and the per-side decision.
 
-    Arrays have shape `(d,)`. A coordinate that was not fitted (too few finite draws, or no spread)
-    has `radius_mle = h_mle = NaN`, `lr_statistic = 0`, `ess_fraction = 1` and `p_value = 1`.
+    Side 0 is the ray towards $-\infty$, side 1 the ray towards $+\infty$.
+
+    Attributes:
+        potential: $U_{i,s}(r_j) = -\log \pi(c + s\, r_j \sigma_i e_i)$ at the radii `TAIL_PROBE_RADII`, shape `(d, 2, 4)`;
+            $+\infty$ where the density is 0, NaN where it is NaN.
+        slope_near: $S^{\mathrm{near}}_{i,s} = (U(r_1) - U(r_0)) / \log\sqrt{10}$, the log-slope $t\, U'(t)$ near
+            $\sqrt{r_0 r_1}$, shape `(d, 2)`.
+        slope_far: $S^{\mathrm{far}}_{i,s} = (U(r_3) - U(r_2)) / \log\sqrt{10}$, the log-slope a decade further out.
+            On a polynomial side it estimates the exponent $\beta$ of $\pi \propto \lvert x_i \rvert^{-\beta}$.
+        polynomial: Whether side $s$ of coordinate $i$ decays polynomially, shape `(d, 2)`.
+    """
+
+    potential: np.ndarray
+    slope_near: np.ndarray
+    slope_far: np.ndarray
+    polynomial: np.ndarray
+
+
+def probe_tail_decay(
+    logdensity_fn: Callable[[jnp.ndarray], jnp.ndarray],
+    center: Any,
+    scale: Any,
+) -> TailProbe:
+    r"""Classifies each side of each coordinate's tail, polynomial or not, from the log density along coordinate rays.
+
+    For coordinate $i$ and side $s = \pm 1$, $U(t) = -\log \pi(c + s\, t \sigma_i e_i)$ is evaluated at the four radii
+    $r_j$ of `TAIL_PROBE_RADII` ($10^3$ to $10^{4.5}$, half a decade apart): $8d$ evaluations in one `jax.vmap`
+    call. The log-slope $S(t) = t\, U'(t)$ is estimated from half-decade differences at two radii a decade apart.
+    If $U(t) \sim \beta \log t$ (a polynomial tail, $\pi \propto t^{-\beta}$), $S$ tends to $\beta$ and the two
+    slopes agree; if $U(t) \sim a t^p$ with $p > 0$, $S$ grows by $10^p$ per decade: 10 for an exponential
+    tail, 100 for a Gaussian one. A side is called polynomial when every $U(r_j)$ is finite,
+    $S^{\mathrm{near}} > 0$, $S^{\mathrm{far}} > 1$ (a proper, decreasing tail) and
+    $S^{\mathrm{far}} <$ `TAIL_PROBE_RATIO` $\cdot\, S^{\mathrm{near}}$ ($\sqrt{10}$, the geometric midpoint of the
+    polynomial and the exponential cases).
+
+    The rays are conditionals: they see the tail of $\pi(x_i \mid x_{-i} = c_{-i})$, not of the marginal. A
+    funnel's latent coordinates have heavy marginals but Gaussian conditionals, and are not polynomial; an
+    elliptical $t_\nu$ in $d$ dimensions is polynomial along every ray, with exponent $\nu + d$.
+
+    Parameters:
+        logdensity_fn: JAX-traceable `logdensity_fn(x) -> scalar` on $\mathbb{R}^d$.
+        center: The point $c$ the rays start from, shape `(d,)`, finite.
+        scale: Per-coordinate unit $\sigma_i > 0$ of the radii, shape `(d,)`, finite.
+
+    Returns:
+        `TailProbe` with the potentials, both slopes and the per-side decision.
+    """
+    c = np.asarray(center, dtype=np.float64)
+    sigma = np.asarray(scale, dtype=np.float64)
+    if c.ndim != 1 or sigma.shape != c.shape:
+        raise ValueError(f"center and scale must both have shape (d,), got {c.shape} and {sigma.shape}")
+    if not np.all(np.isfinite(c)):
+        raise ValueError("center must be finite")
+    if not np.all(np.isfinite(sigma) & (sigma > 0.0)):
+        raise ValueError(f"scale must be finite and positive, got {sigma}")
+
+    d = c.size
+    radii = np.asarray(TAIL_PROBE_RADII)
+    steps = np.array([-1.0, 1.0])[:, np.newaxis] * radii  # (2, 4)
+    points = np.broadcast_to(c, (d, 2, radii.size, d)).copy()
+    diag = np.arange(d)
+    points[diag, :, :, diag] += steps * sigma[:, np.newaxis, np.newaxis]
+    values = np.asarray(jax.vmap(logdensity_fn)(jnp.asarray(points.reshape(-1, d))), dtype=np.float64)
+    potential = -values.reshape(d, 2, radii.size)
+
+    half_decade = 0.5 * np.log(10.0)
+    with np.errstate(invalid="ignore"):
+        slope_near = (potential[..., 1] - potential[..., 0]) / half_decade
+        slope_far = (potential[..., 3] - potential[..., 2]) / half_decade
+        polynomial = (
+            np.all(np.isfinite(potential), axis=-1)
+            & (slope_near > 0.0)
+            & (slope_far > 1.0)
+            & (slope_far < TAIL_PROBE_RATIO * slope_near)
+        )
+    return TailProbe(potential=potential, slope_near=slope_near, slope_far=slope_far, polynomial=polynomial)
+
+
+@dataclass(frozen=True, eq=False)
+class TukeyHCalibration:
+    r"""Result of `calibrate_jax_tukey_h_transform`: the calibrated transform, the tail probe and the per-coordinate fit.
+
+    Arrays have shape `(d,)`. A coordinate that was not fitted has `radius_mle = h_mle = NaN`.
 
     Attributes:
         transform: `JaxTukeyHTransform` with `location`, `radii`, `h` and the mask.
         location: $\mu_i$, the median of the finite draws.
         radii: $R_i$ of the transform, after the clip to `[min_radius, max_radius]`.
         h: $h_i$ of the transform: 0 unless `heavy[i]`, rescaled with the clip of $R_i$.
-        heavy: Whether coordinate $i$ is masked and the likelihood-ratio test rejected $h_i = 0$.
-        lr_statistic: $\Lambda_i = 2(\hat\ell_{1,i} - \hat\ell_{0,i}) \ge 0$, the maximised Tukey-h log-likelihood
-            minus the maximised Gaussian ($h = 0$) log-likelihood, both with location $\mu_i$.
-        ess_fraction: $f_i = \min(1, \mathrm{ESS}_i / n_i)$, the effective fraction of the $n_i$ draws for the
-            efficient score of $h$ at $h = 0$ (see `calibrate_jax_tukey_h_transform`, step 3).
-        p_value: $\tfrac12 P(\chi^2_1 > f_i \Lambda_i)$ for $f_i \Lambda_i > 0$ and 1 otherwise.
+        heavy: Whether coordinate $i$ is warped: masked, polynomial on both sides by the probe, and fitted (at least
+            `TUKEY_H_MIN_DRAWS` finite draws with some spread).
+        probe: The `TailProbe` the guard decided from, or `None` with `warp=False`.
         radius_mle: $\hat R_i$ of the Tukey-h fit (before clipping).
         h_mle: $\hat h_i \in [0, h_{\max}]$ of the Tukey-h fit.
         radius_gaussian: $\hat R_{0,i} = (\overline{(x_i - \mu_i)^2})^{1/2}$, the $h = 0$ fit.
-        level: Level of the test.
     """
 
     transform: JaxTukeyHTransform
@@ -319,13 +399,10 @@ class TukeyHCalibration:
     radii: np.ndarray
     h: np.ndarray
     heavy: np.ndarray
-    lr_statistic: np.ndarray
-    ess_fraction: np.ndarray
-    p_value: np.ndarray
+    probe: TailProbe | None
     radius_mle: np.ndarray
     h_mle: np.ndarray
     radius_gaussian: np.ndarray
-    level: float
 
 
 def _tukey_h_mean_nll_and_grad(theta: np.ndarray, u: np.ndarray) -> tuple[float, np.ndarray]:
@@ -355,8 +432,8 @@ def _tukey_h_mean_nll_and_grad(theta: np.ndarray, u: np.ndarray) -> tuple[float,
     return nll, np.array([g_log_r, g_h])
 
 
-def _fit_tukey_h_mle(u: np.ndarray, max_h: float) -> tuple[float, float, float]:
-    r"""Maximum-likelihood $(\hat R, \hat h)$, $\hat h \in [0, h_{\max}]$, of centred draws; returns `(R, h, mean NLL)`.
+def _fit_tukey_h_mle(u: np.ndarray, max_h: float) -> tuple[float, float]:
+    r"""Maximum-likelihood $(\hat R, \hat h)$, $\hat h \in [0, h_{\max}]$, of centred draws; returns `(R, h)`.
 
     L-BFGS-B on $(\log R, h)$ with the analytic gradient of `_tukey_h_mean_nll_and_grad`, from three
     starts ($h$ = 0, 0.5 and 2, capped at `max_h`); the best optimum is kept.
@@ -383,93 +460,67 @@ def _fit_tukey_h_mle(u: np.ndarray, max_h: float) -> tuple[float, float, float]:
             best = res
     if best is None:
         raise RuntimeError("Tukey-h likelihood is not finite at any start")
-    return float(np.exp(best.x[0])), float(best.x[1]), float(best.fun)
-
-
-def _efficient_score_ess_fraction(chains: np.ndarray, location: float, radius: float) -> float:
-    r"""$\min(1, \mathrm{ESS} / n)$ of $He_4(z)$, $z = (x - \mu) / R$, over chains of shape `(chains, draws)`.
-
-    Non-finite draws are dropped from each chain and the chains are cut to the shortest one's length.
-    """
-    kept = [c[np.isfinite(c)] for c in chains]
-    length = min(len(c) for c in kept)
-    z = np.stack([c[:length] for c in kept]) - location
-    z /= radius
-    score = z**4 - 6.0 * z**2 + 3.0
-    if score.size == 0:
-        return 1.0
-    ess = float(np.asarray(compute_mean_ess(score[:, :, np.newaxis]))[0])
-    return min(1.0, ess / score.size)
+    return float(np.exp(best.x[0])), float(best.x[1])
 
 
 def calibrate_jax_tukey_h_transform(
     pilot_samples: Any,
+    logdensity_fn: Callable[[jnp.ndarray], jnp.ndarray],
     d: int | None = None,
     mask: Any | None = None,
     min_radius: float = 0.1,
     max_radius: float = 100.0,
-    level: float = TUKEY_H_TEST_LEVEL,
     max_h: float = TUKEY_H_MAX_H,
+    warp: bool = True,
 ) -> TukeyHCalibration:
-    r"""Calibrates a `JaxTukeyHTransform` by Tukey-h maximum likelihood with an $h = 0$ guard.
+    r"""Calibrates a `JaxTukeyHTransform`: Tukey-h maximum likelihood on the coordinates whose tails are polynomial.
 
     Per coordinate $i$, from the finite pilot draws (pooled over chains):
 
-    1. $\mu_i = \mathop{\mathrm{median}}(x_{\cdot, i})$.
-    2. $(\hat R_i, \hat h_i)$ maximise the likelihood of the Tukey-h (Lambert W $\times$ Gaussian,
-       Goerg 2015) model $x = \mu_i + R z e^{h z^2 / 2}$, $z \sim N(0, 1)$, over $R > 0$ and
-       $0 \le h \le h_{\max}$; $\hat R_{0,i}$ is the closed-form maximiser at $h = 0$.
-    3. **Guard.** $\Lambda_i = 2(\hat\ell_1 - \hat\ell_0)$ tests $h = 0$ against $h > 0$. Under the null
-       $h = 0$ lies on the boundary of the parameter space, so for independent draws $\Lambda_i$ is
-       asymptotically $\tfrac12\chi^2_0 + \tfrac12\chi^2_1$ (Self & Liang 1987). Near the null, $\Lambda_i$ is the
-       squared standardised sum of the efficient score of $h$ (with $R$ profiled out), $\tfrac12 He_4(z)$ with
-       $He_4(z) = z^4 - 6 z^2 + 3$ and $z = (x - \mu_i) / \hat R_{0,i}$. Pilot draws are autocorrelated, and
-       chains may still disagree; either inflates the variance of that sum by $n_i / \mathrm{ESS}_i$, where
-       $\mathrm{ESS}_i$ is the effective sample size of $He_4(z)$ over the chains (`compute_mean_ess`, split
-       chains). The test therefore uses $f_i \Lambda_i$ with $f_i = \min(1, \mathrm{ESS}_i / n_i)$, and
-       $p_i = \tfrac12 P(\chi^2_1 > f_i \Lambda_i)$. A coordinate gets $(\hat R_i, \hat h_i)$ only if it is masked
-       and $p_i <$ `level`; otherwise it gets $(\hat R_{0,i}, 0)$, the affine map. Light coordinates thus keep
-       $h = 0$, which the pullback needs for its Gaussian-tail (geometric ergodicity) window, unless the data
-       reject it. `level = 0` never rejects, so every coordinate keeps $h = 0$ (an ablation control).
+    1. $\mu_i = \mathop{\mathrm{median}}(x_{\cdot, i})$ and $\hat R_{0,i} = (\overline{(x_i - \mu_i)^2})^{1/2}$, the
+       maximiser of the Gaussian ($h = 0$) likelihood.
+    2. **Guard.** `probe_tail_decay` reads the tails of the target's log density along the coordinate rays from
+       $\mu$, in units of $\hat R_{0,i}$ clipped to $[R_{\min}, R_{\max}]$. Coordinate $i$ is warped only if it is
+       masked and both of its sides are polynomial. That is the condition under which the h-map pulls the tail
+       back to a Gaussian one (REPORT §2.6); on an exponential or lighter side it would make the pullback lighter
+       than Gaussian. The decision uses the density, not the pilot draws, so a transient that every chain shares
+       cannot make a light coordinate look heavy.
+    3. On warped coordinates, $(\hat R_i, \hat h_i)$ maximise the likelihood of the Tukey-h (Lambert W $\times$
+       Gaussian, Goerg 2015) model $x = \mu_i + R z e^{h z^2 / 2}$, $z \sim N(0, 1)$, over $R > 0$ and
+       $0 \le h \le h_{\max}$. A coordinate with fewer than `TUKEY_H_MIN_DRAWS` finite draws or no spread is not
+       fitted and keeps the affine map. Every other coordinate gets $(\hat R_{0,i}, 0)$, the affine map.
     4. **Clips.** $h_{\max}$ bounds $\hat h_i$ in the fitted model's own units ($z \sim N(0, 1)$).
        $R_i$ is then clipped to $[R_{\min}, R_{\max}]$ and $h_i$ multiplied by $(R_i^{\mathrm{clip}} / R_i)^2$.
        That rescales $z$ only, since the map's shape depends on $h / R^2$ alone (`hMap_rescale`), so
-       the clip never changes which density is sampled or the tail shape.
+       the clip never changes which density is sampled or the tail shape. A coordinate with no spread gets
+       $R_i = R_{\min}$.
 
-    The fit pools the chains. The effective sample size uses them separately: a 2-D pilot is one chain, and
-    non-finite draws are dropped from each chain, which is then cut to the shortest chain's length. The
-    correction covers dependence and disagreement that the pilot draws themselves show; it cannot detect
-    pilot draws that all chains share but the posterior does not (a common transient). Coordinates with
-    fewer than `TUKEY_H_MIN_DRAWS` finite draws or no spread are not tested ($h_i = 0$, $R_i = R_{\min}$ if
-    there is no spread).
+    With `warp=False` the probe is skipped and every coordinate gets the affine map (an ablation control).
 
     Parameters:
         pilot_samples: Primal draws of shape `(n_samples, d)` or `(chains, draws, d)`.
+        logdensity_fn: JAX-traceable `logdensity_fn(x) -> scalar`, the target's log density in primal space.
         d: Target dimension; inferred from `pilot_samples` if `None`.
         mask: Optional boolean mask of shape `(d,)`; unmasked coordinates are never warped.
         min_radius: Lower clip $R_{\min} > 0$ on $R_i$.
         max_radius: Upper clip $R_{\max} \ge R_{\min}$ on $R_i$.
-        level: Per-coordinate level of the test of $h = 0$, in $[0, 1)$ (default `TUKEY_H_TEST_LEVEL`); 0 never
-            rejects.
         max_h: Upper bound $h_{\max} > 0$ on the fitted $\hat h_i$ (default `TUKEY_H_MAX_H`).
+        warp: Whether to run the guard and warp the coordinates it selects (default `True`).
 
     Returns:
-        `TukeyHCalibration` with the transform, the fitted values and the per-coordinate test decisions.
+        `TukeyHCalibration` with the transform, the probe and the fitted values.
     """
     if min_radius <= 0.0:
         raise ValueError(f"min_radius must be strictly positive, got {min_radius}")
     if min_radius > max_radius:
         raise ValueError(f"min_radius ({min_radius}) must be <= max_radius ({max_radius})")
-    if not 0.0 <= level < 1.0:
-        raise ValueError(f"level must be in [0, 1), got {level}")
     if not (np.isfinite(max_h) and max_h > 0.0):
         raise ValueError(f"max_h must be finite and positive, got {max_h}")
 
     arr = np.asarray(pilot_samples, dtype=np.float64)
     if arr.ndim == 1:
         arr = arr.reshape(-1, d) if d is not None and d > 1 else arr[:, np.newaxis]
-    chains = arr.reshape(-1, *arr.shape[-2:]) if arr.ndim >= 3 else arr[np.newaxis]  # (chains, draws, d)
-    arr = chains.reshape(-1, chains.shape[-1])
+    arr = arr.reshape(-1, arr.shape[-1])
     d_actual = int(arr.shape[-1])
     if d is not None and int(d) != d_actual:
         raise ValueError(f"pilot_samples last dimension {d_actual} does not match d={d}")
@@ -477,35 +528,29 @@ def calibrate_jax_tukey_h_transform(
     if mask_arr.shape != (d_actual,):
         raise ValueError(f"mask must have shape ({d_actual},), got {mask_arr.shape}")
 
-    location = np.zeros(d_actual)
+    columns = [arr[:, j][np.isfinite(arr[:, j])] for j in range(d_actual)]
+    location = np.array([float(np.median(x)) if x.size else 0.0 for x in columns])
     radius_gaussian = np.zeros(d_actual)
+    for j, x in enumerate(columns):
+        peak = float(np.max(np.abs(x - location[j]))) if x.size else 0.0
+        if peak > 0.0:
+            radius_gaussian[j] = peak * float(np.sqrt(np.mean(((x - location[j]) / peak) ** 2)))
+    fittable = np.array([x.size >= TUKEY_H_MIN_DRAWS for x in columns]) & (radius_gaussian > 0.0)
+
+    probe = None
+    heavy = np.zeros(d_actual, dtype=bool)
+    if warp:
+        probe = probe_tail_decay(logdensity_fn, location, np.clip(radius_gaussian, min_radius, max_radius))
+        heavy = mask_arr & probe.polynomial.all(axis=-1) & fittable
+
     radius_mle = np.full(d_actual, np.nan)
     h_mle = np.full(d_actual, np.nan)
-    lr_statistic = np.zeros(d_actual)
-    ess_fraction = np.ones(d_actual)
-    for j in range(d_actual):
-        x = arr[:, j][np.isfinite(arr[:, j])]
-        if x.size == 0:
-            continue
-        location[j] = float(np.median(x))
-        u = x - location[j]
-        peak = float(np.max(np.abs(u)))
-        if peak > 0.0:
-            radius_gaussian[j] = peak * float(np.sqrt(np.mean((u / peak) ** 2)))
-        if x.size < TUKEY_H_MIN_DRAWS or not radius_gaussian[j] > 0.0:
-            continue
-        nll0 = float(np.log(radius_gaussian[j])) + 0.5 + _LOG_SQRT_2PI
-        radius_mle[j], h_mle[j], nll1 = _fit_tukey_h_mle(u, max_h)
-        lr_statistic[j] = max(2.0 * x.size * (nll0 - nll1), 0.0)
-        ess_fraction[j] = _efficient_score_ess_fraction(chains[:, :, j], location[j], radius_gaussian[j])
+    for j in np.flatnonzero(heavy).tolist():
+        radius_mle[j], h_mle[j] = _fit_tukey_h_mle(columns[j] - location[j], max_h)
 
-    deflated = ess_fraction * lr_statistic
-    p_value = np.where(deflated > 0.0, 0.5 * stats.chi2.sf(deflated, df=1), 1.0)
-    heavy = mask_arr & (p_value < level)
     radius = np.where(heavy, radius_mle, radius_gaussian)
-    h = np.where(heavy, h_mle, 0.0)
     radii = np.clip(radius, min_radius, max_radius)
-    h = np.where(heavy, h * (radii / np.where(radius > 0.0, radius, 1.0)) ** 2, 0.0)
+    h = np.where(heavy, h_mle * (radii / np.where(radius > 0.0, radius, 1.0)) ** 2, 0.0)
 
     transform = JaxTukeyHTransform(radii=radii, location=location, h=h, mask=mask_arr, d=d_actual)
     return TukeyHCalibration(
@@ -514,13 +559,10 @@ def calibrate_jax_tukey_h_transform(
         radii=radii,
         h=h,
         heavy=heavy,
-        lr_statistic=lr_statistic,
-        ess_fraction=ess_fraction,
-        p_value=p_value,
+        probe=probe,
         radius_mle=radius_mle,
         h_mle=h_mle,
         radius_gaussian=radius_gaussian,
-        level=float(level),
     )
 
 
@@ -556,7 +598,7 @@ def sample_blackjax_unified_nuts(
     dim: int | None = None,
     step_size: float = 0.1,
     transform_kind: TransformKind = "arcsinh",
-    tukey_h_level: float = TUKEY_H_TEST_LEVEL,
+    tukey_h_warp: bool = True,
     check_tail_alignment: bool = True,
 ) -> JaxUnifiedNUTSResult:
     r"""Runs 3-phase adaptive NUTS on the arcsinh-warped target with `JaxArcsinhTransform` and BlackJAX.
@@ -604,10 +646,11 @@ def sample_blackjax_unified_nuts(
         step_size: Fallback step size when `tune == 0` (default: `0.1`).
         transform_kind: `"arcsinh"` (default), `"affine"` (same calibration, no tail warping),
             `"identity"` (stock window-adapted NUTS in $x$-space, no Phase 1) or `"tukey_h"`
-            (Tukey h-map with a tested per-coordinate $h \ge 0$); see the module docstring, item 5.
-        tukey_h_level: Level in $[0, 1)$ of the per-coordinate test of $h = 0$ for `transform_kind="tukey_h"`
-            (default: `TUKEY_H_TEST_LEVEL`); 0 never rejects, so every $h = 0$. See
-            `calibrate_jax_tukey_h_transform`.
+            (Tukey h-map with $h_i > 0$ only on coordinates whose tails are polynomial); see the module
+            docstring, item 5.
+        tukey_h_warp: For `transform_kind="tukey_h"`, whether the guard may warp coordinates (default: `True`).
+            `False` keeps $h = 0$ everywhere, the affine map with the same calibration (an ablation control).
+            See `calibrate_jax_tukey_h_transform`.
         check_tail_alignment: Whether to run `tail_alignment_diagnostic` on the primal post-warm-up
             draws (default: `True`). The report is stored as `result.tail_alignment`, and a
             `TailAlignmentWarning` is emitted when heavy tails appear to be shared across coordinates:
@@ -713,14 +756,19 @@ def sample_blackjax_unified_nuts(
         x_p1_tail = jax.vmap(jax.vmap(transform_init.inverse))(z_p1_tail)
         transform: JaxCoordinateTransform
         if transform_kind == "tukey_h":
-            transform = calibrate_jax_tukey_h_transform(
+            tukey = calibrate_jax_tukey_h_transform(
                 pilot_samples=x_p1_tail,
+                logdensity_fn=raw_logdensity_fn,
                 d=d_int,
                 mask=mask,
                 min_radius=min_radius,
                 max_radius=max_radius,
-                level=tukey_h_level,
-            ).transform
+                warp=tukey_h_warp,
+            )
+            transform = tukey.transform
+            # The probe's log-density evaluations, counted as gradient evaluations (an upper bound on their cost).
+            if tukey.probe is not None:
+                phase1_grad_evals += int(tukey.probe.potential.size)
         else:
             transform = calibrate(
                 pilot_samples=x_p1_tail,

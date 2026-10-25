@@ -1053,14 +1053,15 @@ def render_posteriordb_table(reports: Reports) -> str:
         f"Seeds disagreeing with reference ({arm_list})",
         f"Seeds not converged ({arm_list})",
         "`tukey_h` coordinates with h > 0, median",
-        "The same guard on exact draws, median",
+        "The guard started from exact draws, median",
     ]
     note = (
         f"A run disagrees with the reference when a tail-probability z-score (at the reference's 1%, 5%, 95% and "
         f"99% quantiles) or a mean z-score exceeds {POSTERIORDB_DISAGREE_Z:g} in absolute value; z counts the Monte "
         f"Carlo error of the run and of the reference. Not converged: max R-hat above {RHAT_CONVERGED}. d is the "
-        "unconstrained dimension. The last column runs `tukey_h`'s guard on as many reference draws as Phase 1 "
-        "calibrates from (unconstrained; n/a where the reference lacks a parameter of the model)."
+        "unconstrained dimension. The last column starts `tukey_h`'s guard from as many reference draws as Phase 1 "
+        "calibrates from (its probe at their median and scale, unconstrained; n/a where the reference lacks a "
+        "parameter of the model)."
     )
     return _pdb_setup(reports) + "\n\n" + note + "\n\n" + _table(header, body, numeric_from=1)
 
@@ -1176,9 +1177,9 @@ def render_posteriordb_findings(reports: Reports) -> str:
         )
         if ref_posts:
             guard += (
-                f" On the {ref_posts} posteriors whose reference draws include every parameter, from Phase 1's draws "
-                f"it set h > 0 on {ref_phase1} of {ref_d} coordinates, and from as many exact posterior draws on "
-                f"{ref_exact}."
+                f" On the {ref_posts} posteriors whose reference draws include every parameter, started from Phase 1's "
+                f"draws it set h > 0 on {ref_phase1} of {ref_d} coordinates, and started from as many exact posterior "
+                f"draws on {ref_exact}."
             )
         bullets.append(guard)
         if "tukey_h0" in arms:
@@ -1190,14 +1191,30 @@ def render_posteriordb_findings(reports: Reports) -> str:
                 return f"{float(np.median(ms)):.2f}×" if ms else "n/a"
 
             warped, kept = medians(groups[True]), medians(groups[False])
-            bullets.append(
-                "- **`tukey_h` by the guard's decision**, against its h = 0 control `tukey_h0`, which differs only in "
-                f"those decisions (per-posterior medians over seeds): where it set h > 0 somewhere "
-                f"({len(groups[True])} of {n} posteriors), `tukey_h` vs `tukey_h0` {overall(warped)} (better on "
-                f"{sum(m > 1.0 for m in warped)}, worse by more than a fifth on "
-                f"{sum(m < POSTERIORDB_WORSE_RATIO for m in warped)}); where it kept h = 0 on every coordinate "
-                f"({len(groups[False])} of {n}), {overall(kept)}."
-            )
+            if groups[True]:
+                bullets.append(
+                    "- **`tukey_h` by the guard's decision**, against its h = 0 control `tukey_h0`, which differs only "
+                    f"in those decisions (per-posterior medians over seeds): where it set h > 0 somewhere "
+                    f"({len(groups[True])} of {n} posteriors), `tukey_h` vs `tukey_h0` {overall(warped)} (better on "
+                    f"{sum(m > 1.0 for m in warped)}, worse by more than a fifth on "
+                    f"{sum(m < POSTERIORDB_WORSE_RATIO for m in warped)}); where it kept h = 0 on every coordinate "
+                    f"({len(groups[False])} of {n}), {overall(kept)}."
+                )
+            else:
+                pairs = [
+                    (a, b)
+                    for p in posts
+                    for s, a in _pdb_runs(reports, p, "tukey_h").items()
+                    if (b := _pdb_runs(reports, p, "tukey_h0").get(s)) is not None
+                ]
+                same = sum(a.get("min_tail_ess") == b.get("min_tail_ess") for a, b in pairs)
+                bullets.append(
+                    "- **`tukey_h` vs its h = 0 control `tukey_h0`**: the guard kept h = 0 on every coordinate of "
+                    "every posterior, so the two arms sample with the same transform. Their worst-parameter tail ESS "
+                    f"is identical on {same} of {len(pairs)} paired runs; per gradient, `tukey_h` vs `tukey_h0` "
+                    f"{overall(kept)} (per-posterior medians over seeds), the cost of the probe's log-density "
+                    "evaluations."
+                )
     if "arcsinh" in arms:
         warned = posteriors_where("arcsinh", lambda r: bool(r.get("tail_alignment_warning")))
         bullets.append(

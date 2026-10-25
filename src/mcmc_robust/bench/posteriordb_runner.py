@@ -11,8 +11,8 @@ Arms (`ablation_runner.ARMS`; every arm is `sample_blackjax_unified_nuts` with `
 `draws` draws, `chains` chains, at most `max_num_doublings` tree doublings):
 - `stock`: transform_kind "identity", target acceptance 0.8.
 - `arcsinh`: the calibrated arcsinh pullback (the library default).
-- `tukey_h`: the Tukey h-map with the likelihood-ratio guard.
-- `tukey_h0`: the same pipeline with the guard never rejecting, so h = 0 everywhere; on posteriors where
+- `tukey_h`: the Tukey h-map, warping only coordinates the tail probe finds polynomial on both sides.
+- `tukey_h0`: the same pipeline with warping off, so h = 0 everywhere; on posteriors where
   `tukey_h` sets h > 0, the paired ratio `tukey_h` / `tukey_h0` is the effect of those decisions.
 Initial positions are Stan's: Uniform(-2, 2) per unconstrained coordinate, redrawn (at most 100 times)
 until the log density is finite, from `numpy.random.default_rng(seed)` and shared by all arms.
@@ -25,9 +25,10 @@ draws (posteriordb names, transformed parameters included):
   probabilities at the reference's 1%, 5%, 95% and 99% quantiles, and means, as z-scores that count
   the Monte Carlo error of the run and of the reference;
 - the tail-alignment check on the sampled (unconstrained) draws, which the library's warning would see;
-- for `tukey_h` (and `tukey_h0`), how many coordinates the guard gave $h > 0$ and the largest $h$, and how many
-  it would give $h > 0$ if it saw exact posterior draws instead of Phase 1's: as many reference draws as the
-  Phase 1 pilot has, subsampled with the row's seed and mapped to the unconstrained space.
+- for `tukey_h` (and `tukey_h0`), how many coordinates got $h > 0$ and the largest $h$; for `tukey_h`, how many
+  the guard would warp if it started from exact posterior draws instead of Phase 1's: the probe at the median
+  and scale of as many reference draws as the Phase 1 pilot has, subsampled with the row's seed and mapped to
+  the unconstrained space.
 
 Aggregates per posterior x arm: median and IQR over seeds, and paired per-seed ratios to `stock`,
 `arcsinh` and `tukey_h0`.
@@ -352,14 +353,15 @@ def _calibration_offsets(transform: Any, samples: np.ndarray) -> tuple[float | N
     return _finite_or_none(offset), _finite_or_none(ratio)
 
 
-def _guard_on_reference(post: LoadedPosterior, level: float, seed: int, config: PosteriorDBConfig) -> int | None:
-    """How many coordinates the guard gives h > 0 on exact draws: as many reference draws as the Phase 1 pilot has."""
+def _guard_on_reference(post: LoadedPosterior, seed: int, config: PosteriorDBConfig) -> int | None:
+    """How many coordinates get h > 0 when the guard starts from exact draws: the tail probe at the median and scale
+    of as many reference draws as the Phase 1 pilot has, then the fit on them."""
     w1, start = phase1_schedule(config.tune)
     draws = post.unconstrained_reference(config.chains * (w1 - start), seed)
     if draws is None:
         return None
-    cal = calibrate_jax_tukey_h_transform(draws, level=level)
-    return int(np.sum(cal.heavy))
+    cal = calibrate_jax_tukey_h_transform(draws, bridgestan_logdensity_fn(post.model))
+    return int(np.sum(cal.h > 0.0))
 
 
 def run_single(post: LoadedPosterior, arm: str, seed: int, config: PosteriorDBConfig) -> dict[str, Any]:
@@ -380,7 +382,7 @@ def run_single(post: LoadedPosterior, arm: str, seed: int, config: PosteriorDBCo
             target_accept=arm_spec.target_accept,
             max_num_doublings=config.max_num_doublings,
             transform_kind=arm_spec.transform_kind,
-            tukey_h_level=arm_spec.guard_level,
+            tukey_h_warp=arm_spec.tukey_h_warp,
             # Scored below by the runner, without a warning that `-W error` would turn into an error row.
             check_tail_alignment=False,
         )
@@ -420,7 +422,7 @@ def run_single(post: LoadedPosterior, arm: str, seed: int, config: PosteriorDBCo
             tail_alignment_n_heavy=len(alignment.heavy_coordinates),
             tukey_h_n_positive=int(np.sum(h > 0.0)) if tukey else None,
             tukey_h_max=float(np.max(h)) if tukey and h.size else None,
-            tukey_h_ref_positive=_guard_on_reference(post, arm_spec.guard_level, seed, config) if tukey else None,
+            tukey_h_ref_positive=(_guard_on_reference(post, seed, config) if tukey and arm_spec.tukey_h_warp else None),
             calib_location_offset_max=offset,
             calib_scale_ratio_max=ratio,
             step_size_median=float(np.median(res.step_size)),
@@ -480,10 +482,11 @@ NOTES: tuple[str, ...] = (
         "quantiles and means, z = (run - reference) / sqrt(MCSE_run^2 + MCSE_ref^2), averaged (abs) or maximal."
     ),
     "tail_alignment_* is the library's tail-alignment check on the sampled (unconstrained) draws.",
-    "tukey_h_n_positive counts unconstrained coordinates whose calibrated h is positive (the guard rejected h = 0).",
+    "tukey_h_n_positive counts unconstrained coordinates whose calibrated h is positive (the guard warped them).",
     (
-        "tukey_h_ref_positive: the same guard on exact draws, as many reference draws as Phase 1 calibrates from "
-        "(subsampled with the row's seed, unconstrained); null when the reference lacks a parameter of the model."
+        "tukey_h_ref_positive: coordinates given h > 0 when the guard's probe starts at the median and scale of as many "
+        "reference draws as Phase 1 calibrates from (subsampled with the row's seed, unconstrained); tukey_h only, "
+        "null when the reference lacks a parameter of the model."
     ),
     (
         "calib_*: Phase 1's location and scale against the run's own post-warm-up draws (unconstrained, scale = "

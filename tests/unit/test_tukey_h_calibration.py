@@ -1,7 +1,8 @@
 """Tests for the Tukey-h calibration (`calibrate_jax_tukey_h_transform`) and `transform_kind="tukey_h"`.
 
-Calibration: mu = median; (R, h) by maximum likelihood in the Tukey-h (Lambert W x Gaussian)
-family x = mu + R z exp(h z^2 / 2), z ~ N(0, 1); h = 0 unless a likelihood-ratio test rejects it.
+Calibration: mu = median; h = 0 (the affine map) unless the tail probe (`probe_tail_decay`) finds both sides of
+the coordinate's log density polynomial; then (R, h) by maximum likelihood in the Tukey-h (Lambert W x Gaussian)
+family x = mu + R z exp(h z^2 / 2), z ~ N(0, 1).
 """
 
 from __future__ import annotations
@@ -17,15 +18,14 @@ import numpy as np
 import pytest
 from scipy import special, stats
 
-from mcmc_robust.diagnostics.ess import compute_mean_ess
 from mcmc_robust.integrations import JaxTukeyHTransform
 from mcmc_robust.jax_unified_nuts import (
+    TAIL_PROBE_RADII,
     TRANSFORM_KINDS,
-    TUKEY_H_MAX_H,
-    TUKEY_H_TEST_LEVEL,
     TukeyHCalibration,
     _tukey_h_mean_nll_and_grad,
     calibrate_jax_tukey_h_transform,
+    probe_tail_decay,
     sample_blackjax_unified_nuts,
 )
 
@@ -44,6 +44,29 @@ def _tukey_h_logpdf_scipy(x: np.ndarray, loc: float, radius: float, h: float) ->
     w = np.real(special.lambertw(h * u**2)) if h > 0 else np.zeros_like(u)
     z2 = u**2 * np.exp(-w)
     return stats.norm.logpdf(np.sqrt(z2)) - np.log(radius) - 0.5 * h * z2 - np.log1p(h * z2)
+
+
+def _tukey_h_product_logdensity(loc: np.ndarray, radius: np.ndarray, h: np.ndarray):  # type: ignore[no-untyped-def]
+    """JAX log density of independent Tukey-h coordinates: log phi(z) - log |dx/dz| with z = forward(x)."""
+    tr = JaxTukeyHTransform(radii=radius, location=loc, h=h, d=len(loc))
+
+    def logdensity(x: jnp.ndarray) -> jnp.ndarray:
+        z = tr.forward(x)
+        return -0.5 * jnp.sum(z**2) - tr.log_jacobian_det(z)
+
+    return logdensity
+
+
+def _scaled_t_logdensity(df: np.ndarray, loc: np.ndarray, scale: np.ndarray):  # type: ignore[no-untyped-def]
+    """JAX log density of independent location-scale coordinates: t_df where df > 0, Gaussian where df == 0."""
+    is_t = jnp.asarray(df) > 0.0
+    nu = jnp.where(is_t, jnp.asarray(df, dtype=jnp.float64), 1.0)
+
+    def logdensity(x: jnp.ndarray) -> jnp.ndarray:
+        r = (x - loc) / scale
+        return jnp.sum(jnp.where(is_t, -0.5 * (nu + 1.0) * jnp.log1p(r**2 / nu), -0.5 * r**2))
+
+    return logdensity
 
 
 @pytest.mark.unit
@@ -70,23 +93,25 @@ def test_tukey_h_likelihood_gradient_matches_finite_differences() -> None:
 
 @pytest.mark.unit
 def test_calibration_recovers_tukey_h_parameters_and_maximises_the_likelihood() -> None:
-    """On large exact Tukey-h samples the fit recovers (mu, R, h), and h = 0 survives only on the Gaussian column."""
+    """On large exact Tukey-h samples the fit recovers (mu, R, h); only the Gaussian column (h = 0) stays affine."""
     rng = np.random.default_rng(1)
     n = 20_000
     truth = [(3.0, 2.0, 0.5), (-1.0, 0.5, 1.0), (0.0, 1.0, 0.0), (10.0, 4.0, 2.0)]
     pilot = np.column_stack([_tukey_h_draws(rng, n, *p) for p in truth])
-    cal = calibrate_jax_tukey_h_transform(pilot, min_radius=1e-3, max_radius=1e3)
+    loc, radius, h = (np.array(v) for v in zip(*truth))
+    cal = calibrate_jax_tukey_h_transform(
+        pilot, _tukey_h_product_logdensity(loc, radius, h), min_radius=1e-3, max_radius=1e3
+    )
 
     assert isinstance(cal, TukeyHCalibration)
     assert isinstance(cal.transform, JaxTukeyHTransform)
-    loc, radius, h = (np.array(v) for v in zip(*truth))
     np.testing.assert_allclose(cal.location, np.median(pilot, axis=0), rtol=0, atol=0)
     assert np.all(np.abs(cal.location - loc) < 0.05 * radius), cal.location
+    np.testing.assert_array_equal(cal.heavy, h > 0)
     np.testing.assert_allclose(cal.radius_mle[h > 0], radius[h > 0], rtol=0.05)
     np.testing.assert_allclose(cal.h_mle[h > 0], h[h > 0], atol=0.05)
-    np.testing.assert_array_equal(cal.heavy, h > 0)
     np.testing.assert_allclose(cal.radius_gaussian, np.sqrt(np.mean((pilot - cal.location) ** 2, axis=0)), rtol=1e-12)
-    # The transform carries the fitted values: the Tukey-h fit where h = 0 is rejected, the Gaussian fit elsewhere.
+    # The transform carries the fitted values: the Tukey-h fit where the guard warps, the Gaussian fit elsewhere.
     np.testing.assert_allclose(cal.h, np.where(cal.heavy, cal.h_mle, 0.0), rtol=1e-12)
     np.testing.assert_allclose(cal.radii, np.where(cal.heavy, cal.radius_mle, cal.radius_gaussian), rtol=1e-12)
     np.testing.assert_array_equal(np.asarray(cal.transform.h), cal.h)
@@ -101,99 +126,60 @@ def test_calibration_recovers_tukey_h_parameters_and_maximises_the_likelihood() 
             for dh in (-0.01, 0.0, 0.01):
                 th = np.array([np.log(cal.radius_mle[j]) + dr, cal.h_mle[j] + dh])
                 assert _tukey_h_mean_nll_and_grad(th, u)[0] >= best - 1e-12
+    # The fit maximises the likelihood of scipy's independent Tukey-h density too.
+    for j in np.flatnonzero(h > 0):
+        x = pilot[:, j]
+        best = np.sum(_tukey_h_logpdf_scipy(x, cal.location[j], cal.radius_mle[j], cal.h_mle[j]))
+        assert best >= np.sum(_tukey_h_logpdf_scipy(x, cal.location[j], radius[j], h[j])) - 1e-6
 
 
 @pytest.mark.unit
-def test_calibration_likelihood_ratio_test_definition() -> None:
-    """The statistic is 2 (max log-lik of Tukey-h - max log-lik with h = 0), with the boundary null 0.5 chi2_0 + 0.5 chi2_1."""
+def test_the_guard_is_the_tail_probe_at_the_pilot_median_and_the_affine_scale() -> None:
+    """The probe starts at mu with unit R_0 clipped to [R_min, R_max]; a coordinate is warped iff both sides are polynomial.
+
+    Coordinates the guard leaves affine are not fitted (radius_mle = h_mle = NaN).
+    """
     rng = np.random.default_rng(2)
+    df = np.array([1.0, 4.0, 0.0, 0.0, 2.0])
+    loc = np.array([1.0, -2.0, 0.0, 5.0, 0.0])
+    scale = np.array([1.0, 0.5, 2.0, 1e-3, 1.0])
     pilot = np.column_stack(
         [
-            rng.standard_t(1.0, N_PHASE1),
-            rng.standard_t(4.0, N_PHASE1),
-            rng.normal(size=N_PHASE1),
-            rng.laplace(size=N_PHASE1),
+            loc[j] + scale[j] * (rng.standard_t(df[j], N_PHASE1) if df[j] else rng.standard_normal(N_PHASE1))
+            for j in range(5)
         ]
     )
-    cal = calibrate_jax_tukey_h_transform(pilot, level=0.05)
-    assert cal.level == 0.05
-    for j in range(pilot.shape[1]):
-        x = pilot[:, j]
-        ll1 = np.sum(_tukey_h_logpdf_scipy(x, cal.location[j], cal.radius_mle[j], cal.h_mle[j]))
-        ll0 = np.sum(stats.norm.logpdf(x, loc=cal.location[j], scale=cal.radius_gaussian[j]))
-        np.testing.assert_allclose(cal.lr_statistic[j], max(2.0 * (ll1 - ll0), 0.0), rtol=1e-8, atol=1e-8)
-    assert np.all(cal.lr_statistic >= 0.0)
-    # A 2-D pilot is one chain: the statistic is deflated by the ESS of the efficient score along it.
-    for j in range(pilot.shape[1]):
-        z = (pilot[:, j] - cal.location[j]) / cal.radius_gaussian[j]
-        ess = compute_mean_ess((z**4 - 6.0 * z**2 + 3.0)[:, np.newaxis])[0]
-        assert cal.ess_fraction[j] == pytest.approx(min(1.0, ess / N_PHASE1), rel=1e-12)
-    deflated = cal.lr_statistic * cal.ess_fraction
-    expected_p = np.where(deflated > 0.0, 0.5 * stats.chi2.sf(deflated, df=1), 1.0)
-    np.testing.assert_allclose(cal.p_value, expected_p, rtol=1e-12)
-    np.testing.assert_array_equal(cal.heavy, cal.p_value < 0.05)
-    assert cal.heavy[0] and not cal.heavy[2]
 
+    def logdensity(x: jnp.ndarray) -> jnp.ndarray:
+        # Coordinate 4: t_2 on the right, Gaussian on the left (one polynomial side only).
+        base = _scaled_t_logdensity(df, loc, scale)(x)
+        r = x[4] - loc[4]
+        return base + jnp.where(r < 0.0, -0.5 * r**2 + 1.5 * jnp.log1p(r**2 / 2.0), 0.0)
 
-def _ar1(rng: np.random.Generator, phi: float, shape: tuple[int, ...]) -> np.ndarray:
-    """Stationary AR(1) series along the last axis, N(0, 1) marginals."""
-    g = np.empty(shape)
-    g[..., 0] = rng.standard_normal(shape[:-1])
-    eps = rng.standard_normal(shape) * np.sqrt(1.0 - phi**2)
-    for t in range(1, shape[-1]):
-        g[..., t] = phi * g[..., t - 1] + eps[..., t]
-    return g
+    cal = calibrate_jax_tukey_h_transform(pilot, logdensity, min_radius=0.1, max_radius=100.0)
+    unit = np.clip(cal.radius_gaussian, 0.1, 100.0)
+    assert unit[3] == 0.1  # the 1e-3-scale Gaussian probes in units of R_min
+    expected = probe_tail_decay(logdensity, cal.location, unit)
+    for field in ("potential", "slope_near", "slope_far", "polynomial"):
+        np.testing.assert_array_equal(getattr(cal.probe, field), getattr(expected, field))
+    np.testing.assert_array_equal(cal.probe.polynomial[4], [False, True])
+    np.testing.assert_array_equal(cal.heavy, cal.probe.polynomial.all(axis=-1))
+    np.testing.assert_array_equal(cal.heavy, [True, True, False, False, False])
+    assert np.all(np.isfinite(cal.h_mle[cal.heavy])) and np.all(np.isnan(cal.h_mle[~cal.heavy]))
+    assert np.all(np.isnan(cal.radius_mle[~cal.heavy]))
 
 
 @pytest.mark.unit
-def test_the_guard_deflates_its_statistic_by_the_effective_fraction_of_the_efficient_score() -> None:
-    """With (chains, draws, d) pilot draws, f = min(1, ESS / n) of He4(z) uses the chains separately (split chains).
+def test_the_decision_comes_from_the_density_not_from_what_the_pilot_draws_look_like() -> None:
+    """Heavy-looking draws of a Gaussian target (a transient) are not warped; Gaussian-looking draws of a Cauchy target are."""
+    rng = np.random.default_rng(3)
+    heavy_looking = 3.0 + rng.standard_cauchy((N_PHASE1, 1))
+    gaussian_looking = rng.standard_normal((N_PHASE1, 1))
+    gauss = _scaled_t_logdensity(np.array([0.0]), np.array([3.0]), np.array([1.0]))
+    cauchy = _scaled_t_logdensity(np.array([1.0]), np.array([0.0]), np.array([1.0]))
 
-    Under h = 0 the likelihood-ratio statistic is the squared standardised sum of He4(z) / 2; autocorrelation and
-    disagreement between chains inflate that sum's variance by n / ESS, so the test uses f times the statistic.
-    """
-    rng = np.random.default_rng(6)
-    chains, draws = 4, 38
-    pilot = np.stack(
-        [rng.standard_normal((chains, draws)), _ar1(rng, 0.95, (chains, draws)), rng.standard_cauchy((chains, draws))],
-        axis=-1,
-    )
-    cal = calibrate_jax_tukey_h_transform(pilot)
-    for j in range(3):
-        z = (pilot[:, :, j] - cal.location[j]) / cal.radius_gaussian[j]
-        ess = compute_mean_ess((z**4 - 6.0 * z**2 + 3.0)[:, :, np.newaxis])[0]
-        assert cal.ess_fraction[j] == pytest.approx(min(1.0, ess / (chains * draws)), rel=1e-12)
-    deflated = cal.lr_statistic * cal.ess_fraction
-    np.testing.assert_allclose(
-        cal.p_value, np.where(deflated > 0.0, 0.5 * stats.chi2.sf(deflated, df=1), 1.0), rtol=1e-12
-    )
-    np.testing.assert_array_equal(cal.heavy, cal.p_value < TUKEY_H_TEST_LEVEL)
-    assert cal.heavy[2]
-    # The fit itself pools the chains: location, scales, h_mle and the statistic are those of the flattened draws.
-    flat = calibrate_jax_tukey_h_transform(pilot.reshape(-1, 3))
-    for field in ("location", "radius_gaussian", "radius_mle", "h_mle", "lr_statistic"):
-        np.testing.assert_array_equal(getattr(cal, field), getattr(flat, field))
-
-
-@pytest.mark.unit
-@pytest.mark.statistical
-def test_the_guard_holds_its_level_on_autocorrelated_chains_and_keeps_its_power() -> None:
-    """400 replicates of 4 chains x 38 AR(1) draws (phi = 0.95), the shape of the pipeline's Phase 1 pilot.
-
-    Over 5 seeds of this experiment, Gaussian chains got h > 0 in 6.0-7.7% of replicates without the ESS
-    deflation and 0.3-1.0% with it (level 1%), and Cauchy chains (the same AR(1) through the Cauchy quantile
-    function) in 96.5-98.8%. Asserted: at most 2.5% (a binomial standard deviation at 1% is 0.5%), at least 4%
-    without the deflation, and at least 93%.
-    """
-    rng = np.random.default_rng(100)
-    reps = 400
-    gauss = np.moveaxis(3.0 + 0.2 * _ar1(rng, 0.95, (reps, 4, 38)), 0, -1)
-    cauchy = np.moveaxis(stats.cauchy.ppf(stats.norm.cdf(_ar1(rng, 0.95, (reps, 4, 38)))), 0, -1)
-    cal_gauss = calibrate_jax_tukey_h_transform(gauss, min_radius=1e-3, max_radius=1e3)
-    cal_cauchy = calibrate_jax_tukey_h_transform(cauchy, min_radius=1e-3, max_radius=1e3)
-    assert np.mean(cal_gauss.heavy) <= 0.025
-    assert np.mean(0.5 * stats.chi2.sf(cal_gauss.lr_statistic, df=1) < TUKEY_H_TEST_LEVEL) >= 0.04
-    assert np.mean(cal_cauchy.heavy) >= 0.93
+    assert not calibrate_jax_tukey_h_transform(heavy_looking, gauss).heavy[0]
+    assert calibrate_jax_tukey_h_transform(gaussian_looking, cauchy).heavy[0]
 
 
 @pytest.mark.unit
@@ -204,9 +190,13 @@ def test_calibration_clips_mask_validation_and_degenerate_columns() -> None:
     pilot = np.column_stack(
         [1e-4 * cauchy, 1e4 * cauchy, np.full(N_PHASE1, 7.5), cauchy, rng.standard_t(0.3, N_PHASE1)]
     )
-    cal = calibrate_jax_tukey_h_transform(pilot, min_radius=0.1, max_radius=100.0, max_h=1.5)
+    logdensity = _scaled_t_logdensity(
+        np.array([1.0, 1.0, 1.0, 1.0, 0.3]), np.array([0.0, 0.0, 7.5, 0.0, 0.0]), np.array([1e-4, 1e4, 1.0, 1.0, 1.0])
+    )
+    cal = calibrate_jax_tukey_h_transform(pilot, logdensity, min_radius=0.1, max_radius=100.0, max_h=1.5)
 
-    assert cal.heavy[0] and cal.heavy[1] and cal.heavy[3] and cal.heavy[4]
+    assert cal.probe is not None and cal.probe.polynomial.all()
+    np.testing.assert_array_equal(cal.heavy, [True, True, False, True, True])
     np.testing.assert_allclose(cal.radii[:3], [0.1, 100.0, 0.1], rtol=1e-12)
     np.testing.assert_allclose(cal.radii, np.clip(np.where(cal.heavy, cal.radius_mle, 0.0), 0.1, 100.0), rtol=1e-12)
     np.testing.assert_allclose(
@@ -215,15 +205,15 @@ def test_calibration_clips_mask_validation_and_degenerate_columns() -> None:
     # The scaled Cauchy columns give the same standardised fit as the unscaled one.
     np.testing.assert_allclose(cal.h_mle[:2], cal.h_mle[3], rtol=1e-5)
     np.testing.assert_allclose(cal.radius_mle[:2] / [1e-4, 1e4], cal.radius_mle[3], rtol=1e-5)
-    # The constant column: no test, h = 0, R at the lower clip.
-    assert not cal.heavy[2] and cal.h[2] == 0.0 and cal.p_value[2] == 1.0 and cal.lr_statistic[2] == 0.0
+    # The constant column has polynomial tails but no spread to fit: h = 0, R at the lower clip.
+    assert cal.h[2] == 0.0 and np.isnan(cal.h_mle[2]) and np.isnan(cal.radius_mle[2])
     # t with 0.3 degrees of freedom wants h near 3; the fit stops at max_h.
     assert cal.h_mle[4] == pytest.approx(1.5)
-    assert np.isnan(cal.h_mle[2]) and np.all(np.delete(cal.h_mle, 2) <= 1.5)
+    assert np.all(np.delete(cal.h_mle, 2) <= 1.5)
 
     # A masked-out coordinate is never warped, whatever its tails.
     mask = np.array([True, True, True, False, True])
-    cal_m = calibrate_jax_tukey_h_transform(pilot, mask=mask, min_radius=0.1, max_radius=100.0)
+    cal_m = calibrate_jax_tukey_h_transform(pilot, logdensity, mask=mask, min_radius=0.1, max_radius=100.0)
     assert not cal_m.heavy[3] and cal_m.h[3] == 0.0
     np.testing.assert_array_equal(np.asarray(cal_m.transform.mask), mask)
     assert float(cal_m.transform.forward(jnp.asarray(pilot[0]))[3]) == pilot[0, 3]
@@ -233,56 +223,36 @@ def test_calibration_clips_mask_validation_and_degenerate_columns() -> None:
     with_inf[5, 3] = np.inf
     with_inf[9, 3] = np.nan
     keep = np.isfinite(with_inf[:, 3])
-    cal_inf = calibrate_jax_tukey_h_transform(with_inf[:, 3:4], min_radius=0.1, max_radius=100.0)
-    cal_ref = calibrate_jax_tukey_h_transform(with_inf[keep, 3:4], min_radius=0.1, max_radius=100.0)
+    cauchy1 = _scaled_t_logdensity(np.array([1.0]), np.array([0.0]), np.array([1.0]))
+    cal_inf = calibrate_jax_tukey_h_transform(with_inf[:, 3:4], cauchy1, min_radius=0.1, max_radius=100.0)
+    cal_ref = calibrate_jax_tukey_h_transform(with_inf[keep, 3:4], cauchy1, min_radius=0.1, max_radius=100.0)
     np.testing.assert_array_equal(cal_inf.h, cal_ref.h)
     np.testing.assert_array_equal(cal_inf.radii, cal_ref.radii)
 
     # (chains, draws, d) input is pooled over chains.
-    stacked = calibrate_jax_tukey_h_transform(pilot.reshape(4, N_PHASE1 // 4, 5), min_radius=0.1, max_radius=100.0)
-    np.testing.assert_array_equal(stacked.h, calibrate_jax_tukey_h_transform(pilot, min_radius=0.1, max_radius=100.0).h)
+    stacked = calibrate_jax_tukey_h_transform(
+        pilot.reshape(4, N_PHASE1 // 4, 5), logdensity, min_radius=0.1, max_radius=100.0
+    )
+    pooled = calibrate_jax_tukey_h_transform(pilot, logdensity, min_radius=0.1, max_radius=100.0)
+    np.testing.assert_array_equal(stacked.h, pooled.h)
 
-    # Level 0 never rejects h = 0: the affine map everywhere (the h = 0 control arm of the benchmarks).
-    never = calibrate_jax_tukey_h_transform(pilot, level=0.0, min_radius=0.1, max_radius=100.0, max_h=1.5)
+    # warp=False skips the probe and keeps h = 0 everywhere: the affine map (the h = 0 control arm of the benchmarks).
+    never = calibrate_jax_tukey_h_transform(pilot, logdensity, warp=False, min_radius=0.1, max_radius=100.0, max_h=1.5)
+    assert never.probe is None
     assert not never.heavy.any() and np.all(never.h == 0.0)
-    np.testing.assert_array_equal(never.lr_statistic, cal.lr_statistic)
+    assert np.all(np.isnan(never.h_mle)) and np.all(np.isnan(never.radius_mle))
     np.testing.assert_array_equal(never.radii, np.clip(never.radius_gaussian, 0.1, 100.0))
+    np.testing.assert_array_equal(never.location, cal.location)
 
     for bad in (
-        {"level": -0.1},
-        {"level": 1.0},
         {"max_h": 0.0},
         {"min_radius": 0.0},
         {"min_radius": 5.0, "max_radius": 1.0},
     ):
         with pytest.raises(ValueError):
-            calibrate_jax_tukey_h_transform(pilot, **bad)  # type: ignore[arg-type]
+            calibrate_jax_tukey_h_transform(pilot, logdensity, **bad)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="d="):
-        calibrate_jax_tukey_h_transform(pilot, d=3)
-
-
-@pytest.mark.unit
-def test_calibration_detection_rates_on_exact_iid_draws() -> None:
-    """At the default level and the default pipeline's Phase 1 sample size, t_1 and t_2 get h > 0 and Gaussians h = 0.
-
-    Each column is an independent replicate of N_PHASE1 exact draws (fixed seed, so the rates are reproducible).
-    """
-    reps = 400
-    rng = np.random.default_rng(4)
-    rates = {}
-    for name, draws in (
-        ("t1", rng.standard_t(1.0, size=(N_PHASE1, reps))),
-        ("t2", rng.standard_t(2.0, size=(N_PHASE1, reps))),
-        ("gauss", 3.0 + 0.2 * rng.standard_normal(size=(N_PHASE1, reps))),
-    ):
-        cal = calibrate_jax_tukey_h_transform(draws, min_radius=1e-3, max_radius=1e3)
-        assert cal.level == TUKEY_H_TEST_LEVEL
-        assert np.array_equal(cal.heavy, cal.h > 0.0)
-        rates[name] = float(np.mean(cal.heavy))
-    assert rates["t1"] >= 0.95, rates
-    assert rates["t2"] >= 0.95, rates
-    assert 1.0 - rates["gauss"] >= 0.95, rates
-    assert TUKEY_H_MAX_H > 0.0
+        calibrate_jax_tukey_h_transform(pilot, logdensity, d=3)
 
 
 # =============================================================================
@@ -353,8 +323,12 @@ def test_pipeline_tukey_h_kind_hits_exact_tail_probabilities_on_a_product_t_targ
 
 
 @pytest.mark.unit
-def test_pipeline_tukey_h_without_phase1_is_the_uncalibrated_affine_map_and_level_is_forwarded() -> None:
-    """Without Phase 1 there is nothing to test, so h = 0; `tukey_h_level` reaches the calibration."""
+def test_pipeline_tukey_h_without_phase1_or_warp_is_affine_and_the_probe_is_counted() -> None:
+    """Without Phase 1 there is nothing to calibrate, so h = 0; `tukey_h_warp=False` keeps h = 0 after Phase 1.
+
+    The probe's 8 d log-density evaluations are counted in Phase 1's gradient evaluations: with the same seed, the
+    two runs share Phase 1 and differ by exactly that many.
+    """
     d = len(PRODUCT_MARGINALS)
     res = sample_blackjax_unified_nuts(
         _product_logdensity, d=d, draws=50, tune=60, chains=2, seed=1, transform_kind="tukey_h", adapt_tail_scale=False
@@ -365,12 +339,13 @@ def test_pipeline_tukey_h_without_phase1_is_the_uncalibrated_affine_map_and_leve
     np.testing.assert_array_equal(np.asarray(res.transform.radii), np.full(d, 3.0))
     np.testing.assert_array_equal(np.asarray(res.transform.location), np.zeros(d))
 
-    # A level no p-value can reach keeps every coordinate affine, even the Cauchy ones.
-    strict = sample_blackjax_unified_nuts(
-        _product_logdensity, d=d, draws=50, tune=200, chains=2, seed=1, transform_kind="tukey_h", tukey_h_level=1e-300
-    )
-    assert strict.phase1_grad_evals > 0
-    np.testing.assert_array_equal(np.asarray(strict.transform.h), np.zeros(d))
+    common = dict(d=d, draws=50, tune=200, chains=2, seed=1, transform_kind="tukey_h")
+    warped = sample_blackjax_unified_nuts(_product_logdensity, **common)  # type: ignore[arg-type]
+    affine = sample_blackjax_unified_nuts(_product_logdensity, tukey_h_warp=False, **common)  # type: ignore[arg-type]
+    assert np.any(np.asarray(warped.transform.h) > 0.0)
+    np.testing.assert_array_equal(np.asarray(affine.transform.h), np.zeros(d))
+    np.testing.assert_array_equal(np.asarray(affine.transform.location), np.asarray(warped.transform.location))
+    assert warped.phase1_grad_evals - affine.phase1_grad_evals == 2 * d * len(TAIL_PROBE_RADII)
 
 
 @pytest.mark.unit

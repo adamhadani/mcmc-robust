@@ -248,7 +248,8 @@ def _synthetic_posteriordb(tmp_path: Path) -> render_docs.Reports:
     On 'a-heavy' tukey_h beats arcsinh on seeds 0 and 1 (min-tail-ESS/grad ratios 2, 2, 0.5) and arcsinh
     beats stock on every seed (ratio 2); against its h = 0 control the ratios are 2, 0.5, 1. On 'b-light' both
     transforms lose to stock (ratio 0.5) and tukey_h ties arcsinh and tukey_h0. tukey_h disagrees with the
-    reference on two seeds of 'b-light' only. The guard on exact draws gives h > 0 on 1 coordinate of 'a-heavy'.
+    reference on two seeds of 'b-light' only. Started from exact draws, the guard gives h > 0 on 1 coordinate of
+    'a-heavy'.
     """
     mtpg = {
         ("a-heavy", "stock"): [1.0, 1.0, 1.0],
@@ -329,7 +330,8 @@ def test_posteriordb_findings_report_the_guard_and_the_warning(tmp_path: Path) -
     assert "h > 0 on 2 of 7 unconstrained coordinates (1 of 2 posteriors)" in text
     # On exact draws (median over seeds): 1 coordinate of a-heavy, none of b-light.
     assert (
-        "from Phase 1's draws it set h > 0 on 2 of 7 coordinates, and from as many exact posterior draws on 1" in text
+        "started from Phase 1's draws it set h > 0 on 2 of 7 coordinates, and started from as many exact posterior "
+        "draws on 1" in text
     )
     assert "`TailAlignmentWarning`" in text and "1 of 2 posteriors" in text
 
@@ -360,3 +362,22 @@ def test_posteriordb_findings_split_tukey_h_by_the_guards_decision(tmp_path: Pat
         "than a fifth on 0); where it kept h = 0 on every coordinate (1 of 2), 1.00×." in text
     )
     assert "**`tukey_h0` (h = 0 everywhere) vs stock NUTS**" in text
+
+
+def test_posteriordb_findings_when_the_guard_never_warps(tmp_path: Path) -> None:
+    """With h = 0 everywhere the bullet says so and counts the paired runs whose worst tail ESS is identical."""
+    reports = _synthetic_posteriordb(tmp_path)
+    for row in reports.posteriordb["rows"]:
+        if row["arm"].startswith("tukey_h"):
+            row["tukey_h_n_positive"] = 0
+            # Identical draws on every pair except a-heavy's seed 2.
+            differs = (row["arm"], row["posterior"], row["seed"]) == ("tukey_h", "a-heavy", 2)
+            row["min_tail_ess"] = 51.0 if differs else 50.0
+    text = render_docs.render_posteriordb_findings(reports)
+    assert "**`tukey_h` by the guard's decision**" not in text
+    # Per-posterior medians of tukey_h / tukey_h0: 1 on a-heavy (2, 0.5, 1) and 1 on b-light.
+    assert (
+        "the guard kept h = 0 on every coordinate of every posterior, so the two arms sample with the same transform. "
+        "Their worst-parameter tail ESS is identical on 5 of 6 paired runs; per gradient, `tukey_h` vs `tukey_h0` "
+        "1.00×" in text
+    )

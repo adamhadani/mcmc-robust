@@ -81,7 +81,7 @@ This is the technical record for the code in this repository. Every result numbe
   - No single coordinate map can bring both a Gaussian and a Cauchy coordinate into the potential class that published ergodicity results for HMC and NUTS assume.
   - Choosing the map per coordinate (a Tukey h-map for Student-*t* coordinates, an affine map for Gaussian ones) brings every coordinate into that class.
   - So the per-coordinate choice is both necessary and sufficient.
-- **A matched-map option (§2.6):** `transform_kind="tukey_h"` fits that map per coordinate during warm-up, and keeps it affine unless a test finds a heavy tail.
+- **A matched-map option (§2.6):** `transform_kind="tukey_h"` fits that map per coordinate during warm-up, and keeps it affine unless the target's log density, read along the coordinate's rays, decays polynomially on both sides.
 - **A risk warning (§2.7)** for the regime in which coordinate-wise maps can miss tails silently.
 
 **Not yet done:** a comparison with diffeomorphic MCMC. No public code for it was found (§5.2, §6).
@@ -219,17 +219,23 @@ x_i = \mu_i + R_i\, z_i \exp\left(\tfrac{1}{2} h_i z_i^2\right), \qquad
 
 **Calibration**, from the Phase 1 draws:
 - **Location:** $\mu_i$ is the median.
-- **Shape and scale:** $(R_i, h_i)$ are fitted by maximum likelihood of the Tukey h-transformed Gaussian, i.e. Lambert W × Gaussian (Goerg, 2015), with $h_i$ capped at `TUKEY_H_MAX_H`.
-- **The guard:** a coordinate keeps $h_i = 0$, with the Gaussian scale estimate, unless a likelihood-ratio test rejects $h_i = 0$ at level `tukey_h_level`.
-  - The p-value uses the boundary null mixture $`\tfrac12\chi^2_0 + \tfrac12\chi^2_1`$ (Self & Liang, 1987).
-  - **Dependent draws.** Phase 1's draws are autocorrelated and come from several chains. Near the null, the statistic is the squared standardised sum of the efficient score of h, $`\tfrac12 He_4(z)`$ with $`He_4(z) = z^4 - 6z^2 + 3`$, and dependence inflates the variance of that sum by n/ESS. The test therefore multiplies the statistic by $`\min(1, \mathrm{ESS}/n)`$, where ESS is the split-chain effective sample size of $`He_4(z)`$ (`diagnostics.ess.compute_mean_ess`).
-  - The guard makes the map's choice per coordinate. That is what the impossibility theorem of §4 says is necessary.
-  - `tukey_h_level=0` never rejects, so every coordinate keeps h = 0. The `tukey_h0` arm of Tables A and C runs that setting as the control for the guard's decisions.
+- **The guard: which coordinates to warp.** A coordinate keeps $h_i = 0$, the affine map with the Gaussian scale estimate $`R_{0,i}`$, unless the target's log density decays polynomially on both sides of it (`probe_tail_decay`).
+  - **Read from the density, not from the draws.** From $\mu$, the guard evaluates $`U(t) = -\log \pi(\mu + s\, t R_{0,i} e_i)`$ along both rays of each coordinate ($s = \pm 1$) at $`t = 10^3, 10^{3.5}, 10^4, 10^{4.5}`$. That is 8d log-density evaluations; the pipeline counts them as gradient evaluations.
+  - **The test.** The log-slope $`t\, U'(t)`$ tends to the exponent β on a polynomial tail $`\pi \propto t^{-\beta}`$. On an exponential tail it grows tenfold per decade, and on a Gaussian one a hundredfold. The guard estimates the slope at two radii a decade apart. A side counts as polynomial when the slope grows by less than $\sqrt{10}$ over that decade and the far slope exceeds 1 (a proper tail).
+  - **Why polynomial, and on both sides.** The h-map pulls a polynomial tail back to a Gaussian one. A Gaussian tail it makes lighter than Gaussian, which takes it out of the window of §4 (`hMapGauss_not_inTailWindow`); the same computation, not machine-checked, does that to an exponential tail. The impossibility theorem of §4 says the map must be chosen per coordinate, and the guard chooses by the property those theorems are about. The map is symmetric, so a coordinate with only one polynomial side stays affine.
+  - **The rays are conditionals**, $`\pi(x_i \mid x_{-i} = \mu_{-i})`$. A funnel's latent coordinates have heavy marginals but Gaussian conditionals, so they stay affine. An elliptical *t* is polynomial along every ray.
+  - Johnson & Geyer (2012) state their tail conditions analytically, for a known target. The guard estimates the tail class numerically.
+  - `tukey_h_warp=False` skips the guard, so every coordinate keeps h = 0. The `tukey_h0` arm of Tables A and C runs that setting as the control for the guard's decisions.
+- **Shape and scale of a warped coordinate:** $(R_i, h_i)$ are fitted by maximum likelihood of the Tukey h-transformed Gaussian, i.e. Lambert W × Gaussian (Goerg, 2015), with $h_i$ capped at `TUKEY_H_MAX_H`.
 - **The R clip:** R is clipped to `[min_radius, max_radius]`, and h is rescaled to keep $h/R^2$ fixed, so the clip does not change the map's shape.
 
+**An earlier guard.** Before this one, a likelihood-ratio test of h = 0 on Phase 1's draws decided which coordinates to warp. On posteriordb it warped light coordinates, because Phase 1's pooled draws had not yet reached the posterior. That run is kept at the tag [`posteriordb-run-e80f4a7`](https://github.com/adamhadani/mcmc-robust/tree/posteriordb-run-e80f4a7).
+
 **Limits of the guard.**
-- It separates Gaussian tails from Tukey-h tails, not polynomial tails from exponential ones. A Laplace-tailed coordinate is often warped, which makes its pullback lighter than Gaussian.
-- The ESS correction covers autocorrelation, and chains that disagree about where the mass is. It does not see a transient that every chain shares, nor chains that differ only in spread. If Phase 1 ends before the chains reach the posterior, its pooled draws can look heavy-tailed with no sign of it in any chain. Table C measures this by running the guard on exact posterior draws as well (§5.3).
+- It looks along the coordinate axes through one point, $\mu$. A tail that is polynomial only when other coordinates are far from $\mu$ is not seen.
+- It reads the tails at $`10^3`$ to $`10^{4.5}`$ scales from $\mu$. A tail regime that starts further out is missed. So is a model that fails to evaluate that far out, for example by overflow or a solver error: that side counts as not polynomial.
+- A coordinate with one polynomial side and one lighter side stays affine.
+- The shape $h_i$ of a warped coordinate is still fitted on Phase 1's draws, which may not have reached the posterior.
 
 **Default.** arcsinh remains the default `transform_kind`.
 - Table A (§5.1) compares the two maps on synthetic targets.
@@ -424,7 +430,7 @@ d = 50, budget 3,000 gradients per chain, 4 chains, seed 42; "tail" starts at �
 - `affine`: the same Phase 1 calibration of μ and R with a linear map, which separates rescaling from tail warping;
 - `scale_mixture`, on the Student-t-family targets: the practitioner's rewrite of a Student-t or Cauchy component as a non-centred Gaussian scale mixture, x = μ + √λ·L·η with an inverse-gamma λ;
 - `tukey_h`: the Tukey h-map with its guard (§2.6);
-- `tukey_h0`: `tukey_h` with the guard never rejecting, so h = 0 on every coordinate. It differs from `tukey_h` only in the guard's h > 0 decisions.
+- `tukey_h0`: `tukey_h` with warping off (`tukey_h_warp=False`), so h = 0 on every coordinate. It differs from `tukey_h` only in the guard's h > 0 decisions and the guard's 8d log-density evaluations.
 
 **Targets.**
 - Tasks 1 and 3 of §5.4;
@@ -598,9 +604,9 @@ Excluded: `dcs_bresar_mijatovic_2026` (not run: no official code found).
 <!-- BEGIN GENERATED: posteriordb-table -->
 Every posterior of posteriordb (commit `91027f9cdd13`) with reference draws: 58 posteriors, 10 seeds each. Each run has 4 chains × 1,000 draws after 500 warm-up steps, on Stan's unconstrained space through BridgeStan; arms share each seed's Stan-style initial positions and random key, so ratios are paired by seed. ESS and accuracy are measured on the parameters that have reference draws; the ratios compare the worst parameter's tail-ESS per gradient. Source: `reports/posteriordb_results.json` (run 2026-10-25, commit e80f4a7).
 
-A run disagrees with the reference when a tail-probability z-score (at the reference's 1%, 5%, 95% and 99% quantiles) or a mean z-score exceeds 5 in absolute value; z counts the Monte Carlo error of the run and of the reference. Not converged: max R-hat above 1.01. d is the unconstrained dimension. The last column runs `tukey_h`'s guard on as many reference draws as Phase 1 calibrates from (unconstrained; n/a where the reference lacks a parameter of the model).
+A run disagrees with the reference when a tail-probability z-score (at the reference's 1%, 5%, 95% and 99% quantiles) or a mean z-score exceeds 5 in absolute value; z counts the Monte Carlo error of the run and of the reference. Not converged: max R-hat above 1.01. d is the unconstrained dimension. The last column starts `tukey_h`'s guard from as many reference draws as Phase 1 calibrates from (its probe at their median and scale, unconstrained; n/a where the reference lacks a parameter of the model).
 
-| Posterior | d | Stock min-tail-ESS/grad, median | `arcsinh` ÷ stock (seeds better) | `tukey_h` ÷ stock (seeds better) | `tukey_h` ÷ `arcsinh` (seeds better) | `tukey_h` ÷ `tukey_h0` (seeds better) | Median divergences (stock / arcsinh / tukey_h / tukey_h0) | Seeds disagreeing with reference (stock / arcsinh / tukey_h / tukey_h0) | Seeds not converged (stock / arcsinh / tukey_h / tukey_h0) | `tukey_h` coordinates with h > 0, median | The same guard on exact draws, median |
+| Posterior | d | Stock min-tail-ESS/grad, median | `arcsinh` ÷ stock (seeds better) | `tukey_h` ÷ stock (seeds better) | `tukey_h` ÷ `arcsinh` (seeds better) | `tukey_h` ÷ `tukey_h0` (seeds better) | Median divergences (stock / arcsinh / tukey_h / tukey_h0) | Seeds disagreeing with reference (stock / arcsinh / tukey_h / tukey_h0) | Seeds not converged (stock / arcsinh / tukey_h / tukey_h0) | `tukey_h` coordinates with h > 0, median | The guard started from exact draws, median |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Rate_1_data-Rate_1_model | 1 | 0.111 | 0.57× (0 of 10) | 0.93× (5 of 10) | 1.45× (10 of 10) | 1.00× (0 of 10) | 0 / 6 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
 | Rate_2_data-Rate_2_model | 2 | 0.105 | 0.78× (1 of 10) | 0.90× (2 of 10) | 1.24× (10 of 10) | 1.00× (0 of 10) | 0 / 2 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
@@ -671,7 +677,7 @@ A run disagrees with the reference when a tail-probability z-score (at the refer
 - **Posteriors with divergences on at least half the seeds**: `stock`: 6 of 58 (arma-arma11, bball_drive_event_0-hmm_drive_0, eight_schools-eight_schools_centered, gp_pois_regr-gp_pois_regr, mcycle_gp-accel_gp, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `arcsinh`: 24 of 58; `tukey_h`: 17 of 58; `tukey_h0`: 5 of 58 (eight_schools-eight_schools_centered, eight_schools-eight_schools_noncentered, gp_pois_regr-gp_pois_regr, mcycle_gp-accel_gp, one_comp_mm_elim_abs-one_comp_mm_elim_abs).
 - **Posteriors not converged on at least half the seeds** (max R-hat above 1.01): `stock`: 3 of 58 (arma-arma11, bball_drive_event_0-hmm_drive_0, eight_schools-eight_schools_centered); `arcsinh`: 3 of 58 (arma-arma11, eight_schools-eight_schools_centered, kilpisjarvi_mod-kilpisjarvi); `tukey_h`: 3 of 58 (arma-arma11, earnings-earn_height, eight_schools-eight_schools_centered); `tukey_h0`: 2 of 58 (arma-arma11, eight_schools-eight_schools_centered).
 - **Phase 1 calibrated off the posterior** (median over seeds of the largest distance between the calibrated location and the run's final median, above 3 posterior scales): `arcsinh`: 10 of 58 posteriors, worse than stock by more than a fifth on 2 of them; `tukey_h`: 10 of 58 posteriors, worse than stock by more than a fifth on 1 of them.
-- **The `tukey_h` guard** (median over seeds) set h > 0 on 73 of 394 unconstrained coordinates (22 of 58 posteriors); everywhere else the h-map is the affine map. On the 56 posteriors whose reference draws include every parameter, from Phase 1's draws it set h > 0 on 73 of 371 coordinates, and from as many exact posterior draws on 11.
+- **The `tukey_h` guard** (median over seeds) set h > 0 on 73 of 394 unconstrained coordinates (22 of 58 posteriors); everywhere else the h-map is the affine map. On the 56 posteriors whose reference draws include every parameter, started from Phase 1's draws it set h > 0 on 73 of 371 coordinates, and started from as many exact posterior draws on 11.
 - **`tukey_h` by the guard's decision**, against its h = 0 control `tukey_h0`, which differs only in those decisions (per-posterior medians over seeds): where it set h > 0 somewhere (22 of 58 posteriors), `tukey_h` vs `tukey_h0` 0.83× (better on 1, worse by more than a fifth on 11); where it kept h = 0 on every coordinate (36 of 58), 1.00×.
 - **`TailAlignmentWarning`** on the default `arcsinh` runs' unconstrained draws fired, on at least half the seeds, on 0 of 58 posteriors.
 <!-- END GENERATED: posteriordb-findings -->
@@ -884,7 +890,7 @@ Check R-hat and ESS as usual.
 - **Heavy tails that are strongly rotated relative to the coordinates:** gains are smaller and less reliable, and a tail can be missed without warning (Table A). nutpie's normalizing-flow adaptation is worth trying there (Table B).
 - **Targets that stock NUTS already samples well:** the transform is not expected to help there, and on real posteriors it can add divergences (Table C). Use it when you expect heavy tails, not as a default for every model.
 
-**Try the Tukey h-map.** On axis-aligned heavy tails, try `transform_kind="tukey_h"` (Table A compares it with arcsinh). Check `result.transform.h` to see which coordinates were warped. If it is positive on coordinates you expect to be light-tailed, rerun with `tukey_h_level=0` or use stock NUTS: on real posteriors, the guard's h > 0 decisions are what cost `tukey_h` efficiency (Table C).
+**Try the Tukey h-map.** On axis-aligned heavy tails, try `transform_kind="tukey_h"` (Table A compares it with arcsinh). Check `result.transform.h` to see which coordinates were warped. If it is positive on coordinates you expect to be light-tailed, rerun with `tukey_h_warp=False` or use stock NUTS.
 
 **Heed the warning.** If `TailAlignmentWarning` fires, treat tail estimates with caution. Reparameterise the model, or try a method that follows tail directions, such as nutpie's flow (Table B).
 
@@ -925,8 +931,7 @@ Check R-hat and ESS as usual.
 31. Roberts, G. O., & Tweedie, R. L. (1996). Exponential convergence of Langevin distributions and their discrete approximations. *Bernoulli*, 2(4), 341–363.
 32. Roualdes, E. A., Ward, B., Carpenter, B., Seyboldt, A., & Axen, S. D. (2023). BridgeStan: Efficient in-memory access to the methods of a Stan model. *Journal of Open Source Software*, 8(87), 5236. doi:10.21105/joss.05236.
 33. Rubin, D. B. (1981). Estimation in parallel randomized experiments. *Journal of Educational Statistics*, 6(4), 377–401.
-34. Self, S. G., & Liang, K.-Y. (1987). Asymptotic properties of maximum likelihood estimators and likelihood ratio tests under nonstandard conditions. *Journal of the American Statistical Association*, 82(398), 605–610.
-35. Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P.-C. (2021). Rank-normalization, folding, and localization: An improved $\widehat{R}$ for assessing convergence of MCMC. *Bayesian Analysis*, 16(2), 667–718.
-36. Yang, J., Łatuszyński, K., & Roberts, G. O. (2024). Stereographic Markov chain Monte Carlo. *The Annals of Statistics*, 52(6), 2692–2713. doi:10.1214/24-AOS2426.
-37. nutpie: a NUTS implementation with gradient-based and normalizing-flow adaptation. https://github.com/pymc-devs/nutpie.
-38. The Mathlib Community. The Lean 4 mathematical library (mathlib4). https://github.com/leanprover-community/mathlib4.
+34. Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P.-C. (2021). Rank-normalization, folding, and localization: An improved $\widehat{R}$ for assessing convergence of MCMC. *Bayesian Analysis*, 16(2), 667–718.
+35. Yang, J., Łatuszyński, K., & Roberts, G. O. (2024). Stereographic Markov chain Monte Carlo. *The Annals of Statistics*, 52(6), 2692–2713. doi:10.1214/24-AOS2426.
+36. nutpie: a NUTS implementation with gradient-based and normalizing-flow adaptation. https://github.com/pymc-devs/nutpie.
+37. The Mathlib Community. The Lean 4 mathematical library (mathlib4). https://github.com/leanprover-community/mathlib4.

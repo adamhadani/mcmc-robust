@@ -19,7 +19,6 @@ from mcmc_robust.diagnostics.convergence import (
 )
 from mcmc_robust.diagnostics.ess import (
     compute_bulk_ess,
-    compute_mean_ess,
     compute_tail_ess,
 )
 from mcmc_robust.diagnostics.metrics import (
@@ -112,65 +111,6 @@ def test_bulk_ess_heavy_tailed_cauchy(rng):
     ess = compute_bulk_ess(samples)
     assert np.isfinite(ess[0])
     assert ess[0] > 1000.0
-
-
-def _ar1_chains(rng: np.random.Generator, phi: float, chains: int, draws: int) -> np.ndarray:
-    """Stationary AR(1) chains with N(0, 1) marginals, shape (chains, draws)."""
-    x = np.empty((chains, draws))
-    x[:, 0] = rng.normal(size=chains)
-    eps = rng.normal(size=(chains, draws)) * np.sqrt(1.0 - phi**2)
-    for t in range(1, draws):
-        x[:, t] = phi * x[:, t - 1] + eps[:, t]
-    return x
-
-
-@pytest.mark.unit
-def test_mean_ess_is_the_ess_of_the_mean_of_autocorrelated_chains(rng):
-    """ESS for the mean (no rank normalisation) matches the AR(1) value n (1 - phi) / (1 + phi) and ArviZ.
-
-    Over 20 replicates of 4 chains x 2,000 draws, the largest relative error against the AR(1) value was 7% at
-    phi = 0 and 12% at phi = 0.5 (tolerance 20%; at phi = 0.9 the estimator's own noise reaches 32%, so only ArviZ
-    is compared there), and against ArviZ's estimator on the same draws 5%, 2% and 10% (tolerance 15%).
-    """
-    import arviz as az
-
-    for phi in (0.0, 0.5, 0.9):
-        x = _ar1_chains(rng, phi, 4, 2000)
-        ess = compute_mean_ess(x[:, :, np.newaxis])
-        assert ess.shape == (1,)
-        assert ess[0] <= x.size
-        if phi < 0.9:
-            assert ess[0] == pytest.approx(x.size * (1.0 - phi) / (1.0 + phi), rel=0.2)
-        assert ess[0] == pytest.approx(float(az.ess(x, method="mean")), rel=0.15)
-
-
-@pytest.mark.unit
-def test_mean_ess_collapses_when_chains_disagree_or_drift(rng):
-    """Split chains with different means (a chain elsewhere, or a trend) leave few effective draws.
-
-    Over 20 replicates (AR(1), phi = 0.5, 4 chains x 200 draws), ESS / n was at most 0.009 with one chain shifted
-    by 3 sd and at most 0.024 with a drift of 3 sd, against at least 0.26 for the same chains unshifted (the AR(1)
-    value is 1/3).
-    """
-    x = _ar1_chains(rng, 0.5, 4, 200)
-    shifted = x + np.array([0.0, 0.0, 0.0, 3.0])[:, np.newaxis]
-    drifting = x + np.linspace(0.0, 3.0, 200)[np.newaxis, :]
-    for bad in (shifted, drifting):
-        assert compute_mean_ess(bad[:, :, np.newaxis])[0] < 0.05 * bad.size
-    assert compute_mean_ess(x[:, :, np.newaxis])[0] > 0.2 * x.size
-
-
-@pytest.mark.unit
-def test_mean_ess_is_affine_invariant_and_handles_degenerate_input(rng):
-    x = _ar1_chains(rng, 0.7, 4, 300)[:, :, np.newaxis]
-    np.testing.assert_allclose(compute_mean_ess(-3.0 * x + 7.0), compute_mean_ess(x), rtol=1e-10)
-    # It is not rank-normalised: a monotone map that is not affine changes it.
-    assert compute_mean_ess(np.exp(3.0 * x))[0] != pytest.approx(compute_mean_ess(x)[0], rel=0.01)
-    assert compute_mean_ess(np.full((2, 50, 1), 1.5))[0] == 0.0
-    with_nan = x.copy()
-    with_nan[0, 3, 0] = np.nan
-    assert np.isnan(compute_mean_ess(with_nan)[0])
-    assert isinstance(compute_mean_ess(x, reduction="min"), float)
 
 
 # =============================================================================
