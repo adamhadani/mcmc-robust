@@ -193,7 +193,7 @@ Pull requests run only the tests a change can reach (`pytest-impacted`); see [AG
 
 ```bash
 uv run python -m mcmc_robust.bench.ablation_runner --full --workers 2
-uv run python -m mcmc_robust.bench.posteriordb_runner --full --workers 6   # needs the posteriordb extra and --fetch
+uv run python -m mcmc_robust.bench.posteriordb_runner --full --workers 6   # needs the posteriordb extra and --fetch; --resume continues an interrupted run
 uv run python -m mcmc_robust.bench.sota_runner --full
 uv run python -m mcmc_robust.bench.applied_runner
 uv run python -m mcmc_robust.bench.render_docs --write

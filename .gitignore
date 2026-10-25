@@ -16,6 +16,9 @@ htmlcov/
 formal/.lake
 formal/.lake/
 
+# Checkpoint of an unfinished benchmark run (bench/posteriordb_runner.py --resume)
+reports/*.partial.jsonl
+
 # Temporary / scratch / agent runtime logs
 scratch/
 .agents/

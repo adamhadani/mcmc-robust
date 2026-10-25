@@ -96,7 +96,7 @@ uv run pre-commit run --all-files
 uv run python -m mcmc_robust.bench.ablation_runner --full --workers 2  # Table A -> reports/ablation_results.json, ablation_*.csv
 uv sync --extra competitors && uv run python -m mcmc_robust.bench.competitor_runner  # Table B -> reports/competitor_results.{json,csv}
 uv sync --extra posteriordb && uv run python -m mcmc_robust.bench.posteriordb_runner --fetch  # posteriordb checkout
-uv run python -m mcmc_robust.bench.posteriordb_runner --full --workers 6  # Table C -> reports/posteriordb_results.{json,csv}
+uv run python -m mcmc_robust.bench.posteriordb_runner --full --workers 6  # Table C -> reports/posteriordb_results.{json,csv}; hours, add --resume after an interruption
 uv run python -m mcmc_robust.bench.sota_runner --full   # Tables 1-4 -> reports/sota_comparison_results.{json,csv}
 uv run python -m mcmc_robust.bench.applied_runner       # Table 5   -> reports/applied_benchmark_results.{json,csv}
 uv run python -m mcmc_robust.bench.plot                 # figures   -> reports/figures/
