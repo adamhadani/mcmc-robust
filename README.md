@@ -5,7 +5,7 @@
 [![Python Version](https://img.shields.io/badge/python->=3.13-blue.svg)](https://github.com/adamhadani/mcmc-robust)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **A research library for NUTS on heavy-tailed targets. It calibrates a coordinate-wise arcsinh transform during warm-up and samples the exact transformed density. It is benchmarked against PyMC and BlackJAX NUTS.**
+> **A research library for NUTS on heavy-tailed targets. It calibrates a coordinate-wise arcsinh transform during warm-up and samples the exact transformed density. It is benchmarked against PyMC and BlackJAX NUTS, nutpie, and every posteriordb posterior with reference draws.**
 
 ## What it does
 
@@ -28,9 +28,9 @@ Two implementations:
 
 | Component | Status | Evidence and limits |
 | :--- | :--- | :--- |
-| Calibrated arcsinh transform + NUTS | Main contribution | Gains are largest on heavy tails aligned with the coordinate axes and smaller on rotated ones. When heavy tails lie along rotated directions without being elliptical, it can miss a tail entirely with no R-hat warning. It costs a little on a rotated Gaussian. Where the model is known to be a Student-t scale mixture, rewriting it by hand is better (REPORT §5.1). |
-| Tukey h-map + NUTS (`transform_kind="tukey_h"`) | New option | It fits a per-coordinate Tukey h-map during warm-up, and leaves a coordinate affine unless a likelihood-ratio test finds a heavy tail. It pulls polynomial tails back to Gaussian ones, the case the Lean theorems cover (REPORT §2.6, §4). Table A compares it with arcsinh. Like arcsinh, it does not fix tails along rotated directions. |
-| Tail-alignment warning | New check, on by default | `TailAlignmentWarning` fires when heavy tails appear to be shared across coordinates: the regime in which coordinate-wise maps can miss a tail with no R-hat warning. It flags a risk, not a proven miss (REPORT §2.7, Table A). |
+| Calibrated arcsinh transform + NUTS | Main contribution | Gains are largest on heavy tails aligned with the coordinate axes and smaller on rotated ones. When heavy tails lie along rotated directions without being elliptical, it can miss a tail entirely with no R-hat warning. It costs a little on a rotated Gaussian. Where the model is known to be a Student-t scale mixture, rewriting it by hand is better (REPORT §5.1). On real posteriors (posteriordb) it is no uniform improvement over stock NUTS and adds divergences on many of them, so it is not a default for every model (REPORT §5.3). |
+| Tukey h-map + NUTS (`transform_kind="tukey_h"`) | New option | It fits a per-coordinate Tukey h-map during warm-up, and leaves a coordinate affine unless a likelihood-ratio test finds a heavy tail. It pulls polynomial tails back to Gaussian ones, the case the Lean theorems cover (REPORT §2.6, §4). Table A compares it with arcsinh. Like arcsinh, it does not fix tails along rotated directions. On real posteriors its guard often sets h > 0 on coordinates, and that is where it loses (REPORT §5.3). Not the default. |
+| Tail-alignment warning | New check, on by default | `TailAlignmentWarning` fires when heavy tails appear to be shared across coordinates: the regime in which coordinate-wise maps can miss a tail with no R-hat warning. It flags a risk, not a proven miss (REPORT §2.7, Table A). Table C reports how often it fires on real posteriors. |
 | Funnels and hierarchical models | Not addressed | A coordinate-wise map cannot remove the coupling between a scale parameter and its children. Non-centre the model instead (REPORT §3.3, Table 2). |
 | `GentleMALA` (soft-capped drift damping for stiff targets) | Experimental | Faster burn-in on a quartic target, but a narrower stable step-size range than tamed MALA. No guarantee for the coordinate-wise mode it runs in (REPORT §3.1). |
 | First-order samplers with the transform (`UnifiedRobustSampler`, `AnisotropicTailMALA`) | Experimental | Not converged within the benchmark budgets (REPORT §3.2). |
@@ -60,7 +60,22 @@ Two implementations:
 - **Seeds converged** (max R-hat at most 1.01): `arcsinh_nuts` Task 1: 4 of 5; rotated Gaussian: 5 of 5; Task 3: 5 of 5; rotated t (ν = 1): 1 of 5; `nutpie_flow` Task 1: 1 of 5; rotated Gaussian: 5 of 5; Task 3: 3 of 5; rotated t (ν = 1): 4 of 5.
 <!-- END GENERATED: readme-competitors -->
 
-**Single-seed comparisons with PyMC NUTS and other samplers** (REPORT §5.3):
+**Real posteriors** (REPORT §5.3, Table C). Every posteriordb posterior with reference draws, sampled on Stan's unconstrained space through BridgeStan, with arms paired by seed. Most are regressions that stock NUTS already samples well, so this tests whether the transforms are safe as a default:
+
+<!-- BEGIN GENERATED: readme-posteriordb -->
+- **`arcsinh` vs stock NUTS** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `arcsinh` better on 24 of 58 posteriors, worse by more than a fifth on 9; median over posteriors 0.98× (range 0.11× to 95.00×).
+- **`tukey_h` vs stock NUTS** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `tukey_h` better on 24 of 58 posteriors, worse by more than a fifth on 8; median over posteriors 0.99× (range 0.03× to 47.48×).
+- **`tukey_h` vs `arcsinh`** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `tukey_h` better on 31 of 58 posteriors, worse by more than a fifth on 11; median over posteriors 1.02× (range 0.10× to 7.22×).
+- **Posteriors where most runs disagree with the reference** (a z-score above 5 on at least half the seeds): `stock`: 3 of 58 (arma-arma11, eight_schools-eight_schools_centered, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `arcsinh`: 3 of 58 (eight_schools-eight_schools_centered, kilpisjarvi_mod-kilpisjarvi, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `tukey_h`: 4 of 58 (earnings-earn_height, eight_schools-eight_schools_centered, kidiq-kidscore_interaction, one_comp_mm_elim_abs-one_comp_mm_elim_abs).
+- **Posteriors with divergences on at least half the seeds**: `stock`: 6 of 58 (arma-arma11, bball_drive_event_0-hmm_drive_0, eight_schools-eight_schools_centered, gp_pois_regr-gp_pois_regr, mcycle_gp-accel_gp, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `arcsinh`: 24 of 58; `tukey_h`: 20 of 58.
+- **Posteriors not converged on at least half the seeds** (max R-hat above 1.01): `stock`: 3 of 58 (arma-arma11, bball_drive_event_0-hmm_drive_0, eight_schools-eight_schools_centered); `arcsinh`: 3 of 58 (arma-arma11, eight_schools-eight_schools_centered, kilpisjarvi_mod-kilpisjarvi); `tukey_h`: 4 of 58 (arma-arma11, earnings-earn_height, eight_schools-eight_schools_centered, kidiq-kidscore_interaction).
+- **Phase 1 calibrated off the posterior** (median over seeds of the largest distance between the calibrated location and the run's final median, above 3 posterior scales): `arcsinh`: 10 of 58 posteriors, worse than stock by more than a fifth on 2 of them; `tukey_h`: 10 of 58 posteriors, worse than stock by more than a fifth on 1 of them.
+- **The `tukey_h` guard** (median over seeds) set h > 0 on 103 of 394 unconstrained coordinates (31 of 58 posteriors); everywhere else the h-map is the affine map.
+- **`tukey_h` by the guard's decision** (per-posterior medians over seeds): where it kept h = 0 on every coordinate (27 of 58 posteriors), `tukey_h` vs `arcsinh` 1.06× (better on 22) and worse than stock by more than a fifth on 0; where it set h > 0 somewhere (31 of 58), 0.90× (better on 9) and worse than stock on 8. `arcsinh` vs stock on the same groups: 0.93× and 1.05×.
+- **`TailAlignmentWarning`** on the default `arcsinh` runs' unconstrained draws fired, on at least half the seeds, on 0 of 58 posteriors.
+<!-- END GENERATED: readme-posteriordb -->
+
+**Single-seed comparisons with PyMC NUTS and other samplers** (REPORT §5.4):
 
 <!-- BEGIN GENERATED: readme-headline -->
 - **Heavy tails, product form (REPORT Table 1).** On a d=10 regression in which 7 of the 10 coefficients sit at their independent Cauchy prior, `UnifiedRobustNUTS` has 23.5× the tail-ESS per gradient of BlackJAX NUTS and 4.3× that of PyMC NUTS (max R-hat 1.002 vs 1.037 and 1.013); its 99% quantile error is 8.1% against 45.3% and 41.6%.
@@ -83,6 +98,8 @@ uv sync
 ```
 
 **Optional: the nutpie competitor benchmark.** It needs `uv sync --extra competitors`. nutpie publishes wheels for CPython 3.12–3.14 only; on 3.15 uv builds it from source, which needs a Rust toolchain.
+
+**Optional: the posteriordb benchmark and Stan models.** `uv sync --extra posteriordb` installs BridgeStan, which compiles Stan models with `make` and a C++ toolchain. `mcmc_robust.stan_bridge.bridgestan_logdensity_fn` then turns a compiled Stan model into a log density for `sample_blackjax_unified_nuts`.
 
 ## Usage
 
@@ -176,6 +193,7 @@ Pull requests run only the tests a change can reach (`pytest-impacted`); see [AG
 
 ```bash
 uv run python -m mcmc_robust.bench.ablation_runner --full --workers 2
+uv run python -m mcmc_robust.bench.posteriordb_runner --full --workers 6   # needs the posteriordb extra and --fetch
 uv run python -m mcmc_robust.bench.sota_runner --full
 uv run python -m mcmc_robust.bench.applied_runner
 uv run python -m mcmc_robust.bench.render_docs --write
