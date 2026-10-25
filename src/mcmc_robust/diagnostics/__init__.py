@@ -6,6 +6,7 @@ from mcmc_robust.diagnostics.convergence import (
 )
 from mcmc_robust.diagnostics.ess import (
     compute_bulk_ess,
+    compute_mean_ess,
     compute_tail_ess,
 )
 from mcmc_robust.diagnostics.metrics import (
@@ -31,6 +32,7 @@ __all__ = [
     "BudgetExhaustedError",
     # Effective Sample Size
     "compute_bulk_ess",
+    "compute_mean_ess",
     "compute_tail_ess",
     # Convergence
     "compute_split_rhat",

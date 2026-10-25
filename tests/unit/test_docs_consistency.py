@@ -109,6 +109,8 @@ def _synthetic_ablation(tmp_path: Path) -> render_docs.Reports:
         ("gauss_x", "affine"): [1.0, 1.0, 1.0],
         ("heavy", "tukey_h"): [8.0, 4.0, 1.0],
         ("gauss_x", "tukey_h"): [1.0, 1.0, 1.0],
+        ("heavy", "tukey_h0"): [2.0, 2.0, 2.0],
+        ("gauss_x", "tukey_h0"): [1.0, 1.0, 1.0],
     }
     # The tail-alignment warning fired on these runs only.
     warned = {("heavy", "arcsinh"): [True, True, False], ("heavy", "stock"): [True, False, False]}
@@ -222,6 +224,13 @@ def test_ablation_findings_compare_tukey_h_with_arcsinh_and_stock(tmp_path: Path
     assert "gauss_x 1.0× (wins on 0 of 3 seeds)" in text  # tukey_h / stock on the Gaussian
 
 
+def test_ablation_findings_compare_tukey_h_with_its_h0_control(tmp_path: Path) -> None:
+    text = render_docs.render_ablation_findings(_synthetic_ablation(tmp_path))
+    assert "**The guard's h > 0 decisions**" in text
+    assert "heavy 2.0× (better than h = 0 on 2 of 3 seeds)" in text  # tukey_h / tukey_h0 = 4, 2, 0.5
+    assert "gauss_x 1.0× (better than h = 0 on 0 of 3 seeds)" in text
+
+
 def test_ablation_findings_report_tail_alignment_warnings(tmp_path: Path) -> None:
     text = render_docs.render_ablation_findings(_synthetic_ablation(tmp_path))
     assert "**Tail-alignment warning**" in text
@@ -234,11 +243,12 @@ def test_ablation_findings_report_tail_alignment_warnings(tmp_path: Path) -> Non
 
 
 def _synthetic_posteriordb(tmp_path: Path) -> render_docs.Reports:
-    """Two posteriors x three seeds x three arms.
+    """Two posteriors x three seeds x four arms.
 
     On 'a-heavy' tukey_h beats arcsinh on seeds 0 and 1 (min-tail-ESS/grad ratios 2, 2, 0.5) and arcsinh
-    beats stock on every seed (ratio 2). On 'b-light' both transforms lose to stock (ratio 0.5) and
-    tukey_h ties arcsinh. tukey_h disagrees with the reference on two seeds of 'b-light' only.
+    beats stock on every seed (ratio 2); against its h = 0 control the ratios are 2, 0.5, 1. On 'b-light' both
+    transforms lose to stock (ratio 0.5) and tukey_h ties arcsinh and tukey_h0. tukey_h disagrees with the
+    reference on two seeds of 'b-light' only. The guard on exact draws gives h > 0 on 1 coordinate of 'a-heavy'.
     """
     mtpg = {
         ("a-heavy", "stock"): [1.0, 1.0, 1.0],
@@ -247,10 +257,13 @@ def _synthetic_posteriordb(tmp_path: Path) -> render_docs.Reports:
         ("b-light", "stock"): [2.0, 2.0, 2.0],
         ("b-light", "arcsinh"): [1.0, 1.0, 1.0],
         ("b-light", "tukey_h"): [1.0, 1.0, 1.0],
+        ("a-heavy", "tukey_h0"): [2.0, 8.0, 1.0],
+        ("b-light", "tukey_h0"): [1.0, 1.0, 1.0],
     }
     max_z = {("b-light", "tukey_h"): [9.0, 7.0, 1.0]}
     divs = {("a-heavy", "tukey_h"): [3, 0, 5]}
     h_pos = {("a-heavy", "tukey_h"): [2, 2, 1], ("b-light", "tukey_h"): [0, 1, 0]}
+    h_ref = {("a-heavy", "tukey_h"): [1, 0, 1], ("b-light", "tukey_h"): [0, 0, 0]}
     warned = {("a-heavy", "arcsinh"): [True, True, False]}
     # Phase 1's location offset from the final draws, in posterior scales; far (> 3) on b-light for arcsinh only.
     offsets = {("b-light", "arcsinh"): [10.0, 12.0, 0.5]}
@@ -269,7 +282,8 @@ def _synthetic_posteriordb(tmp_path: Path) -> render_docs.Reports:
             "total_grad_evals": 1000,
             "ref_tail_prob_max_abs_z": max_z.get((p, a), [1.5, 1.5, 1.5])[s],
             "ref_mean_max_abs_z": 1.0,
-            "tukey_h_n_positive": h_pos[(p, a)][s] if a == "tukey_h" else None,
+            "tukey_h_n_positive": h_pos.get((p, a), [0, 0, 0])[s] if a.startswith("tukey_h") else None,
+            "tukey_h_ref_positive": h_ref.get((p, a), [0, 0, 0])[s] if a.startswith("tukey_h") else None,
             "tail_alignment_warning": warned.get((p, a), [False, False, False])[s],
             "calib_location_offset_max": None if a == "stock" else offsets.get((p, a), [0.2, 0.3, 0.1])[s],
             "error": None,
@@ -285,7 +299,7 @@ def _synthetic_posteriordb(tmp_path: Path) -> render_docs.Reports:
             "chains": 4,
             "draws": 1000,
             "tune": 500,
-            "arms": ["stock", "arcsinh", "tukey_h"],
+            "arms": ["stock", "arcsinh", "tukey_h", "tukey_h0"],
         },
         "provenance": {"posteriordb_sha": "91027f9cdd13b7e76283fec3f2898f59d4b83ec4", "git_sha": "a" * 40},
     }
@@ -313,14 +327,20 @@ def test_posteriordb_findings_report_the_guard_and_the_warning(tmp_path: Path) -
     text = render_docs.render_posteriordb_findings(_synthetic_posteriordb(tmp_path))
     # Median over seeds of the coordinates with h > 0: 2 of 4 on a-heavy, 0 of 3 on b-light.
     assert "h > 0 on 2 of 7 unconstrained coordinates (1 of 2 posteriors)" in text
+    # On exact draws (median over seeds): 1 coordinate of a-heavy, none of b-light.
+    assert (
+        "from Phase 1's draws it set h > 0 on 2 of 7 coordinates, and from as many exact posterior draws on 1" in text
+    )
     assert "`TailAlignmentWarning`" in text and "1 of 2 posteriors" in text
 
 
 def test_posteriordb_table_has_one_row_per_posterior(tmp_path: Path) -> None:
     text = render_docs.render_posteriordb_table(_synthetic_posteriordb(tmp_path))
     assert "91027f9cdd13" in text
-    # Columns: d, stock's median, then arcsinh / stock, tukey_h / stock, tukey_h / arcsinh (median, seeds better).
-    assert "| a-heavy | 4 | 1 | 2.00× (3 of 3) | 4.00× (2 of 3) | 2.00× (2 of 3) |" in text
+    # Columns: d, stock's median, then arcsinh / stock, tukey_h / stock, tukey_h / arcsinh, tukey_h / tukey_h0
+    # (median, seeds better), ..., then the guard's h > 0 count from Phase 1 and from exact draws (medians).
+    assert "| a-heavy | 4 | 1 | 2.00× (3 of 3) | 4.00× (2 of 3) | 2.00× (2 of 3) | 1.00× (1 of 3) |" in text
+    assert text.count("| 2 | 1 |") == 1
     assert "| b-light | 3 |" in text
 
 
@@ -334,9 +354,9 @@ def test_posteriordb_findings_relate_losses_to_phase1_calibrating_off_the_poster
 
 def test_posteriordb_findings_split_tukey_h_by_the_guards_decision(tmp_path: Path) -> None:
     text = render_docs.render_posteriordb_findings(_synthetic_posteriordb(tmp_path))
-    # b-light: median h > 0 count 0 (affine everywhere); a-heavy: median 2 (some h > 0).
+    # b-light: median h > 0 count 0 (affine everywhere); a-heavy: median 2 (some h > 0), tukey_h / tukey_h0 median 1.
     assert (
-        "where it kept h = 0 on every coordinate (1 of 2 posteriors), `tukey_h` vs `arcsinh` 1.00× (better on 0) "
-        "and worse than stock by more than a fifth on 1; where it set h > 0 somewhere (1 of 2), 2.00× (better on 1) "
-        "and worse than stock on 0. `arcsinh` vs stock on the same groups: 0.50× and 2.00×." in text
+        "where it set h > 0 somewhere (1 of 2 posteriors), `tukey_h` vs `tukey_h0` 1.00× (better on 0, worse by more "
+        "than a fifth on 0); where it kept h = 0 on every coordinate (1 of 2), 1.00×." in text
     )
+    assert "**`tukey_h0` (h = 0 everywhere) vs stock NUTS**" in text

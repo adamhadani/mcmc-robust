@@ -19,7 +19,7 @@ This is the technical record for the code in this repository. Every result numbe
 
   It shows where the gain comes from and where the transform is not the best choice.
 - **Comparison with nutpie (§5.2).** nutpie is the closest existing tool. The comparison covers its default (a gradient-based mass matrix) and its normalizing-flow adaptation. The transform is ahead per gradient on axis-aligned heavy tails, and behind the flow on rotated targets.
-- **Real posteriors (§5.3).** Every posteriordb posterior with reference draws, compared with stock NUTS on Stan's unconstrained space. There neither transform is a uniform improvement over stock NUTS, both add divergences on posteriors where stock NUTS has none, and the Tukey h-map's losses come where its guard sets h > 0.
+- **Real posteriors (§5.3).** Every posteriordb posterior with reference draws, compared with stock NUTS on Stan's unconstrained space. There neither transform is a uniform improvement over stock NUTS, and both add divergences on posteriors where stock NUTS has none. The Tukey h-map's losses are caused by its guard's h > 0 decisions, most of which come from early warm-up draws rather than from the posterior: with h held at 0, the same pipeline does not have them.
 - **Single-seed comparisons (§5.4).** On two synthetic targets whose heavy tails are aligned with the coordinate axes, the transform raises tail-ESS per gradient over stock BlackJAX and PyMC NUTS and lowers the error of the estimated 0.99 quantile (Tables 1 and 3).
 - It does not resolve funnel geometry (Table 2).
 - The repository's other components remain experimental (§3): a damped Langevin drift for stiff targets, and first-order samplers that use the transform.
@@ -222,16 +222,18 @@ x_i = \mu_i + R_i\, z_i \exp\left(\tfrac{1}{2} h_i z_i^2\right), \qquad
 - **Shape and scale:** $(R_i, h_i)$ are fitted by maximum likelihood of the Tukey h-transformed Gaussian, i.e. Lambert W × Gaussian (Goerg, 2015), with $h_i$ capped at `TUKEY_H_MAX_H`.
 - **The guard:** a coordinate keeps $h_i = 0$, with the Gaussian scale estimate, unless a likelihood-ratio test rejects $h_i = 0$ at level `tukey_h_level`.
   - The p-value uses the boundary null mixture $`\tfrac12\chi^2_0 + \tfrac12\chi^2_1`$ (Self & Liang, 1987).
+  - **Dependent draws.** Phase 1's draws are autocorrelated and come from several chains. Near the null, the statistic is the squared standardised sum of the efficient score of h, $`\tfrac12 He_4(z)`$ with $`He_4(z) = z^4 - 6z^2 + 3`$, and dependence inflates the variance of that sum by n/ESS. The test therefore multiplies the statistic by $`\min(1, \mathrm{ESS}/n)`$, where ESS is the split-chain effective sample size of $`He_4(z)`$ (`diagnostics.ess.compute_mean_ess`).
   - The guard makes the map's choice per coordinate. That is what the impossibility theorem of §4 says is necessary.
+  - `tukey_h_level=0` never rejects, so every coordinate keeps h = 0. The `tukey_h0` arm of Tables A and C runs that setting as the control for the guard's decisions.
 - **The R clip:** R is clipped to `[min_radius, max_radius]`, and h is rescaled to keep $h/R^2$ fixed, so the clip does not change the map's shape.
 
 **Limits of the guard.**
 - It separates Gaussian tails from Tukey-h tails, not polynomial tails from exponential ones. A Laplace-tailed coordinate is often warped, which makes its pullback lighter than Gaussian.
-- The test assumes independent draws, while Phase 1 draws are autocorrelated.
+- The ESS correction covers autocorrelation, and chains that disagree about where the mass is. It does not see a transient that every chain shares, nor chains that differ only in spread. If Phase 1 ends before the chains reach the posterior, its pooled draws can look heavy-tailed with no sign of it in any chain. Table C measures this by running the guard on exact posterior draws as well (§5.3).
 
 **Default.** arcsinh remains the default `transform_kind`.
 - Table A (§5.1) compares the two maps on synthetic targets.
-- Table C (§5.3) compares them on real posteriors. There `tukey_h` is close to stock NUTS where the guard keeps h = 0 everywhere, and loses where it sets h > 0.
+- Table C (§5.3) compares them on real posteriors. There most of the guard's h > 0 decisions come from Phase 1's draws, not from the posterior, and against the h = 0 control `tukey_h0` those decisions cost efficiency. On a centred funnel, whose exact draws are non-Gaussian, warping did not help either.
 
 ### 2.7 Tail-alignment warning
 
@@ -420,7 +422,9 @@ d = 50, budget 3,000 gradients per chain, 4 chains, seed 42; "tail" starts at �
 - `stock_ta95`: stock with a higher target acceptance rate;
 - `arcsinh`: the transform;
 - `affine`: the same Phase 1 calibration of μ and R with a linear map, which separates rescaling from tail warping;
-- `scale_mixture`, on the Student-t-family targets: the practitioner's rewrite of a Student-t or Cauchy component as a non-centred Gaussian scale mixture, x = μ + √λ·L·η with an inverse-gamma λ.
+- `scale_mixture`, on the Student-t-family targets: the practitioner's rewrite of a Student-t or Cauchy component as a non-centred Gaussian scale mixture, x = μ + √λ·L·η with an inverse-gamma λ;
+- `tukey_h`: the Tukey h-map with its guard (§2.6);
+- `tukey_h0`: `tukey_h` with the guard never rejecting, so h = 0 on every coordinate. It differs from `tukey_h` only in the guard's h > 0 decisions.
 
 **Targets.**
 - Tasks 1 and 3 of §5.4;
@@ -433,13 +437,13 @@ d = 50, budget 3,000 gradients per chain, 4 chains, seed 42; "tail" starts at �
 - Tail accuracy is the error in the probability below the exact 0.01 and 0.99 marginal quantiles.
 
 <!-- BEGIN GENERATED: ablation-table -->
-10 seeds per cell; each run has 4 chains × 1,000 draws after 500 warm-up steps. Every arm runs BlackJAX NUTS with window adaptation through `sample_blackjax_unified_nuts`; arms differ only in the coordinate transform (or, for `scale_mixture`, in the model's parameterisation), and share each seed's initial positions and random key, so ratios are paired by seed. Source: `reports/ablation_results.json` (run 2026-10-24, commit afa01da).
+10 seeds per cell; each run has 4 chains × 1,000 draws after 500 warm-up steps. Every arm runs BlackJAX NUTS with window adaptation through `sample_blackjax_unified_nuts`; arms differ only in the coordinate transform (or, for `scale_mixture`, in the model's parameterisation), and share each seed's initial positions and random key, so ratios are paired by seed. Source: `reports/ablation_results.json` (run 2026-10-25, commit e80f4a7).
 
 Tail-probability error is the mean over coordinates and p ∈ {0.01, 0.99} of |P̂(x_i < q_p) − p| at the exact marginal quantile q_p; it is less noisy than a relative error on the 0.99 quantile.
 
 Targets: **Task 1**: Sparse regression, Cauchy(0, 1) priors, 3 active of 10 coefficients (SOTA Task 1); **Task 3**: Product form: t(nu) on 10 coordinates (nu = 1.2 to 2.5), N(0, 1) on 10 (SOTA Task 3); **rotated t (ν = 1)**: Multivariate Cauchy (t, nu = 1), d = 10, rotated scale with condition number 25; **rotated t (ν = 2)**: Multivariate t, nu = 2, d = 10, rotated scale with condition number 25; **isotropic t (ν = 2)**: Isotropic multivariate t, nu = 2, d = 10; **rotated product of Cauchys**: Rotated product of Cauchys, x = Q diag(s) u with u iid Cauchy and s = geomspace(1, 5), d = 10; **rotated Gaussian**: Rotated Gaussian, d = 20, covariance condition number 100; **anisotropic Gaussian**: Axis-aligned Gaussian, d = 20, standard deviations 0.1 to 10.
 
-Arms: `stock`: BlackJAX NUTS, window adaptation, target acceptance 0.8; `stock_ta95`: The same with target acceptance 0.95; `arcsinh`: NUTS on the calibrated coordinate-wise arcsinh pullback; `affine`: Same pipeline and Phase 1 calibration, z = (x - mu) / R, no arcsinh; `scale_mixture`: Stock NUTS on the non-centred Gaussian scale-mixture reparameterisation; `tukey_h`: Same pipeline and Phase 1, Tukey h-map x = mu + R z exp(h z^2 / 2); (R, h) by Tukey-h maximum likelihood, h = 0 unless a likelihood-ratio test rejects it.
+Arms: `stock`: BlackJAX NUTS, window adaptation, target acceptance 0.8; `stock_ta95`: The same with target acceptance 0.95; `arcsinh`: NUTS on the calibrated coordinate-wise arcsinh pullback; `affine`: Same pipeline and Phase 1 calibration, z = (x - mu) / R, no arcsinh; `scale_mixture`: Stock NUTS on the non-centred Gaussian scale-mixture reparameterisation; `tukey_h`: Same pipeline and Phase 1, Tukey h-map x = mu + R z exp(h z^2 / 2); (R, h) by Tukey-h maximum likelihood, h = 0 unless a likelihood-ratio test (deflated by the effective sample size of the Phase 1 draws) rejects it; `tukey_h0`: tukey_h with the guard never rejecting (level 0): h = 0 on every coordinate.
 
 | Target | Arm | Tail-ESS/grad vs stock, median [IQR] | Seeds better than stock | Seeds converged | Median gradients | Median divergences | Median tail-probability error | Seeds with tail-alignment warning |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -449,57 +453,66 @@ Arms: `stock`: BlackJAX NUTS, window adaptation, target acceptance 0.8; `stock_t
 | Task 1 | `affine` | 0.89× [0.61, 1.24] | 4 of 10 | 0 of 10 | 683,634 | 0 | 0.0049 | 0 of 10 |
 | Task 1 | `scale_mixture` | 1.09× [0.94, 1.89] | 7 of 10 | 8 of 10 | 1,061,258 | 205.5 | 0.0015 | 0 of 10 |
 | Task 1 | `tukey_h` | 17.21× [14.78, 32.84] | 10 of 10 | 10 of 10 | 91,530 | 0 | 0.0014 | 0 of 10 |
+| Task 1 | `tukey_h0` | 0.87× [0.50, 1.38] | 4 of 10 | 0 of 10 | 1,006,456 | 0 | 0.0042 | 0 of 10 |
 | Task 3 | `stock` | 1 (reference) | – | 1 of 10 | 197,496 | 0 | 0.0030 | 0 of 10 |
 | Task 3 | `stock_ta95` | 0.55× [0.52, 0.96] | 2 of 10 | 3 of 10 | 297,914 | 0 | 0.0026 | 0 of 10 |
 | Task 3 | `arcsinh` | 3.80× [3.12, 4.07] | 10 of 10 | 10 of 10 | 74,596 | 0 | 0.0015 | 0 of 10 |
 | Task 3 | `affine` | 0.92× [0.63, 1.17] | 4 of 10 | 3 of 10 | 242,389 | 0 | 0.0030 | 0 of 10 |
 | Task 3 | `scale_mixture` | 3.45× [2.81, 3.94] | 10 of 10 | 10 of 10 | 82,176 | 0 | 0.0014 | 0 of 10 |
-| Task 3 | `tukey_h` | 5.66× [4.96, 6.62] | 10 of 10 | 10 of 10 | 47,338 | 0 | 0.0014 | 0 of 10 |
+| Task 3 | `tukey_h` | 5.84× [4.85, 6.62] | 10 of 10 | 10 of 10 | 50,356 | 0 | 0.0015 | 0 of 10 |
+| Task 3 | `tukey_h0` | 0.90× [0.74, 1.17] | 3 of 10 | 1 of 10 | 189,387 | 0 | 0.0030 | 0 of 10 |
 | rotated t (ν = 1) | `stock` | 1 (reference) | – | 0 of 10 | 195,961 | 0 | 0.0043 | 10 of 10 |
 | rotated t (ν = 1) | `stock_ta95` | 0.75× [0.55, 1.47] | 4 of 10 | 0 of 10 | 314,761 | 0 | 0.0035 | 10 of 10 |
 | rotated t (ν = 1) | `arcsinh` | 5.24× [2.16, 8.88] | 10 of 10 | 2 of 10 | 121,078 | 0 | 0.0046 | 10 of 10 |
 | rotated t (ν = 1) | `affine` | 1.92× [0.97, 2.88] | 7 of 10 | 0 of 10 | 178,581 | 0 | 0.0044 | 10 of 10 |
 | rotated t (ν = 1) | `scale_mixture` | 44.71× [30.11, 75.54] | 10 of 10 | 10 of 10 | 51,242 | 0 | 0.0015 | 10 of 10 |
 | rotated t (ν = 1) | `tukey_h` | 4.10× [1.96, 5.30] | 10 of 10 | 4 of 10 | 133,994 | 0 | 0.0033 | 10 of 10 |
+| rotated t (ν = 1) | `tukey_h0` | 1.23× [0.68, 1.61] | 5 of 10 | 0 of 10 | 196,524 | 0 | 0.0039 | 10 of 10 |
 | rotated t (ν = 2) | `stock` | 1 (reference) | – | 2 of 10 | 117,246 | 0 | 0.0030 | 10 of 10 |
 | rotated t (ν = 2) | `stock_ta95` | 0.63× [0.53, 0.76] | 0 of 10 | 4 of 10 | 178,166 | 0 | 0.0024 | 10 of 10 |
 | rotated t (ν = 2) | `arcsinh` | 1.73× [1.44, 1.86] | 10 of 10 | 10 of 10 | 99,168 | 0 | 0.0019 | 10 of 10 |
 | rotated t (ν = 2) | `affine` | 1.03× [0.95, 1.22] | 6 of 10 | 3 of 10 | 114,478 | 0 | 0.0031 | 10 of 10 |
 | rotated t (ν = 2) | `scale_mixture` | 8.99× [7.62, 10.17] | 10 of 10 | 10 of 10 | 43,884 | 0 | 0.0013 | 10 of 10 |
-| rotated t (ν = 2) | `tukey_h` | 1.55× [1.33, 1.69] | 9 of 10 | 10 of 10 | 106,958 | 0 | 0.0017 | 10 of 10 |
+| rotated t (ν = 2) | `tukey_h` | 1.54× [1.15, 1.69] | 9 of 10 | 10 of 10 | 106,958 | 0 | 0.0019 | 10 of 10 |
+| rotated t (ν = 2) | `tukey_h0` | 1.06× [0.78, 1.09] | 6 of 10 | 4 of 10 | 111,123 | 0 | 0.0037 | 10 of 10 |
 | isotropic t (ν = 2) | `stock` | 1 (reference) | – | 4 of 10 | 64,814 | 0 | 0.0028 | 10 of 10 |
 | isotropic t (ν = 2) | `stock_ta95` | 0.77× [0.68, 0.79] | 1 of 10 | 4 of 10 | 104,074 | 0 | 0.0017 | 10 of 10 |
 | isotropic t (ν = 2) | `arcsinh` | 1.59× [1.46, 1.78] | 10 of 10 | 9 of 10 | 58,962 | 0 | 0.0019 | 10 of 10 |
 | isotropic t (ν = 2) | `affine` | 1.13× [1.03, 1.19] | 8 of 10 | 4 of 10 | 65,280 | 0 | 0.0018 | 10 of 10 |
 | isotropic t (ν = 2) | `scale_mixture` | 4.24× [3.87, 4.50] | 10 of 10 | 10 of 10 | 43,618 | 0 | 0.0012 | 10 of 10 |
-| isotropic t (ν = 2) | `tukey_h` | 1.48× [1.25, 1.57] | 9 of 10 | 10 of 10 | 69,900 | 0 | 0.0018 | 10 of 10 |
+| isotropic t (ν = 2) | `tukey_h` | 1.20× [1.05, 1.51] | 8 of 10 | 10 of 10 | 73,107 | 0 | 0.0023 | 10 of 10 |
+| isotropic t (ν = 2) | `tukey_h0` | 1.27× [0.88, 1.42] | 6 of 10 | 6 of 10 | 61,646 | 0 | 0.0024 | 10 of 10 |
 | rotated product of Cauchys | `stock` | 1 (reference) | – | 0 of 10 | 520,939 | 0 | 0.0068 | 10 of 10 |
 | rotated product of Cauchys | `stock_ta95` | 0.69× [0.49, 1.02] | 3 of 10 | 0 of 10 | 739,482 | 0 | 0.0074 | 10 of 10 |
 | rotated product of Cauchys | `arcsinh` | 1.58× [0.93, 3.24] | 7 of 10 | 0 of 10 | 342,392 | 0 | 0.0100 | 10 of 10 |
 | rotated product of Cauchys | `affine` | 0.82× [0.62, 1.61] | 4 of 10 | 0 of 10 | 532,026 | 0 | 0.0068 | 10 of 10 |
 | rotated product of Cauchys | `scale_mixture` | 72.59× [56.99, 87.81] | 10 of 10 | 10 of 10 | 92,334 | 0 | 0.0017 | 10 of 10 |
-| rotated product of Cauchys | `tukey_h` | 2.24× [0.85, 3.53] | 7 of 10 | 1 of 10 | 372,285 | 0.5 | 0.0100 | 10 of 10 |
+| rotated product of Cauchys | `tukey_h` | 1.44× [0.92, 2.08] | 7 of 10 | 0 of 10 | 360,266 | 0 | 0.0100 | 10 of 10 |
+| rotated product of Cauchys | `tukey_h0` | 1.27× [0.55, 1.98] | 6 of 10 | 0 of 10 | 526,338 | 0 | 0.0083 | 10 of 10 |
 | rotated Gaussian | `stock` | 1 (reference) | – | 10 of 10 | 155,246 | 0 | 0.0013 | 0 of 10 |
 | rotated Gaussian | `stock_ta95` | 0.71× [0.69, 0.73] | 0 of 10 | 10 of 10 | 209,912 | 0 | 0.0013 | 0 of 10 |
 | rotated Gaussian | `arcsinh` | 0.85× [0.84, 0.90] | 0 of 10 | 10 of 10 | 177,917 | 0 | 0.0013 | 0 of 10 |
 | rotated Gaussian | `affine` | 1.00× [0.95, 1.02] | 4 of 10 | 10 of 10 | 156,798 | 0 | 0.0015 | 0 of 10 |
-| rotated Gaussian | `tukey_h` | 0.98× [0.96, 1.00] | 3 of 10 | 10 of 10 | 159,620 | 0 | 0.0013 | 0 of 10 |
+| rotated Gaussian | `tukey_h` | 0.98× [0.96, 1.00] | 3 of 10 | 10 of 10 | 159,620 | 0 | 0.0012 | 0 of 10 |
+| rotated Gaussian | `tukey_h0` | 0.99× [0.96, 1.00] | 3 of 10 | 10 of 10 | 159,620 | 0 | 0.0013 | 0 of 10 |
 | anisotropic Gaussian | `stock` | 1 (reference) | – | 10 of 10 | 121,870 | 0 | 0.0014 | 0 of 10 |
 | anisotropic Gaussian | `stock_ta95` | 0.72× [0.72, 0.74] | 0 of 10 | 10 of 10 | 164,086 | 0 | 0.0015 | 0 of 10 |
 | anisotropic Gaussian | `arcsinh` | 1.55× [1.52, 1.58] | 10 of 10 | 10 of 10 | 90,602 | 0 | 0.0014 | 0 of 10 |
 | anisotropic Gaussian | `affine` | 1.23× [1.20, 1.24] | 10 of 10 | 10 of 10 | 99,100 | 0 | 0.0013 | 0 of 10 |
-| anisotropic Gaussian | `tukey_h` | 1.76× [1.73, 1.80] | 10 of 10 | 10 of 10 | 69,772 | 0 | 0.0014 | 0 of 10 |
+| anisotropic Gaussian | `tukey_h` | 1.76× [1.73, 1.80] | 10 of 10 | 10 of 10 | 69,622 | 0 | 0.0014 | 0 of 10 |
+| anisotropic Gaussian | `tukey_h0` | 1.76× [1.73, 1.77] | 10 of 10 | 10 of 10 | 69,507 | 0 | 0.0014 | 0 of 10 |
 <!-- END GENERATED: ablation-table -->
 
 <!-- BEGIN GENERATED: ablation-findings -->
 - **Arcsinh vs stock NUTS** (paired tail-ESS per gradient, median over seeds): Task 1 7.1× (wins on 10 of 10 seeds); Task 3 3.8× (wins on 10 of 10 seeds); rotated t (ν = 1) 5.2× (wins on 10 of 10 seeds); rotated t (ν = 2) 1.7× (wins on 10 of 10 seeds); isotropic t (ν = 2) 1.6× (wins on 10 of 10 seeds); rotated product of Cauchys 1.6× (wins on 7 of 10 seeds); rotated Gaussian 0.9× (wins on 0 of 10 seeds); anisotropic Gaussian 1.5× (wins on 10 of 10 seeds).
 - **Rescaling alone** (`affine`: the same calibration without the arcsinh) vs stock: Task 1 0.9× (wins on 4 of 10 seeds); Task 3 0.9× (wins on 4 of 10 seeds); rotated t (ν = 1) 1.9× (wins on 7 of 10 seeds); rotated t (ν = 2) 1.0× (wins on 6 of 10 seeds); isotropic t (ν = 2) 1.1× (wins on 8 of 10 seeds); rotated product of Cauchys 0.8× (wins on 4 of 10 seeds); rotated Gaussian 1.0× (wins on 4 of 10 seeds); anisotropic Gaussian 1.2× (wins on 10 of 10 seeds).
 - **Reparameterising by hand** (`scale_mixture`, where the model is a Student-t scale mixture) vs `arcsinh`: Task 1 0.2× (better than arcsinh on 0 of 10 seeds); Task 3 0.9× (better than arcsinh on 1 of 10 seeds); rotated t (ν = 1) 10.8× (better than arcsinh on 10 of 10 seeds); rotated t (ν = 2) 5.3× (better than arcsinh on 10 of 10 seeds); isotropic t (ν = 2) 2.5× (better than arcsinh on 10 of 10 seeds); rotated product of Cauchys 45.6× (better than arcsinh on 10 of 10 seeds).
-- **Tukey h-map** (`tukey_h`) vs `arcsinh`: Task 1 2.3× (better than arcsinh on 10 of 10 seeds); Task 3 1.6× (better than arcsinh on 10 of 10 seeds); rotated t (ν = 1) 1.0× (better than arcsinh on 5 of 10 seeds); rotated t (ν = 2) 0.9× (better than arcsinh on 4 of 10 seeds); isotropic t (ν = 2) 0.9× (better than arcsinh on 4 of 10 seeds); rotated product of Cauchys 0.8× (better than arcsinh on 5 of 10 seeds); rotated Gaussian 1.1× (better than arcsinh on 10 of 10 seeds); anisotropic Gaussian 1.1× (better than arcsinh on 10 of 10 seeds); vs stock: Task 1 17.2× (wins on 10 of 10 seeds); Task 3 5.7× (wins on 10 of 10 seeds); rotated t (ν = 1) 4.1× (wins on 10 of 10 seeds); rotated t (ν = 2) 1.5× (wins on 9 of 10 seeds); isotropic t (ν = 2) 1.5× (wins on 9 of 10 seeds); rotated product of Cauchys 2.2× (wins on 7 of 10 seeds); rotated Gaussian 1.0× (wins on 3 of 10 seeds); anisotropic Gaussian 1.8× (wins on 10 of 10 seeds).
+- **Tukey h-map** (`tukey_h`) vs `arcsinh`: Task 1 2.3× (better than arcsinh on 10 of 10 seeds); Task 3 1.6× (better than arcsinh on 10 of 10 seeds); rotated t (ν = 1) 1.0× (better than arcsinh on 5 of 10 seeds); rotated t (ν = 2) 0.9× (better than arcsinh on 4 of 10 seeds); isotropic t (ν = 2) 0.8× (better than arcsinh on 2 of 10 seeds); rotated product of Cauchys 0.9× (better than arcsinh on 5 of 10 seeds); rotated Gaussian 1.1× (better than arcsinh on 10 of 10 seeds); anisotropic Gaussian 1.1× (better than arcsinh on 10 of 10 seeds); vs stock: Task 1 17.2× (wins on 10 of 10 seeds); Task 3 5.8× (wins on 10 of 10 seeds); rotated t (ν = 1) 4.1× (wins on 10 of 10 seeds); rotated t (ν = 2) 1.5× (wins on 9 of 10 seeds); isotropic t (ν = 2) 1.2× (wins on 8 of 10 seeds); rotated product of Cauchys 1.4× (wins on 7 of 10 seeds); rotated Gaussian 1.0× (wins on 3 of 10 seeds); anisotropic Gaussian 1.8× (wins on 10 of 10 seeds).
+- **The guard's h > 0 decisions** (`tukey_h` vs `tukey_h0`, the same pipeline with h = 0 on every coordinate): Task 1 27.6× (better than h = 0 on 10 of 10 seeds); Task 3 5.0× (better than h = 0 on 10 of 10 seeds); rotated t (ν = 1) 3.6× (better than h = 0 on 10 of 10 seeds); rotated t (ν = 2) 1.5× (better than h = 0 on 9 of 10 seeds); isotropic t (ν = 2) 1.1× (better than h = 0 on 5 of 10 seeds); rotated product of Cauchys 1.1× (better than h = 0 on 6 of 10 seeds); rotated Gaussian 1.0× (better than h = 0 on 0 of 10 seeds); anisotropic Gaussian 1.0× (better than h = 0 on 2 of 10 seeds).
 - **Seeds converged** (max R-hat at most 1.01) with `arcsinh`: Task 1: 9 of 10 seeds; Task 3: 10 of 10 seeds; rotated t (ν = 1): 2 of 10 seeds; rotated t (ν = 2): 10 of 10 seeds; isotropic t (ν = 2): 9 of 10 seeds; rotated product of Cauchys: 0 of 10 seeds; rotated Gaussian: 10 of 10 seeds; anisotropic Gaussian: 10 of 10 seeds; with `stock`: Task 1: 0 of 10 seeds; Task 3: 1 of 10 seeds; rotated t (ν = 1): 0 of 10 seeds; rotated t (ν = 2): 2 of 10 seeds; isotropic t (ν = 2): 4 of 10 seeds; rotated product of Cauchys: 0 of 10 seeds; rotated Gaussian: 10 of 10 seeds; anisotropic Gaussian: 10 of 10 seeds.
 - **Seeds with any post-warm-up divergence** with `arcsinh`: Task 1: 0 of 10 seeds; Task 3: 0 of 10 seeds; rotated t (ν = 1): 0 of 10 seeds; rotated t (ν = 2): 0 of 10 seeds; isotropic t (ν = 2): 0 of 10 seeds; rotated product of Cauchys: 4 of 10 seeds; rotated Gaussian: 0 of 10 seeds; anisotropic Gaussian: 4 of 10 seeds.
 - **Runs in which some coordinate never visits a tail** (no draw beyond its exact 0.01 or 0.99 quantile, which R-hat cannot detect) with `arcsinh`: rotated product of Cauchys: 10 of 10 seeds; with `tukey_h`: rotated product of Cauchys: 10 of 10 seeds; with `stock`: Task 1: 1 of 10 seeds; rotated product of Cauchys: 8 of 10 seeds.
-- **Tail-alignment warning** (`TailAlignmentWarning`, computed on each run's own draws; it flags heavy tails shared across coordinates) with `arcsinh`: Task 1: 0 of 10 seeds; Task 3: 0 of 10 seeds; rotated t (ν = 1): 10 of 10 seeds; rotated t (ν = 2): 10 of 10 seeds; isotropic t (ν = 2): 10 of 10 seeds; rotated product of Cauchys: 10 of 10 seeds; rotated Gaussian: 0 of 10 seeds; anisotropic Gaussian: 0 of 10 seeds. Among runs of any arm in which some coordinate never visits a tail, it fired on 46 of 49.
+- **Tail-alignment warning** (`TailAlignmentWarning`, computed on each run's own draws; it flags heavy tails shared across coordinates) with `arcsinh`: Task 1: 0 of 10 seeds; Task 3: 0 of 10 seeds; rotated t (ν = 1): 10 of 10 seeds; rotated t (ν = 2): 10 of 10 seeds; isotropic t (ν = 2): 10 of 10 seeds; rotated product of Cauchys: 10 of 10 seeds; rotated Gaussian: 0 of 10 seeds; anisotropic Gaussian: 0 of 10 seeds. Among runs of any arm in which some coordinate never visits a tail, it fired on 52 of 57.
 <!-- END GENERATED: ablation-findings -->
 
 **How to read Table A.**
@@ -573,96 +586,102 @@ Excluded: `dcs_bresar_mijatovic_2026` (not run: no official code found).
 - BridgeStan (Roualdes et al., 2023) compiles each Stan model. `stan_bridge.bridgestan_logdensity_fn` passes its log density and gradient on Stan's unconstrained space to `sample_blackjax_unified_nuts`. Every arm samples the same density; only `transform_kind` differs.
 - Initial positions follow Stan: uniform on (−2, 2) for each unconstrained coordinate, redrawn until the density is finite.
 - Draws are mapped to the parameters that have reference draws, transformed parameters included. ESS, R-hat and accuracy are measured on those.
+- The arms are stock NUTS, `arcsinh`, `tukey_h` and `tukey_h0`. `tukey_h0` is `tukey_h` with h held at 0, so the paired ratio of the two is the effect of the guard's h > 0 decisions on that posterior.
 
 **Accuracy against the reference.** posteriordb's reference draws are themselves a Monte Carlo sample. `diagnostics/tail_accuracy.reference_agreement` compares tail probabilities at the reference's quantiles, and means, as z-scores that count the Monte Carlo error of both the run and the reference.
 
-**Two diagnostics in each row.**
+**Three diagnostics in each row.**
 - *Where Phase 1 calibrated:* the distance between Phase 1's location and scale and the run's own post-warm-up draws. Phase 1 calibrates on the first part of warm-up (§2.4); when the chains have not reached the posterior by then, the transform is centred and scaled on the transient.
 - *What the `tukey_h` guard decided:* how many unconstrained coordinates it gave h > 0.
+- *What the guard decides on exact draws:* the same guard on as many of posteriordb's reference draws as Phase 1 calibrates from, mapped to the unconstrained space. A coordinate with h > 0 from Phase 1's draws but not from exact draws was warped because of where Phase 1's chains were, not because of the posterior's tails.
 
 <!-- BEGIN GENERATED: posteriordb-table -->
-Every posterior of posteriordb (commit `91027f9cdd13`) with reference draws: 58 posteriors, 10 seeds each. Each run has 4 chains × 1,000 draws after 500 warm-up steps, on Stan's unconstrained space through BridgeStan; arms share each seed's Stan-style initial positions and random key, so ratios are paired by seed. ESS and accuracy are measured on the parameters that have reference draws; the ratios compare the worst parameter's tail-ESS per gradient. Source: `reports/posteriordb_results.json` (run 2026-10-24, commit 6a860fd).
+Every posterior of posteriordb (commit `91027f9cdd13`) with reference draws: 58 posteriors, 10 seeds each. Each run has 4 chains × 1,000 draws after 500 warm-up steps, on Stan's unconstrained space through BridgeStan; arms share each seed's Stan-style initial positions and random key, so ratios are paired by seed. ESS and accuracy are measured on the parameters that have reference draws; the ratios compare the worst parameter's tail-ESS per gradient. Source: `reports/posteriordb_results.json` (run 2026-10-25, commit e80f4a7).
 
-A run disagrees with the reference when a tail-probability z-score (at the reference's 1%, 5%, 95% and 99% quantiles) or a mean z-score exceeds 5 in absolute value; z counts the Monte Carlo error of the run and of the reference. Not converged: max R-hat above 1.01. d is the unconstrained dimension.
+A run disagrees with the reference when a tail-probability z-score (at the reference's 1%, 5%, 95% and 99% quantiles) or a mean z-score exceeds 5 in absolute value; z counts the Monte Carlo error of the run and of the reference. Not converged: max R-hat above 1.01. d is the unconstrained dimension. The last column runs `tukey_h`'s guard on as many reference draws as Phase 1 calibrates from (unconstrained; n/a where the reference lacks a parameter of the model).
 
-| Posterior | d | Stock min-tail-ESS/grad, median | `arcsinh` ÷ stock (seeds better) | `tukey_h` ÷ stock (seeds better) | `tukey_h` ÷ `arcsinh` (seeds better) | Median divergences (stock / arcsinh / tukey_h) | Seeds disagreeing with reference (stock / arcsinh / tukey_h) | Seeds not converged (stock / arcsinh / tukey_h) | `tukey_h` coordinates with h > 0, median |
-| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Rate_1_data-Rate_1_model | 1 | 0.111 | 0.57× (0 of 10) | 0.93× (5 of 10) | 1.45× (10 of 10) | 0 / 6 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| Rate_2_data-Rate_2_model | 2 | 0.105 | 0.78× (1 of 10) | 0.90× (2 of 10) | 1.24× (10 of 10) | 0 / 2 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| Rate_3_data-Rate_3_model | 1 | 0.113 | 0.61× (0 of 10) | 0.99× (4 of 10) | 1.77× (10 of 10) | 0 / 10.5 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| Rate_5_data-Rate_5_model | 1 | 0.106 | 0.68× (0 of 10) | 1.04× (6 of 10) | 1.49× (10 of 10) | 0 / 13.5 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| arK-arK | 7 | 0.0125 | 0.98× (4 of 10) | 0.99× (5 of 10) | 1.03× (6 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| arma-arma11 | 4 | 0.000113 | 1.21× (8 of 10) | 0.52× (3 of 10) | 0.38× (2 of 10) | 122 / 0 / 49.5 | 5 / 2 / 3 | 7 / 6 / 8 | 3 |
-| bball_drive_event_0-hmm_drive_0 | 6 | 0.000334 | 95.00× (8 of 10) | 47.48× (8 of 10) | 0.50× (4 of 10) | 19 / 4.5 / 3 | 3 / 1 / 2 | 7 / 3 / 2 | 2 |
-| bball_drive_event_1-hmm_drive_1 | 6 | 0.016 | 1.05× (6 of 10) | 0.63× (1 of 10) | 0.54× (2 of 10) | 0 / 0 / 94 | 0 / 0 / 0 | 0 / 0 / 0 | 5 |
-| diamonds-diamonds | 26 | 0.000328 | 0.99× (4 of 10) | 1.06× (8 of 10) | 1.06× (6 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 20.5 |
-| dogs-dogs | 3 | 0.026 | 0.89× (2 of 10) | 0.98× (3 of 10) | 1.05× (6 of 10) | 0 / 0 / 0 | 1 / 0 / 0 | 0 / 1 / 0 | 0 |
-| dogs-dogs_hierarchical | 2 | 0.0683 | 0.78× (0 of 10) | 0.98× (3 of 10) | 1.23× (10 of 10) | 0 / 1.5 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| earnings-earn_height | 3 | 0.00229 | 0.77× (4 of 10) | 0.03× (1 of 10) | 0.10× (3 of 10) | 0 / 0 / 120 | 0 / 2 / 6 | 0 / 3 / 9 | 1 |
-| earnings-log10earn_height | 3 | 0.00246 | 1.32× (9 of 10) | 1.12× (9 of 10) | 0.89× (4 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 1 / 0 | 0 |
-| earnings-logearn_height | 3 | 0.00276 | 1.07× (6 of 10) | 1.07× (7 of 10) | 1.07× (6 of 10) | 0 / 0 / 0 | 0 / 1 / 0 | 0 / 1 / 0 | 1 |
-| earnings-logearn_height_male | 4 | 0.00219 | 1.01× (7 of 10) | 0.91× (3 of 10) | 0.84× (2 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 1 | 2 |
-| earnings-logearn_interaction | 5 | 0.00111 | 0.95× (3 of 10) | 0.88× (3 of 10) | 0.92× (4 of 10) | 0 / 0 / 0 | 0 / 0 / 1 | 0 / 1 / 1 | 2 |
-| earnings-logearn_interaction_z | 5 | 0.0291 | 0.93× (1 of 10) | 0.59× (0 of 10) | 0.65× (0 of 10) | 0 / 0 / 7.5 | 0 / 0 / 0 | 0 / 0 / 1 | 5 |
-| earnings-logearn_logheight_male | 4 | 0.000546 | 1.01× (5 of 10) | 1.03× (6 of 10) | 0.98× (5 of 10) | 0 / 16 / 0 | 0 / 3 / 1 | 0 / 2 / 1 | 0 |
-| eight_schools-eight_schools_centered | 10 | 0.000229 | 5.23× (9 of 10) | 1.49× (7 of 10) | 0.29× (4 of 10) | 150.5 / 57.5 / 141.5 | 10 / 10 / 10 | 10 / 10 / 10 | 5 |
-| eight_schools-eight_schools_noncentered | 10 | 0.0342 | 1.12× (6 of 10) | 1.23× (7 of 10) | 1.06× (6 of 10) | 0 / 25 / 77 | 0 / 0 / 0 | 0 / 0 / 0 | 1 |
-| garch-garch11 | 4 | 0.0295 | 0.98× (4 of 10) | 0.95× (2 of 10) | 0.92× (2 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 1 |
-| gp_pois_regr-gp_pois_regr | 13 | 0.00163 | 0.88× (2 of 10) | 1.01× (5 of 10) | 1.15× (9 of 10) | 11.5 / 43 / 16 | 0 / 0 / 0 | 0 / 1 / 0 | 0 |
-| gp_pois_regr-gp_regr | 3 | 0.0858 | 0.79× (0 of 10) | 1.08× (7 of 10) | 1.31× (10 of 10) | 0 / 11 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| hmm_example-hmm_example | 4 | 0.0253 | 1.01× (5 of 10) | 0.97× (3 of 10) | 0.94× (3 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 1 | 1 |
-| hudson_lynx_hare-lotka_volterra | 8 | 0.00539 | 1.13× (6 of 10) | 1.08× (7 of 10) | 1.02× (5 of 10) | 0 / 0 / 1.5 | 0 / 0 / 0 | 4 / 2 / 1 | 8 |
-| kidiq-kidscore_interaction | 5 | 0.00165 | 0.92× (5 of 10) | 0.62× (2 of 10) | 0.86× (3 of 10) | 0 / 10 / 127.5 | 0 / 1 / 5 | 0 / 3 / 6 | 3 |
-| kidiq-kidscore_momhs | 3 | 0.0209 | 1.26× (10 of 10) | 0.90× (3 of 10) | 0.77× (2 of 10) | 0 / 0 / 2 | 0 / 0 / 0 | 0 / 0 / 0 | 3 |
-| kidiq-kidscore_momhsiq | 4 | 0.00577 | 1.40× (10 of 10) | 1.32× (9 of 10) | 0.94× (4 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 1 |
-| kidiq-kidscore_momiq | 3 | 0.00649 | 1.35× (8 of 10) | 1.28× (10 of 10) | 1.05× (7 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0.5 |
-| kidiq_with_mom_work-kidscore_interaction_c | 5 | 0.0526 | 1.10× (8 of 10) | 0.90× (5 of 10) | 0.89× (2 of 10) | 0 / 2 / 18.5 | 0 / 0 / 0 | 0 / 0 / 0 | 3 |
-| kidiq_with_mom_work-kidscore_interaction_c2 | 5 | 0.0374 | 0.94× (4 of 10) | 0.58× (0 of 10) | 0.58× (0 of 10) | 0 / 0 / 23 | 0 / 0 / 0 | 0 / 0 / 1 | 5 |
-| kidiq_with_mom_work-kidscore_interaction_z | 5 | 0.0328 | 1.43× (9 of 10) | 1.00× (5 of 10) | 0.68× (1 of 10) | 0 / 2 / 24.5 | 0 / 0 / 0 | 0 / 0 / 0 | 3 |
-| kidiq_with_mom_work-kidscore_mom_work | 5 | 0.013 | 1.24× (10 of 10) | 1.06× (6 of 10) | 0.90× (4 of 10) | 0 / 1.5 / 21.5 | 0 / 0 / 0 | 0 / 0 / 1 | 2 |
-| kilpisjarvi_mod-kilpisjarvi | 3 | 0.000205 | 0.11× (1 of 10) | 1.32× (6 of 10) | 7.22× (8 of 10) | 0 / 106.5 / 0 | 0 / 8 / 2 | 3 / 9 / 2 | 0.5 |
-| low_dim_gauss_mix-low_dim_gauss_mix | 5 | 0.0602 | 1.00× (5 of 10) | 0.56× (2 of 10) | 0.55× (1 of 10) | 0 / 0 / 22.5 | 0 / 0 / 0 | 0 / 0 / 1 | 5 |
-| mcycle_gp-accel_gp | 66 | 0.000398 | 1.01× (6 of 10) | 0.93× (5 of 10) | 0.91× (4 of 10) | 40.5 / 102 / 97.5 | 1 / 0 / 0 | 0 / 0 / 2 | 6 |
-| mesquite-logmesquite | 8 | 0.0113 | 0.89× (3 of 10) | 0.95× (4 of 10) | 1.18× (7 of 10) | 0 / 1 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| mesquite-logmesquite_logva | 5 | 0.0099 | 0.99× (4 of 10) | 0.95× (3 of 10) | 1.02× (6 of 10) | 0 / 1 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| mesquite-logmesquite_logvas | 8 | 0.0058 | 0.90× (2 of 10) | 0.98× (3 of 10) | 1.11× (7 of 10) | 0 / 12 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| mesquite-logmesquite_logvash | 7 | 0.00567 | 0.83× (0 of 10) | 1.00× (5 of 10) | 1.17× (10 of 10) | 0 / 4.5 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| mesquite-logmesquite_logvolume | 3 | 0.0544 | 0.92× (3 of 10) | 1.01× (6 of 10) | 1.04× (7 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| mesquite-mesquite | 8 | 0.00385 | 0.59× (0 of 10) | 1.09× (5 of 10) | 1.76× (9 of 10) | 0 / 11 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 1 |
-| nes1972-nes | 10 | 0.00756 | 0.96× (4 of 10) | 1.00× (5 of 10) | 1.03× (7 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| nes1976-nes | 10 | 0.00741 | 1.01× (5 of 10) | 1.03× (7 of 10) | 1.06× (6 of 10) | 0 / 1 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| nes1980-nes | 10 | 0.00733 | 0.99× (5 of 10) | 0.98× (4 of 10) | 0.97× (3 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| nes1984-nes | 10 | 0.0073 | 1.10× (8 of 10) | 1.06× (6 of 10) | 0.97× (2 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| nes1988-nes | 10 | 0.00746 | 0.93× (3 of 10) | 1.00× (5 of 10) | 1.07× (8 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| nes1992-nes | 10 | 0.00779 | 0.98× (4 of 10) | 0.99× (5 of 10) | 1.01× (6 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| nes1996-nes | 10 | 0.00686 | 0.93× (4 of 10) | 0.99× (5 of 10) | 1.08× (6 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| nes2000-nes | 10 | 0.00665 | 0.94× (3 of 10) | 0.96× (3 of 10) | 0.94× (3 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| nes_logit_data-nes_logit_model | 2 | 0.0168 | 0.85× (1 of 10) | 0.88× (1 of 10) | 1.08× (5 of 10) | 0 / 0 / 0.5 | 0 / 0 / 1 | 0 / 1 / 1 | 1 |
-| one_comp_mm_elim_abs-one_comp_mm_elim_abs | 4 | 0.00842 | 0.83× (4 of 10) | 0.70× (2 of 10) | 1.14× (5 of 10) | 12.5 / 138.5 / 171 | 5 / 10 / 5 | 2 / 3 / 2 | 1 |
-| radon_all-radon_pooled | 3 | 0.0898 | 0.96× (4 of 10) | 0.98× (4 of 10) | 1.02× (6 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| radon_mn-radon_pooled | 3 | 0.0861 | 0.99× (4 of 10) | 1.00× (5 of 10) | 1.02× (6 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
-| sblrc-blr | 6 | 0.00755 | 2.87× (10 of 10) | 2.67× (10 of 10) | 0.89× (2 of 10) | 0 / 0 / 0 | 1 / 0 / 1 | 1 / 0 / 0 | 5 |
-| sblri-blr | 6 | 0.0143 | 4.63× (10 of 10) | 4.49× (10 of 10) | 0.93× (3 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 5 |
-| wells_data-wells_dist | 2 | 0.00761 | 3.27× (10 of 10) | 1.85× (10 of 10) | 0.57× (2 of 10) | 0 / 0 / 8 | 0 / 0 / 0 | 1 / 0 / 2 | 2 |
-| wells_data-wells_dist100_model | 2 | 0.0365 | 0.85× (3 of 10) | 1.01× (6 of 10) | 1.19× (8 of 10) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| Posterior | d | Stock min-tail-ESS/grad, median | `arcsinh` ÷ stock (seeds better) | `tukey_h` ÷ stock (seeds better) | `tukey_h` ÷ `arcsinh` (seeds better) | `tukey_h` ÷ `tukey_h0` (seeds better) | Median divergences (stock / arcsinh / tukey_h / tukey_h0) | Seeds disagreeing with reference (stock / arcsinh / tukey_h / tukey_h0) | Seeds not converged (stock / arcsinh / tukey_h / tukey_h0) | `tukey_h` coordinates with h > 0, median | The same guard on exact draws, median |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Rate_1_data-Rate_1_model | 1 | 0.111 | 0.57× (0 of 10) | 0.93× (5 of 10) | 1.45× (10 of 10) | 1.00× (0 of 10) | 0 / 6 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| Rate_2_data-Rate_2_model | 2 | 0.105 | 0.78× (1 of 10) | 0.90× (2 of 10) | 1.24× (10 of 10) | 1.00× (0 of 10) | 0 / 2 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| Rate_3_data-Rate_3_model | 1 | 0.113 | 0.61× (0 of 10) | 0.99× (4 of 10) | 1.77× (10 of 10) | 1.00× (0 of 10) | 0 / 10.5 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| Rate_5_data-Rate_5_model | 1 | 0.106 | 0.68× (0 of 10) | 1.04× (6 of 10) | 1.49× (10 of 10) | 1.00× (0 of 10) | 0 / 13.5 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| arK-arK | 7 | 0.0125 | 0.98× (4 of 10) | 0.99× (5 of 10) | 1.03× (6 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| arma-arma11 | 4 | 0.000113 | 1.21× (8 of 10) | 0.54× (4 of 10) | 0.53× (3 of 10) | 0.57× (1 of 10) | 122 / 0 / 121 / 0 | 5 / 2 / 3 / 1 | 7 / 6 / 9 / 6 | 1 | 0 |
+| bball_drive_event_0-hmm_drive_0 | 6 | 0.000334 | 95.00× (8 of 10) | 75.37× (8 of 10) | 0.94× (5 of 10) | 0.93× (0 of 10) | 19 / 4.5 / 1 / 0 | 3 / 1 / 1 / 1 | 7 / 3 / 2 / 1 | 0.5 | 2 |
+| bball_drive_event_1-hmm_drive_1 | 6 | 0.016 | 1.05× (6 of 10) | 0.57× (1 of 10) | 0.57× (1 of 10) | 0.55× (2 of 10) | 0 / 0 / 68 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 4 | 0 |
+| diamonds-diamonds | 26 | 0.000328 | 0.99× (4 of 10) | 1.02× (6 of 10) | 1.03× (7 of 10) | 0.93× (3 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 17.5 | 0 |
+| dogs-dogs | 3 | 0.026 | 0.89× (2 of 10) | 0.98× (3 of 10) | 1.05× (6 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 1 / 0 / 0 / 0 | 0 / 1 / 0 / 0 | 0 | 0 |
+| dogs-dogs_hierarchical | 2 | 0.0683 | 0.78× (0 of 10) | 1.02× (5 of 10) | 1.30× (10 of 10) | 1.00× (0 of 10) | 0 / 1.5 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| earnings-earn_height | 3 | 0.00229 | 0.77× (4 of 10) | 0.03× (1 of 10) | 0.09× (2 of 10) | 0.02× (1 of 10) | 0 / 0 / 153.5 / 0 | 0 / 2 / 5 / 0 | 0 / 3 / 9 / 0 | 1 | 0 |
+| earnings-log10earn_height | 3 | 0.00246 | 1.32× (9 of 10) | 1.31× (10 of 10) | 1.04× (6 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 1 / 0 / 0 | 0 | 0 |
+| earnings-logearn_height | 3 | 0.00276 | 1.07× (6 of 10) | 1.07× (7 of 10) | 1.03× (5 of 10) | 1.00× (2 of 10) | 0 / 0 / 0 / 0 | 0 / 1 / 0 / 1 | 0 / 1 / 0 / 1 | 0 | 0 |
+| earnings-logearn_height_male | 4 | 0.00219 | 1.01× (7 of 10) | 0.88× (4 of 10) | 0.87× (2 of 10) | 0.87× (1 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 0 | 1 | 0 |
+| earnings-logearn_interaction | 5 | 0.00111 | 0.95× (3 of 10) | 0.88× (4 of 10) | 0.97× (5 of 10) | 1.00× (3 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 1 | 0 / 1 / 1 / 1 | 1.5 | 0 |
+| earnings-logearn_interaction_z | 5 | 0.0291 | 0.93× (1 of 10) | 0.60× (0 of 10) | 0.66× (0 of 10) | 0.61× (0 of 10) | 0 / 0 / 14.5 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 0 | 4 | 0 |
+| earnings-logearn_logheight_male | 4 | 0.000546 | 1.01× (5 of 10) | 1.04× (6 of 10) | 0.98× (5 of 10) | 1.00× (0 of 10) | 0 / 16 / 0 / 0 | 0 / 3 / 1 / 0 | 0 / 2 / 1 / 0 | 0 | 0 |
+| eight_schools-eight_schools_centered | 10 | 0.000229 | 5.23× (9 of 10) | 1.66× (6 of 10) | 0.42× (3 of 10) | 0.56× (3 of 10) | 150.5 / 57.5 / 123 / 112 | 10 / 10 / 10 / 10 | 10 / 10 / 10 / 10 | 3.5 | 5 |
+| eight_schools-eight_schools_noncentered | 10 | 0.0342 | 1.12× (6 of 10) | 1.00× (5 of 10) | 0.90× (3 of 10) | 1.00× (2 of 10) | 0 / 25 / 1 / 1 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | n/a |
+| garch-garch11 | 4 | 0.0295 | 0.98× (4 of 10) | 0.95× (2 of 10) | 0.94× (2 of 10) | 1.00× (2 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0.5 | 1 |
+| gp_pois_regr-gp_pois_regr | 13 | 0.00163 | 0.88× (2 of 10) | 1.01× (5 of 10) | 1.15× (9 of 10) | 1.00× (1 of 10) | 11.5 / 43 / 12.5 / 13 | 0 / 0 / 0 / 0 | 0 / 1 / 0 / 0 | 0 | n/a |
+| gp_pois_regr-gp_regr | 3 | 0.0858 | 0.79× (0 of 10) | 1.08× (7 of 10) | 1.31× (10 of 10) | 1.00× (0 of 10) | 0 / 11 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| hmm_example-hmm_example | 4 | 0.0253 | 1.01× (5 of 10) | 0.99× (4 of 10) | 0.96× (3 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| hudson_lynx_hare-lotka_volterra | 8 | 0.00539 | 1.13× (6 of 10) | 1.03× (6 of 10) | 1.01× (5 of 10) | 0.98× (3 of 10) | 0 / 0 / 1.5 / 0 | 0 / 0 / 1 / 1 | 4 / 2 / 2 / 3 | 5 | 0 |
+| kidiq-kidscore_interaction | 5 | 0.00165 | 0.92× (5 of 10) | 0.91× (2 of 10) | 0.84× (4 of 10) | 0.89× (0 of 10) | 0 / 10 / 0 / 0 | 0 / 1 / 3 / 0 | 0 / 3 / 3 / 0 | 1.5 | 0 |
+| kidiq-kidscore_momhs | 3 | 0.0209 | 1.26× (10 of 10) | 0.94× (4 of 10) | 0.75× (2 of 10) | 0.80× (1 of 10) | 0 / 0 / 0.5 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 2 | 0 |
+| kidiq-kidscore_momhsiq | 4 | 0.00577 | 1.40× (10 of 10) | 1.34× (10 of 10) | 0.99× (5 of 10) | 1.00× (2 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| kidiq-kidscore_momiq | 3 | 0.00649 | 1.35× (8 of 10) | 1.33× (10 of 10) | 1.06× (8 of 10) | 1.00× (1 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| kidiq_with_mom_work-kidscore_interaction_c | 5 | 0.0526 | 1.10× (8 of 10) | 0.90× (5 of 10) | 0.85× (2 of 10) | 0.76× (0 of 10) | 0 / 2 / 19.5 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 1 | 0 |
+| kidiq_with_mom_work-kidscore_interaction_c2 | 5 | 0.0374 | 0.94× (4 of 10) | 0.58× (0 of 10) | 0.58× (0 of 10) | 0.49× (0 of 10) | 0 / 0 / 21.5 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 0 | 4.5 | 0 |
+| kidiq_with_mom_work-kidscore_interaction_z | 5 | 0.0328 | 1.43× (9 of 10) | 1.06× (5 of 10) | 0.72× (2 of 10) | 0.64× (1 of 10) | 0 / 2 / 25.5 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 3 | 0 |
+| kidiq_with_mom_work-kidscore_mom_work | 5 | 0.013 | 1.24× (10 of 10) | 1.17× (6 of 10) | 0.95× (5 of 10) | 0.78× (1 of 10) | 0 / 1.5 / 17 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 0 | 2 | 0 |
+| kilpisjarvi_mod-kilpisjarvi | 3 | 0.000205 | 0.11× (1 of 10) | 1.60× (8 of 10) | 12.78× (10 of 10) | 1.00× (0 of 10) | 0 / 106.5 / 0 / 0 | 0 / 8 / 0 / 0 | 3 / 9 / 0 / 0 | 0 | 0 |
+| low_dim_gauss_mix-low_dim_gauss_mix | 5 | 0.0602 | 1.00× (5 of 10) | 0.56× (1 of 10) | 0.52× (0 of 10) | 0.54× (0 of 10) | 0 / 0 / 24.5 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 0 | 5 | 0 |
+| mcycle_gp-accel_gp | 66 | 0.000398 | 1.01× (6 of 10) | 1.00× (5 of 10) | 1.03× (5 of 10) | 1.07× (7 of 10) | 40.5 / 102 / 74 / 58 | 1 / 0 / 0 / 1 | 0 / 0 / 0 / 0 | 3.5 | 2 |
+| mesquite-logmesquite | 8 | 0.0113 | 0.89× (3 of 10) | 0.95× (4 of 10) | 1.16× (7 of 10) | 1.00× (1 of 10) | 0 / 1 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| mesquite-logmesquite_logva | 5 | 0.0099 | 0.99× (4 of 10) | 0.95× (3 of 10) | 1.04× (6 of 10) | 1.00× (1 of 10) | 0 / 1 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| mesquite-logmesquite_logvas | 8 | 0.0058 | 0.90× (2 of 10) | 0.98× (3 of 10) | 1.11× (7 of 10) | 1.00× (2 of 10) | 0 / 12 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| mesquite-logmesquite_logvash | 7 | 0.00567 | 0.83× (0 of 10) | 1.00× (5 of 10) | 1.17× (10 of 10) | 1.00× (2 of 10) | 0 / 4.5 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| mesquite-logmesquite_logvolume | 3 | 0.0544 | 0.92× (3 of 10) | 1.01× (6 of 10) | 1.04× (7 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| mesquite-mesquite | 8 | 0.00385 | 0.59× (0 of 10) | 1.46× (8 of 10) | 2.05× (9 of 10) | 1.00× (0 of 10) | 0 / 11 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes1972-nes | 10 | 0.00756 | 0.96× (4 of 10) | 1.00× (5 of 10) | 1.03× (7 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes1976-nes | 10 | 0.00741 | 1.01× (5 of 10) | 1.03× (7 of 10) | 1.06× (6 of 10) | 1.00× (1 of 10) | 0 / 1 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes1980-nes | 10 | 0.00733 | 0.99× (5 of 10) | 0.99× (4 of 10) | 0.98× (4 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes1984-nes | 10 | 0.0073 | 1.10× (8 of 10) | 1.06× (6 of 10) | 0.97× (4 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 1 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes1988-nes | 10 | 0.00746 | 0.93× (3 of 10) | 1.00× (5 of 10) | 1.07× (7 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes1992-nes | 10 | 0.00779 | 0.98× (4 of 10) | 0.97× (5 of 10) | 0.97× (5 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes1996-nes | 10 | 0.00686 | 0.93× (4 of 10) | 1.02× (6 of 10) | 1.08× (6 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes2000-nes | 10 | 0.00665 | 0.94× (3 of 10) | 0.97× (3 of 10) | 0.97× (4 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| nes_logit_data-nes_logit_model | 2 | 0.0168 | 0.85× (1 of 10) | 0.91× (2 of 10) | 1.21× (7 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 0 | 0 / 1 / 2 / 1 | 0 | 0 |
+| one_comp_mm_elim_abs-one_comp_mm_elim_abs | 4 | 0.00842 | 0.83× (4 of 10) | 0.77× (4 of 10) | 1.33× (6 of 10) | 1.00× (2 of 10) | 12.5 / 138.5 / 90 / 7.5 | 5 / 10 / 4 / 7 | 2 / 3 / 2 / 1 | 1 | 1 |
+| radon_all-radon_pooled | 3 | 0.0898 | 0.96× (4 of 10) | 0.98× (4 of 10) | 1.02× (6 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| radon_mn-radon_pooled | 3 | 0.0861 | 0.99× (4 of 10) | 1.00× (5 of 10) | 1.02× (6 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
+| sblrc-blr | 6 | 0.00755 | 2.87× (10 of 10) | 2.61× (10 of 10) | 0.85× (2 of 10) | 0.90× (4 of 10) | 0 / 0 / 0 / 0 | 1 / 0 / 1 / 0 | 1 / 0 / 0 / 0 | 5 | 0 |
+| sblri-blr | 6 | 0.0143 | 4.63× (10 of 10) | 4.46× (10 of 10) | 0.93× (0 of 10) | 0.95× (4 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 3.5 | 0 |
+| wells_data-wells_dist | 2 | 0.00761 | 3.27× (10 of 10) | 2.64× (10 of 10) | 0.85× (2 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 1 / 0 / 1 / 0 | 0 | 0 |
+| wells_data-wells_dist100_model | 2 | 0.0365 | 0.85× (3 of 10) | 1.01× (6 of 10) | 1.19× (8 of 10) | 1.00× (0 of 10) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 | 0 |
 <!-- END GENERATED: posteriordb-table -->
 
 <!-- BEGIN GENERATED: posteriordb-findings -->
 - **`arcsinh` vs stock NUTS** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `arcsinh` better on 24 of 58 posteriors, worse by more than a fifth on 9; median over posteriors 0.98× (range 0.11× to 95.00×).
-- **`tukey_h` vs stock NUTS** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `tukey_h` better on 24 of 58 posteriors, worse by more than a fifth on 8; median over posteriors 0.99× (range 0.03× to 47.48×).
-- **`tukey_h` vs `arcsinh`** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `tukey_h` better on 31 of 58 posteriors, worse by more than a fifth on 11; median over posteriors 1.02× (range 0.10× to 7.22×).
-- **Posteriors where most runs disagree with the reference** (a z-score above 5 on at least half the seeds): `stock`: 3 of 58 (arma-arma11, eight_schools-eight_schools_centered, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `arcsinh`: 3 of 58 (eight_schools-eight_schools_centered, kilpisjarvi_mod-kilpisjarvi, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `tukey_h`: 4 of 58 (earnings-earn_height, eight_schools-eight_schools_centered, kidiq-kidscore_interaction, one_comp_mm_elim_abs-one_comp_mm_elim_abs).
-- **Posteriors with divergences on at least half the seeds**: `stock`: 6 of 58 (arma-arma11, bball_drive_event_0-hmm_drive_0, eight_schools-eight_schools_centered, gp_pois_regr-gp_pois_regr, mcycle_gp-accel_gp, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `arcsinh`: 24 of 58; `tukey_h`: 20 of 58.
-- **Posteriors not converged on at least half the seeds** (max R-hat above 1.01): `stock`: 3 of 58 (arma-arma11, bball_drive_event_0-hmm_drive_0, eight_schools-eight_schools_centered); `arcsinh`: 3 of 58 (arma-arma11, eight_schools-eight_schools_centered, kilpisjarvi_mod-kilpisjarvi); `tukey_h`: 4 of 58 (arma-arma11, earnings-earn_height, eight_schools-eight_schools_centered, kidiq-kidscore_interaction).
+- **`tukey_h` vs stock NUTS** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `tukey_h` better on 27 of 58 posteriors, worse by more than a fifth on 7; median over posteriors 1.00× (range 0.03× to 75.37×).
+- **`tukey_h` vs `arcsinh`** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `tukey_h` better on 31 of 58 posteriors, worse by more than a fifth on 9; median over posteriors 1.02× (range 0.09× to 12.78×).
+- **`tukey_h0` (h = 0 everywhere) vs stock NUTS** (worst-parameter tail-ESS per gradient, per-posterior median over seeds): `tukey_h0` better on 36 of 58 posteriors, worse by more than a fifth on 0; median over posteriors 1.02× (range 0.90× to 130.57×).
+- **Posteriors where most runs disagree with the reference** (a z-score above 5 on at least half the seeds): `stock`: 3 of 58 (arma-arma11, eight_schools-eight_schools_centered, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `arcsinh`: 3 of 58 (eight_schools-eight_schools_centered, kilpisjarvi_mod-kilpisjarvi, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `tukey_h`: 2 of 58 (earnings-earn_height, eight_schools-eight_schools_centered); `tukey_h0`: 2 of 58 (eight_schools-eight_schools_centered, one_comp_mm_elim_abs-one_comp_mm_elim_abs).
+- **Posteriors with divergences on at least half the seeds**: `stock`: 6 of 58 (arma-arma11, bball_drive_event_0-hmm_drive_0, eight_schools-eight_schools_centered, gp_pois_regr-gp_pois_regr, mcycle_gp-accel_gp, one_comp_mm_elim_abs-one_comp_mm_elim_abs); `arcsinh`: 24 of 58; `tukey_h`: 17 of 58; `tukey_h0`: 5 of 58 (eight_schools-eight_schools_centered, eight_schools-eight_schools_noncentered, gp_pois_regr-gp_pois_regr, mcycle_gp-accel_gp, one_comp_mm_elim_abs-one_comp_mm_elim_abs).
+- **Posteriors not converged on at least half the seeds** (max R-hat above 1.01): `stock`: 3 of 58 (arma-arma11, bball_drive_event_0-hmm_drive_0, eight_schools-eight_schools_centered); `arcsinh`: 3 of 58 (arma-arma11, eight_schools-eight_schools_centered, kilpisjarvi_mod-kilpisjarvi); `tukey_h`: 3 of 58 (arma-arma11, earnings-earn_height, eight_schools-eight_schools_centered); `tukey_h0`: 2 of 58 (arma-arma11, eight_schools-eight_schools_centered).
 - **Phase 1 calibrated off the posterior** (median over seeds of the largest distance between the calibrated location and the run's final median, above 3 posterior scales): `arcsinh`: 10 of 58 posteriors, worse than stock by more than a fifth on 2 of them; `tukey_h`: 10 of 58 posteriors, worse than stock by more than a fifth on 1 of them.
-- **The `tukey_h` guard** (median over seeds) set h > 0 on 103 of 394 unconstrained coordinates (31 of 58 posteriors); everywhere else the h-map is the affine map.
-- **`tukey_h` by the guard's decision** (per-posterior medians over seeds): where it kept h = 0 on every coordinate (27 of 58 posteriors), `tukey_h` vs `arcsinh` 1.06× (better on 22) and worse than stock by more than a fifth on 0; where it set h > 0 somewhere (31 of 58), 0.90× (better on 9) and worse than stock on 8. `arcsinh` vs stock on the same groups: 0.93× and 1.05×.
+- **The `tukey_h` guard** (median over seeds) set h > 0 on 73 of 394 unconstrained coordinates (22 of 58 posteriors); everywhere else the h-map is the affine map. On the 56 posteriors whose reference draws include every parameter, from Phase 1's draws it set h > 0 on 73 of 371 coordinates, and from as many exact posterior draws on 11.
+- **`tukey_h` by the guard's decision**, against its h = 0 control `tukey_h0`, which differs only in those decisions (per-posterior medians over seeds): where it set h > 0 somewhere (22 of 58 posteriors), `tukey_h` vs `tukey_h0` 0.83× (better on 1, worse by more than a fifth on 11); where it kept h = 0 on every coordinate (36 of 58), 1.00×.
 - **`TailAlignmentWarning`** on the default `arcsinh` runs' unconstrained draws fired, on at least half the seeds, on 0 of 58 posteriors.
 <!-- END GENERATED: posteriordb-findings -->
 
 **What the table does and does not show.**
 - It compares the transforms with stock NUTS on Stan's unconstrained parameterisation of each model, as posteriordb defines it. Most of these posteriors are regressions that stock NUTS already samples well, so Table C tests whether the transforms are safe as a default, not whether they help on heavy tails (Tables A and B).
-- The split by the guard's decision is observational: the guard's decision and the posterior are not varied independently. Running `tukey_h` with h held at 0, which is the `affine` arm, on the same posteriors would test whether the h > 0 decisions cause the losses.
+- `tukey_h0` differs from `tukey_h` only in the guard's decisions, so their paired ratio is what the h > 0 decisions did on each posterior.
+- The guard's decisions on exact draws show why most of those decisions were made. Phase 1 ends before the chains have reached the posterior, and its pooled draws look heavy-tailed. The ESS correction (§2.6) cannot see a transient that every chain shares.
+- `tukey_h0` is not stock NUTS. It runs Phase 1 under the arcsinh map and then samples with a calibrated affine map, so its gains over stock NUTS are warm-up effects, like those on the anisotropic Gaussian of Table A. On heavy-tailed targets it is close to stock NUTS (Table A).
+- `arcsinh` and `tukey_h0` share Phase 1 and differ in the final map: arcsinh warps every coordinate, light ones included. That warp is the likely source of `arcsinh`'s extra divergences (§2.2), since `tukey_h0`, which warps nothing, has about as many as stock NUTS.
 - Each run has the protocol of Table A; stock NUTS on posteriordb is usually run with a longer warm-up.
 
 ### 5.4 Single-seed comparisons (Tables 1–5)
@@ -838,14 +857,13 @@ Seed 42 only, 4 chains × 1,000 draws after 1,000 warm-up steps, NUTS tree depth
 
 **Not yet evaluated:**
 - elliptical heavy tails with several scales, beyond the rotated *t* targets of Table A;
-- diffeomorphic MCMC (Brešar & Mijatović, 2026), for which no public code was found;
-- the `affine` arm on posteriordb, which would test whether the `tukey_h` guard's h > 0 decisions cause its losses there (§5.3).
+- diffeomorphic MCMC (Brešar & Mijatović, 2026), for which no public code was found.
 
 **Alternative transforms under exploration** (exploration branches, not part of the library): whitened radial and block-structured maps for elliptical heavy tails.
 
 **The new options:**
 - The `tukey_h` guard and the tail-alignment warning were calibrated on synthetic targets, and both can be wrong in the ways described in §2.6 and §2.7.
-- On posteriordb (§5.3) the guard sets h > 0 on coordinates of many posteriors, and those are the posteriors where `tukey_h` loses. Its test treats autocorrelated, early warm-up draws as independent; a guard that accounts for that is open work.
+- On posteriordb (§5.3) most of the guard's h > 0 decisions come from Phase 1's draws, which have not yet reached the posterior, and those decisions cause `tukey_h`'s losses there. Correcting the test for autocorrelation (§2.6) removes only some of them. Deciding later in warm-up, or from gradients, is open work, as is a test that tells polynomial tails from the heavy-looking marginals of a funnel.
 
 **Engineering:**
 - **Speed.** `UnifiedRobustNUTS` is a NumPy implementation and is slower per gradient than BlackJAX; the JAX pipeline is the faster path.
@@ -866,7 +884,7 @@ Check R-hat and ESS as usual.
 - **Heavy tails that are strongly rotated relative to the coordinates:** gains are smaller and less reliable, and a tail can be missed without warning (Table A). nutpie's normalizing-flow adaptation is worth trying there (Table B).
 - **Targets that stock NUTS already samples well:** the transform is not expected to help there, and on real posteriors it can add divergences (Table C). Use it when you expect heavy tails, not as a default for every model.
 
-**Try the Tukey h-map.** On axis-aligned heavy tails, try `transform_kind="tukey_h"` (Table A compares it with arcsinh). Check `result.transform.h` to see which coordinates were warped. If it is positive on coordinates you expect to be light-tailed, prefer arcsinh or stock NUTS: on real posteriors, the guard's h > 0 decisions are where `tukey_h` lost (Table C).
+**Try the Tukey h-map.** On axis-aligned heavy tails, try `transform_kind="tukey_h"` (Table A compares it with arcsinh). Check `result.transform.h` to see which coordinates were warped. If it is positive on coordinates you expect to be light-tailed, rerun with `tukey_h_level=0` or use stock NUTS: on real posteriors, the guard's h > 0 decisions are what cost `tukey_h` efficiency (Table C).
 
 **Heed the warning.** If `TailAlignmentWarning` fires, treat tail estimates with caution. Reparameterise the model, or try a method that follows tail directions, such as nutpie's flow (Table B).
 

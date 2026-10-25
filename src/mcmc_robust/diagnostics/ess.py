@@ -276,6 +276,49 @@ def compute_bulk_ess(
     return ess
 
 
+def compute_mean_ess(
+    chains: np.ndarray | Sequence[np.ndarray],
+    split_chains: bool = True,
+    reduction: str | None = None,
+) -> np.ndarray | float:
+    r"""Computes the Effective Sample Size for the mean of each coordinate, without rank normalization.
+
+    The estimator of `compute_bulk_ess` (split chains, multi-chain variogram, Geyer's initial monotone
+    sequence) applied to the values themselves, so $\mathrm{Var}(\bar x) \approx \sigma^2 / \mathrm{ESS}$
+    when the variance is finite. Chains that disagree, or drift between their halves, give a small ESS.
+    It is clamped to at most the number of draws.
+
+    Args:
+        chains: Input MCMC chains, in any shape `compute_bulk_ess` accepts.
+        split_chains: Whether to split chains in half (default True).
+        reduction: Optional aggregation: None (ndarray of shape (d,)), 'min' or 'mean' (float).
+
+    Returns:
+        np.ndarray of shape (d,), NaN for a coordinate with non-finite draws and 0 for a constant one, or a
+        float if `reduction` is set.
+    """
+    arr = _normalize_chains_input(chains)
+    M, N, d = arr.shape
+    ess = np.empty(d, dtype=np.float64)
+
+    for j in range(d):
+        col = arr[:, :, j]
+        if not np.all(np.isfinite(col)):
+            ess[j] = np.nan
+            continue
+        if np.var(col) < 1e-14:
+            ess[j] = 0.0
+            continue
+        split = _split_chains_in_half(col[:, :, np.newaxis])[:, :, 0] if split_chains and N >= 4 else col
+        ess[j] = _compute_single_coord_ess(split)
+
+    if reduction == "min":
+        return float(np.min(ess))
+    elif reduction == "mean":
+        return float(np.mean(ess))
+    return ess
+
+
 def compute_tail_ess(
     chains: np.ndarray | Sequence[np.ndarray],
     prob_low: float = 0.05,
