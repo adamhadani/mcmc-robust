@@ -33,17 +33,25 @@ Usage::
     uv sync --extra posteriordb
     uv run python -m mcmc_robust.bench.posteriordb_runner --fetch   # shallow checkout of POSTERIORDB_SHA
     uv run python -m mcmc_robust.bench.posteriordb_runner [--full | --quick] [--seeds ...]
-        [--posteriors ...] [--arms ...] [--workers N] [--posteriordb PATH] [--output-dir reports]
+        [--posteriors ...] [--arms ...] [--workers N] [--posteriordb PATH] [--output-dir reports] [--resume]
 
 Outputs `posteriordb_results.json` (provenance, config, rows, aggregates) and `posteriordb_results.csv`.
+
+Resuming: each finished row is appended to `posteriordb_results.partial.jsonl` in the output directory, which
+is deleted once the results are written. If a run stops, the same command with `--resume` runs only the cells
+that have no row. It refuses a checkpoint written with a different grid, sampler settings, posteriordb commit,
+commit or uncommitted change under `src/`, or library versions, so rows from different code are never mixed.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import multiprocessing
+import os
+import signal
 import sys
 import time
 import warnings
@@ -64,6 +72,7 @@ from mcmc_robust.bench.ablation_runner import (
     INIT_HALF_WIDTH,
     RHAT_CONVERGED,
     _finite_or_none,
+    _git,
     _iqr_summary,
     _version,
     collect_provenance,
@@ -463,6 +472,20 @@ def _default_loader(path: str) -> Callable[[str], LoadedPosterior]:
     return load
 
 
+def _ignore_interrupts() -> None:
+    """Worker initializer: Ctrl-C reaches the whole process group, and only the parent should act on it."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+def _terminate_workers(pool: ProcessPoolExecutor) -> None:
+    terminate = getattr(pool, "terminate_workers", None)  # Python >= 3.14
+    if terminate is not None:
+        terminate()
+        return
+    for process in list(pool._processes.values()):
+        process.terminate()
+
+
 def _run_cell(args: tuple[str, str, int, PosteriorDBConfig]) -> dict[str, Any]:
     name, arm, seed, config = args
     try:
@@ -492,17 +515,109 @@ def _config_record(config: PosteriorDBConfig, posteriors: Sequence[str]) -> dict
     return rec
 
 
+#: Rows of an unfinished run, one JSON record per line, in the output directory (see the module docstring).
+CHECKPOINT_NAME: str = "posteriordb_results.partial.jsonl"
+
+
+def _code_identity() -> dict[str, Any]:
+    """The commit and a hash of any uncommitted change under `src/`: the code a resumed run must share."""
+    diff = _git("diff", "HEAD", "--", ":/src")
+    return {
+        "git_sha": _git("rev-parse", "HEAD"),
+        "src_diff_sha256": hashlib.sha256(diff.encode()).hexdigest() if diff else None,
+    }
+
+
+def _run_identity(
+    config: PosteriorDBConfig, names: Sequence[str], posteriordb_sha: str | None, versions: dict[str, str]
+) -> dict[str, Any]:
+    """Everything that determines the rows: the grid and sampler settings, the data, the code and the libraries."""
+    rec = _config_record(config, names)
+    for key in ("workers", "output_dir"):
+        rec.pop(key)
+    return {"config": rec, "posteriordb_sha": posteriordb_sha, **_code_identity(), "versions": versions}
+
+
+def _identity_differences(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
+    keys = sorted(set(old) | set(new))
+    nested = [f"{k}.{sub}" for k in keys if k == "config" for sub in _identity_differences(old[k], new[k])]
+    return nested + [k for k in keys if k != "config" and old.get(k) != new.get(k)]
+
+
+def _write_record(fh: Any, record: dict[str, Any]) -> None:
+    fh.write(json.dumps(record) + "\n")
+    fh.flush()
+    os.fsync(fh.fileno())
+
+
+def _read_records(path: Path) -> list[dict[str, Any]]:
+    """The checkpoint's records; a last line cut off mid-write by a killed process is dropped (that cell reruns)."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    records: list[dict[str, Any]] = []
+    for i, line in enumerate(lines):
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            if i < len(lines) - 1:
+                raise
+    return records
+
+
+def _segments_and_rows(records: Sequence[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Each segment's start, wall time up to its last row and row count, and all rows in completion order."""
+    segments: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
+    for rec in records:
+        if rec["kind"] == "segment":
+            segments.append({"started_utc": rec["started_utc"], "wall_time_sec": 0.0, "rows": 0})
+        elif rec["kind"] == "row":
+            seg = segments[-1]
+            elapsed = datetime.fromisoformat(rec["completed_utc"]) - datetime.fromisoformat(seg["started_utc"])
+            seg.update(wall_time_sec=elapsed.total_seconds(), rows=seg["rows"] + 1)
+            rows.append(rec["row"])
+    return segments, rows
+
+
+def _open_checkpoint(
+    path: Path, identity: dict[str, Any], provenance: dict[str, Any], resume: bool
+) -> tuple[Any, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Starts or continues the checkpoint; returns its open handle, the run's provenance, segments and rows."""
+    records: list[dict[str, Any]] = [{"kind": "header", "identity": identity, "provenance": provenance}]
+    if path.exists():
+        if not resume:
+            raise RuntimeError(
+                f"{path} holds the rows of an unfinished run; pass --resume to finish it or delete it to start over"
+            )
+        records = _read_records(path)
+        differences = _identity_differences(records[0]["identity"], identity)
+        if differences:
+            raise ValueError(
+                f"{path} was written by a run that differs in {', '.join(differences)}; "
+                "finish it with the same code and settings, or delete it to start over"
+            )
+    # Rewritten without any cut-off last line, so that appending starts on a fresh line.
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("".join(json.dumps(rec) + "\n" for rec in records), encoding="utf-8")
+    os.replace(tmp, path)
+    segments, rows = _segments_and_rows(records)
+    return path.open("a", encoding="utf-8"), records[0]["provenance"], segments, rows
+
+
 def run_benchmark(
     config: PosteriorDBConfig,
     loader: Callable[[str], LoadedPosterior] | None = None,
     posteriordb_sha: str | None = None,
     log: Callable[[str], None] | None = None,
+    resume: bool = False,
 ) -> dict[str, Any]:
     """Runs the grid, writes JSON and CSV to `config.output_dir` and returns the JSON document.
 
     `loader` maps a posterior name to a `LoadedPosterior` (default: BridgeStan on the posteriordb checkout
     at `config.posteriordb_path`, which also supplies `posteriordb_sha` and the default posterior list).
     A custom loader runs in this process (`workers` is then ignored).
+
+    Rows are checkpointed as they finish. With `resume`, a checkpoint left by an interrupted run with the same
+    identity (`_run_identity`) is continued; without it, an existing checkpoint is an error.
     """
     config.validate()
     provenance = collect_provenance()
@@ -516,14 +631,26 @@ def run_benchmark(
             raise ValueError("A custom loader needs config.posteriors")
         names = list(config.posteriors)
     provenance["posteriordb_sha"] = posteriordb_sha
-    started = datetime.now(UTC)
-    t0 = time.perf_counter()
 
-    cells = [(n, a, s, config) for n in names for a in config.arms for s in config.seeds]
-    rows: list[dict[str, Any]] = []
+    out = Path(config.output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    checkpoint = out / CHECKPOINT_NAME
+    identity = _run_identity(config, names, posteriordb_sha, provenance["versions"])
+    fh, provenance, segments, rows = _open_checkpoint(checkpoint, identity, provenance, resume)
+    started = datetime.now(UTC)
+    segments.append({"started_utc": started.isoformat(), "wall_time_sec": 0.0, "rows": 0})
+    _write_record(fh, {"kind": "segment", "started_utc": started.isoformat()})
+
+    all_cells = [(n, a, s) for n in names for a in config.arms for s in config.seeds]
+    done = {(r["posterior"], r["arm"], r["seed"]) for r in rows}
+    cells = [(n, a, s, config) for n, a, s in all_cells if (n, a, s) not in done]
+    if log is not None and done:
+        log(f"Resuming: {len(done)} of {len(all_cells)} cells already have rows")
 
     def record(row: dict[str, Any]) -> None:
         rows.append(row)
+        segments[-1]["rows"] += 1
+        _write_record(fh, {"kind": "row", "completed_utc": datetime.now(UTC).isoformat(), "row": row})
         if log is not None:
             status = row["error"] or " ".join(
                 f"{label}={row[key]:{spec}}" if row[key] is not None else f"{label}=null"
@@ -536,25 +663,41 @@ def run_benchmark(
                     ("t", "wall_time_sec", ".1f"),
                 )
             )
-            log(f"[{len(rows)}/{len(cells)}] {row['posterior']:<44} {row['arm']:<8} seed={row['seed']:<3} {status}")
+            log(f"[{len(rows)}/{len(all_cells)}] {row['posterior']:<44} {row['arm']:<8} seed={row['seed']:<3} {status}")
 
-    if loader is not None:
-        for name, arm, seed, _ in cells:
-            record(run_single(loader(name), arm, seed, config))
-    elif config.workers == 1:
-        for cell in cells:
-            record(_run_cell(cell))
-    else:
-        ctx = multiprocessing.get_context("spawn")
-        with ProcessPoolExecutor(max_workers=config.workers, mp_context=ctx) as pool:
-            futures = [pool.submit(_run_cell, cell) for cell in cells]
-            for future in as_completed(futures):
-                record(future.result())
+    try:
+        if loader is not None:
+            for name, arm, seed, _ in cells:
+                record(run_single(loader(name), arm, seed, config))
+        elif config.workers == 1:
+            for cell in cells:
+                record(_run_cell(cell))
+        else:
+            pool = ProcessPoolExecutor(
+                max_workers=config.workers,
+                mp_context=multiprocessing.get_context("spawn"),
+                initializer=_ignore_interrupts,
+            )
+            try:
+                futures = [pool.submit(_run_cell, cell) for cell in cells]
+                for future in as_completed(futures):
+                    record(future.result())
+            except BaseException:
+                # Ctrl-C or a failure: stop now and leave the unfinished cells to --resume, rather than waiting
+                # for every queued cell at interpreter exit.
+                _terminate_workers(pool)
+                raise
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+    finally:
+        fh.close()
 
-    position = {(n, a, s): i for i, (n, a, s, _) in enumerate(cells)}
+    position = {cell: i for i, cell in enumerate(all_cells)}
     rows.sort(key=lambda r: position[(r["posterior"], r["arm"], r["seed"])])
-    provenance["timestamp_utc"] = started.isoformat()
-    provenance["total_wall_time_sec"] = time.perf_counter() - t0
+    segments[-1]["wall_time_sec"] = (datetime.now(UTC) - started).total_seconds()
+    provenance["timestamp_utc"] = segments[0]["started_utc"]
+    provenance["total_wall_time_sec"] = sum(s["wall_time_sec"] for s in segments)
+    provenance["segments"] = segments
     result = {
         "schema_version": SCHEMA_VERSION,
         "benchmark": "posteriordb",
@@ -565,13 +708,12 @@ def run_benchmark(
         "aggregates": aggregate_rows(rows),
     }
 
-    out = Path(config.output_dir)
-    out.mkdir(parents=True, exist_ok=True)
     (out / "posteriordb_results.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    with (out / "posteriordb_results.csv").open("w", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(ROW_FIELDS), lineterminator="\n")
+    with (out / "posteriordb_results.csv").open("w", encoding="utf-8", newline="") as csv_fh:
+        writer = csv.DictWriter(csv_fh, fieldnames=list(ROW_FIELDS), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
+    checkpoint.unlink()
     return result
 
 
@@ -589,6 +731,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--posteriordb", default=str(DEFAULT_POSTERIORDB_PATH), help="posteriordb checkout")
     parser.add_argument("--output-dir", default="reports")
+    parser.add_argument(
+        "--resume", action="store_true", help=f"finish an interrupted run from {CHECKPOINT_NAME} in the output dir"
+    )
     return parser
 
 
@@ -613,7 +758,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"posteriordb at {fetch_posteriordb(args.posteriordb)}")
         return
     config = config_from_args(args)
-    result = run_benchmark(config, log=lambda line: print(line, flush=True))
+    result = run_benchmark(config, log=lambda line: print(line, flush=True), resume=args.resume)
     errors = sum(r["error"] is not None for r in result["rows"])
     print(f"{len(result['rows'])} runs, {errors} errors -> {config.output_dir}/posteriordb_results.json")
 

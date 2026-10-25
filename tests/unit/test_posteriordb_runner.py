@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -264,6 +265,121 @@ def test_run_benchmark_writes_results_with_provenance(tmp_path: Path) -> None:
     assert b"\r" not in (tmp_path / "posteriordb_results.csv").read_bytes()
 
 
+class Interrupted(Exception):
+    """Stands in for a killed run: the loader raises it before a cell starts."""
+
+
+def interrupting_loader(after: int) -> Any:
+    """Loads `after` posteriors, then raises `Interrupted`."""
+    calls: list[str] = []
+
+    def load(name: str) -> pr.LoadedPosterior:
+        if len(calls) == after:
+            raise Interrupted
+        calls.append(name)
+        return scale_posterior(name)
+
+    return load
+
+
+def counting_loader() -> tuple[Any, list[str]]:
+    calls: list[str] = []
+
+    def load(name: str) -> pr.LoadedPosterior:
+        calls.append(name)
+        return scale_posterior(name)
+
+    return load, calls
+
+
+SHA = "0" * 40
+RESUMABLE = {
+    "posteriors": ("toy-scale",),
+    "arms": ("stock",),
+    "seeds": (0, 1, 2),
+    "tune": 100,
+    "draws": 300,
+    "chains": 2,
+}
+
+
+def _without_wall_time(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{k: v for k, v in r.items() if k != "wall_time_sec"} for r in rows]
+
+
+@pytest.mark.unit
+def test_an_interrupted_run_resumes_where_it_stopped_and_matches_an_uninterrupted_run(tmp_path: Path) -> None:
+    config = pr.PosteriorDBConfig.quick(output_dir=str(tmp_path / "resumed"), **RESUMABLE)
+    with pytest.raises(Interrupted):
+        pr.run_benchmark(config, loader=interrupting_loader(after=2), posteriordb_sha=SHA)
+    checkpoint = tmp_path / "resumed" / pr.CHECKPOINT_NAME
+    assert checkpoint.exists()
+    assert not (tmp_path / "resumed" / "posteriordb_results.json").exists()
+
+    # The worker count may change between segments; only the cell that had not finished runs again.
+    load, calls = counting_loader()
+    resumed = pr.run_benchmark(replace(config, workers=3), loader=load, posteriordb_sha=SHA, resume=True)
+    assert calls == ["toy-scale"]
+    assert not checkpoint.exists()
+    assert json.loads((tmp_path / "resumed" / "posteriordb_results.json").read_text()) == json.loads(
+        json.dumps(resumed)
+    )
+
+    # --resume with no checkpoint is an ordinary run.
+    fresh = pr.run_benchmark(
+        replace(config, output_dir=str(tmp_path / "fresh")),
+        loader=counting_loader()[0],
+        posteriordb_sha=SHA,
+        resume=True,
+    )
+    assert _without_wall_time(resumed["rows"]) == _without_wall_time(fresh["rows"])
+    assert resumed["aggregates"] == pr.aggregate_rows(resumed["rows"])
+
+    segments = resumed["provenance"]["segments"]
+    assert [s["rows"] for s in segments] == [2, 1]
+    assert resumed["provenance"]["timestamp_utc"] == segments[0]["started_utc"]
+    assert resumed["provenance"]["total_wall_time_sec"] == pytest.approx(sum(s["wall_time_sec"] for s in segments))
+    assert [s["rows"] for s in fresh["provenance"]["segments"]] == [3]
+
+
+@pytest.mark.unit
+def test_a_checkpoint_left_by_another_run_is_never_mixed_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resuming needs the same grid, sampler settings, posteriordb commit, code and library versions."""
+    config = pr.PosteriorDBConfig.quick(output_dir=str(tmp_path), **RESUMABLE)
+    with pytest.raises(Interrupted):
+        pr.run_benchmark(config, loader=interrupting_loader(after=1), posteriordb_sha=SHA)
+    load, calls = counting_loader()
+
+    with pytest.raises(RuntimeError, match="--resume"):
+        pr.run_benchmark(config, loader=load, posteriordb_sha=SHA)
+    with pytest.raises(ValueError, match="config.tune"):
+        pr.run_benchmark(replace(config, tune=120), loader=load, posteriordb_sha=SHA, resume=True)
+    with pytest.raises(ValueError, match="config.seeds"):
+        pr.run_benchmark(replace(config, seeds=(0, 1)), loader=load, posteriordb_sha=SHA, resume=True)
+    with pytest.raises(ValueError, match="posteriordb_sha"):
+        pr.run_benchmark(config, loader=load, posteriordb_sha="1" * 40, resume=True)
+    real_identity = pr._code_identity
+    monkeypatch.setattr(pr, "_code_identity", lambda: {**real_identity(), "git_sha": "f" * 40})
+    with pytest.raises(ValueError, match="git_sha"):
+        pr.run_benchmark(config, loader=load, posteriordb_sha=SHA, resume=True)
+    assert calls == []
+
+
+@pytest.mark.unit
+def test_a_row_cut_off_mid_write_is_run_again(tmp_path: Path) -> None:
+    """A process killed while appending leaves a partial last line; resuming drops it and reruns that cell."""
+    config = pr.PosteriorDBConfig.quick(output_dir=str(tmp_path), **RESUMABLE)
+    with pytest.raises(Interrupted):
+        pr.run_benchmark(config, loader=interrupting_loader(after=2), posteriordb_sha=SHA)
+    checkpoint = tmp_path / pr.CHECKPOINT_NAME
+    lines = checkpoint.read_bytes().splitlines(keepends=True)
+    checkpoint.write_bytes(b"".join(lines[:-1]) + lines[-1][: len(lines[-1]) // 2])
+    load, calls = counting_loader()
+    result = pr.run_benchmark(config, loader=load, posteriordb_sha=SHA, resume=True)
+    assert len(calls) == 2
+    assert [r["seed"] for r in result["rows"]] == [0, 1, 2]
+
+
 @pytest.mark.unit
 def test_full_config_is_the_reported_protocol() -> None:
     full = pr.PosteriorDBConfig.full()
@@ -287,3 +403,5 @@ def test_cli_arguments() -> None:
     assert cfg.posteriors == ("a-b",)
     assert cfg.arms == ("stock",)
     assert cfg.workers == 3
+    assert pr.build_parser().parse_args(["--resume"]).resume
+    assert not pr.build_parser().parse_args([]).resume
